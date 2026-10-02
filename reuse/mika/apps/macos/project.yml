@@ -1,0 +1,112 @@
+name: Mika
+options:
+  bundleIdPrefix: io.github.crhistian-cornejo
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "27.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Manual
+    OTHER_SWIFT_FLAGS: "-strict-concurrency=complete"
+  configs:
+    Debug:
+      # Local development builds are not signed.
+      CODE_SIGNING_REQUIRED: NO
+      CODE_SIGNING_ALLOWED: NO
+    Release:
+      # Ad-hoc signature by default. scripts/release-macos.sh overrides the
+      # identity (MIKA_SIGN_IDENTITY) when a Developer ID certificate is available.
+      CODE_SIGNING_REQUIRED: YES
+      CODE_SIGNING_ALLOWED: YES
+      CODE_SIGN_IDENTITY: "-"
+
+schemes:
+  Mika:
+    build:
+      targets:
+        Mika: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [MikaTests]
+    archive:
+      config: Release
+
+targets:
+  Mika:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+        type: group
+      - path: Assets.xcassets
+        buildPhase: resources
+      # Shared with the Windows app. Copied into the bundle as Resources/sounds/.
+      - path: ../../assets/sounds
+        type: folder
+        buildPhase: resources
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleName: MIKA
+        CFBundleDisplayName: MIKA
+        CFBundleIdentifier: io.github.crhistian-cornejo.mika
+        CFBundleVersion: "2"
+        CFBundleShortVersionString: "0.1.1"
+        CFBundlePackageType: APPL
+        LSUIElement: YES
+        NSHighResolutionCapable: YES
+        NSSupportsAutomaticGraphicsSwitching: YES
+        NSAppleEventsUsageDescription: "MIKA uses Automation to read the address of the browser tab you attach as context, to send emails through Mail when you ask it to, and to show what Spotify or Music is playing with its previous, pause and next buttons."
+        NSAccessibilityUsageDescription: "MIKA reads the title of the active window so it can attach it as context to your question."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.crhistian-cornejo.mika
+        PRODUCT_NAME: MIKA
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/MIKA.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        ENABLE_SANDBOX: NO
+        # The "Telegram helper" phase reads the Cargo workspace in ../windows and ~/.cargo, which a sandboxed script
+        # phase may not touch.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      # mika-telegram, the Telegram reader (apps/windows/telegram: the same Rust helper the Windows app ships), built
+      # with cargo and copied to Contents/Helpers/, signed with the app's identity and the hardened runtime before
+      # Xcode signs the app. Without cargo the app still builds and Settings says the helper is missing.
+      # A universal (arm64 + x86_64) build needs both Rust targets: rustup target add aarch64-apple-darwin x86_64-apple-darwin.
+      - name: Telegram helper
+        shell: /bin/bash
+        script: '/bin/bash "${SRCROOT}/../../scripts/build-telegram-helper-macos.sh"'
+        inputFiles:
+          - $(SRCROOT)/../../scripts/build-telegram-helper-macos.sh
+          - $(SRCROOT)/../windows/Cargo.toml
+          - $(SRCROOT)/../windows/Cargo.lock
+          - $(SRCROOT)/../windows/telegram/Cargo.toml
+          - $(SRCROOT)/../windows/telegram/src/main.rs
+          - $(SRCROOT)/../windows/telegram/src/lib.rs
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/mika-telegram
+
+  MikaTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+      # The whole app is compiled into the tests (they call its types directly, without @testable), except the entry point.
+      - path: Sources
+        excludes:
+          - "**/MikaApp.swift"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.crhistian-cornejo.mika.tests
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        SWIFT_VERSION: "6.0"
+        OTHER_SWIFT_FLAGS: "-strict-concurrency=complete"

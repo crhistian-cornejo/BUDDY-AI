@@ -1,0 +1,48 @@
+/* App-wide tooltip (core/tooltip.ts). Self-contained: the settings window loads a different stylesheet. */
+.mika-tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 240px;
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  background: rgba(10, 11, 13, 0.96);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+  color: #f5f6f8;
+  font: 500 11px/15px system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  text-align: left;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  user-select: none;
+  cursor: default;
+  opacity: 0;
+  visibility: hidden;
+  /* Hidden = invisible and inert with no timer: visibility flips after the fade. */
+  transition: opacity 120ms ease, visibility 0s linear 120ms;
+}
+.mika-tip.on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 120ms ease, visibility 0s;
+}
+.mika-tip-key {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #c8cbd1;
+  font: 600 10px/14px system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+}
+.mika-tip-key:empty { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .mika-tip, .mika-tip.on { transition: none; }
+}
