@@ -31,4 +31,12 @@ Buddy nace de [MIKA](../Mac_Windows/MIKA): reutiliza sus piezas probadas y deja 
 
 ## Estado
 
-Fase 0 pendiente: estructura y documentos listos, sin código de producto todavía.
+Fase 0 (esqueleto) hecha: núcleo Rust con pruebas, app de Mac (SwiftUI + UniFFI) y app de Windows (Tauri 2) que pintan a Buddy («Mochi») desde el mismo núcleo, y CI. Siguiente: fase 1 (mascota + chat).
+
+## Compilar
+
+```bash
+cargo test --workspace                     # núcleo + app de Windows (necesita apps/windows/dist: npm run build)
+cd apps/macos && xcodegen && xcodebuild -project Buddy.xcodeproj -scheme Buddy build
+cd apps/windows && npm ci && npm run build && npx tauri dev
+```

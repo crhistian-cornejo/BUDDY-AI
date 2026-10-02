@@ -1,0 +1,28 @@
+{
+  "color": {
+    "island": "#000000",
+    "surface": "#16181D",
+    "surfaceRaised": "#1F2229",
+    "stroke": "#2A2E37",
+    "text": "#F2F4F8",
+    "textMuted": "#9AA3B5",
+    "accent": "#5B7CFA",
+    "accentWarm": "#FFB547",
+    "success": "#3DDC97",
+    "warning": "#FFB547",
+    "danger": "#FF5D6C"
+  },
+  "radius": { "control": 10, "bubble": 14, "card": 18, "island": 22 },
+  "font": { "family": "system", "sizeSmall": 11, "sizeBody": 13, "sizeTitle": 15, "weightTitle": 600 },
+  "motion": {
+    "springResponse": 0.38,
+    "springDamping": 0.82,
+    "fadeOut": 0.16,
+    "breathEveryMin": 6,
+    "breathEveryMax": 10,
+    "breathDuration": 2,
+    "maxFps": 30,
+    "helloSeconds": 4
+  },
+  "pet": { "scaleSmall": 1.5, "scaleNormal": 2, "scaleLarge": 3, "margin": 24 }
+}

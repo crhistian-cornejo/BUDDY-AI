@@ -1,0 +1,26 @@
+[package]
+name = "buddy-core"
+description = "Buddy's shared core: providers, orchestrator, store, events and the pixel characters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "buddy_core"
+# The Mac app links a static library built with `cargo rustc --crate-type staticlib --features ffi`
+# (scripts/build-core-macos.sh); the Windows app uses the crate directly.
+
+[features]
+# Swift bindings through UniFFI (Mac). Off for the Windows app, which calls Rust directly.
+ffi = ["dep:uniffi"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+uniffi = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

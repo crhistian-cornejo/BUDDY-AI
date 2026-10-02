@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p buddy-core
+
+  macos-app:
+    name: app de Mac
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: brew install xcodegen
+      - name: Build and test
+        working-directory: apps/macos
+        run: |
+          xcodegen
+          xcodebuild -project Buddy.xcodeproj -scheme Buddy -configuration Debug -derivedDataPath ../../build/DerivedData test
+
+  windows-app:
+    name: app de Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/windows/package-lock.json
+      - name: Frontend
+        working-directory: apps/windows
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - run: cargo test --workspace
+      - name: Build the app
+        working-directory: apps/windows
+        run: npx tauri build --no-bundle

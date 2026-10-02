@@ -1,0 +1,56 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body.pet {
+  display: grid;
+  place-items: center;
+  height: 100vh;
+}
+
+#pet {
+  image-rendering: pixelated;
+  cursor: grab;
+}
+
+body.bubble {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 100vh;
+  font-family: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, sans-serif;
+}
+
+#bubble {
+  padding: 8px 12px;
+  margin: 6px;
+  border-radius: var(--radius-bubble);
+  background: var(--color-surface);
+  border: 1px solid var(--color-stroke);
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+
+#bubble.shown {
+  opacity: 1;
+}
+
+#bubble:not(.shown) {
+  transition-duration: var(--fade-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #bubble {
+    transition: none;
+  }
+}

@@ -2,7 +2,8 @@
 
 ## Principios
 
-- **Estilo Claude Code (Clawd) / mascotas de Codex:** pixel art de 8 bits, pequeño, con mucha personalidad en pocos píxeles.
+- **Estilo Claude Code (Clawd) / mascotas de Codex:** pixel art chibi, pequeño, con mucha personalidad. El nivel de detalle de referencia son las mascotas de Codex (Fireball, Rocky): capucha o cabeza-disfraz, ventana de cara color piel, ojitos negros con brillo, rubor, cuerpo pequeño y sombreado con textura.
+- **Buddy es «Mochi»** (elegido por el dueño el 2026-10-02): un chibi con capucha de mochi menta y un brote de dos hojas, cara crema, barriguita crema y patitas. Nada de robots.
 - **Dibujado en código, no en imágenes.**
   - Cada personaje es una cuadrícula de píxeles definida como datos: filas de caracteres, donde cada carácter es un color de la paleta.
   - Se pinta con Canvas en SwiftUI (Mac) y Canvas 2D (Windows) **desde la misma definición**, así se ve igual en los dos.
@@ -19,15 +20,16 @@
 
 ## Tamaño y cuadrícula
 
-- **Cuadrícula base:** 32 × 32 píxeles por fotograma, para el cuerpo, la cara y los accesorios.
-- **Tamaños en pantalla:** pequeño 96 pt (×3), normal 128 pt (×4), grande 192 pt (×6).
-- **Paleta:** como mucho 16 colores por personaje: contorno, 3 tonos de cuerpo, pantalla de la cara, brillo y acentos.
+- **Cuadrícula base:** 48 × 48 píxeles por fotograma (el formato admite otros tamaños; el núcleo los valida).
+- **Tamaños en pantalla:** pequeño 72 pt (×1,5, nítido en Retina), normal 96 pt (×2), grande 144 pt (×3). Están en `assets/design-tokens.json`.
+- **Paleta:** como mucho 16 colores por personaje. Mochi usa 14: contorno verde oscuro, 4 tonos de menta, 2 de piel, ojos, brillo, rubor, boca y 3 de hoja.
+- **Cómo se dibuja:** `scripts/characters/buddy_base.py` genera `core/characters/buddy-base.json` (lo que se distribuye) y vistas previas en PNG. Los estados nuevos se añaden ahí.
 
 ## Los personajes («trajes»)
 
 | Traje | Cuándo | Idea |
 | --- | --- | --- |
-| Buddy (base) | Por defecto, o cuando orquesta | Robot pequeño con pantalla en la cara (ojos de píxeles), color propio de Buddy |
+| Buddy (base, «Mochi») | Por defecto, o cuando orquesta | Chibi con capucha de mochi menta y brote de hojas |
 | Claude | Responde Claude | Tonos cálidos, con un destello de ocho puntas en pixel art en el pecho |
 | Codex | Responde Codex | Tonos azules de terminal, con `>_` en la pantalla de la cara |
 | Gemini | Responde Gemini | Degradado azul y violeta, con una estrella de cuatro puntas pixel |
@@ -70,7 +72,7 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 ```json
 {
   "id": "buddy-base",
-  "size": 32,
+  "size": 48,
   "palette": { ".": null, "k": "#14161A", "b": "#5B7CFA", "B": "#3E5AD6", "s": "#1E2A4A", "e": "#8FF3FF" },
   "states": {
     "idle":  [ ["................................", "..........kkkkkkkkkk..........", "…"], ["…"] ],
@@ -80,14 +82,14 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 }
 ```
 
-- Cada fotograma tiene 32 cadenas de 32 caracteres; `.` es transparente.
+- Cada fotograma tiene `size` cadenas de `size` caracteres; `.` es transparente.
 - Un test comprueba el formato: cuadrícula exacta, colores en la paleta y cada estado con sus fotogramas.
 
 ## Personajes importados (opcional)
 
 Como [CoPet](https://github.com/ChanceYu/CoPet) y [vibe-pet](https://github.com/Seeed-Solution/vibe-pet), Buddy podrá cargar personajes externos además de los suyos:
 
-- **El formato de las mascotas de ChatGPT/Codex:** spritesheet de 1536 × 1872 en PNG o WebP. Las que hagas en ChatGPT las podrás usar en Buddy.
+- **El formato de las mascotas de ChatGPT/Codex:** carpeta `~/.codex/pets/<id>/` con `pet.json` y `spritesheet.webp` de 1536 × 1872 (8 columnas × 9 filas de celdas de 192 × 208; filas: idle, running-right, running-left, waving, jumping, failed, waiting, running, review). Las que hagas en Codex (`/hatch`) las podrás usar en Buddy.
 - **El formato `pet.json` + `spritesheet.webp`** de CoPet y Petdex.
 
 Las animaciones de cada formato se mapean a los estados de Buddy. Los personajes propios en código siguen siendo los de serie: pesan menos, se ven igual en las dos plataformas y no dependen de licencias de terceros.

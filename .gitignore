@@ -15,3 +15,5 @@ build/
 *.pem
 .env*
 *.log
+# UniFFI output and the core static library, regenerated on every Mac build
+apps/macos/Generated/

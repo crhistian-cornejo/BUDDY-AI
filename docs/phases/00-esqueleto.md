@@ -8,7 +8,7 @@
    - Crate Rust `buddy-core` con su `Cargo.toml` y un workspace en la raíz.
    - Módulos vacíos con su responsabilidad documentada: `providers`, `orchestrator`, `router`, `store`, `sessions`, `usage`, `parley`, `briefing`, `voice`, `events`, `log`, `pixel`.
    - `events.rs`: el tipo `Event` y un canal por suscriptor.
-   - `pixel.rs`: el formato de personajes de `docs/design/MASCOTA-PIXEL.md`, con su validación y el primer personaje `buddy-base` (reposo, 2 fotogramas).
+   - `pixel.rs`: el formato de personajes de `docs/design/MASCOTA-PIXEL.md`, con su validación y el primer personaje `buddy-base` («Mochi», 48 × 48, reposo en 2 fotogramas).
    - `store.rs`: abrir o crear la base SQLite en la carpeta de datos de la app, con migraciones versionadas.
    - Pruebas con `cargo test`: validación de personajes, migraciones, eventos.
 2. **`apps/macos/`**
@@ -24,10 +24,10 @@
 
 ## Se acepta cuando
 
-- [ ] `cargo test` pasa en el núcleo.
-- [ ] La app de Mac abre y muestra a Buddy pixel art flotando, arrastrable, a ~0 % de CPU en reposo.
-- [ ] La app de Windows abre y muestra a Buddy idéntico.
-- [ ] Un mismo cambio en `core/src/pixel` cambia a Buddy en las dos.
+- [x] `cargo test` pasa en el núcleo (19 pruebas; más 2 de la app de Windows, 4 de su interfaz y 4 de la de Mac).
+- [x] La app de Mac abre y muestra a Buddy pixel art flotando, arrastrable, a ~0 % de CPU en reposo (medido: 0,0 %).
+- [ ] La app de Windows abre y muestra a Buddy idéntico. *Probada en Mac (mismos píxeles); falta verla en un Windows real y en la CI.*
+- [x] Un mismo cambio en el núcleo cambia a Buddy en las dos (el cambio de robot a Mochi lo demostró).
 
 ## No entra
 
