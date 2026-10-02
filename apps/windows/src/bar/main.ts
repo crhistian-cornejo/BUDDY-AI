@@ -121,7 +121,7 @@ function drawEars(active: Session | undefined) {
     return;
   }
   if (kind === "music" && track) {
-    $("ear-left").replaceChildren(h("span", { style: "color:#22c55e;display:inline-grid" }, icon(TABLER.musicNote, 14)));
+    $("ear-left").replaceChildren(h("span", { style: "color:var(--mint);display:inline-grid" }, icon(TABLER.musicNote, 14)));
     $("ear-right").replaceChildren(h("span", { class: "eq" }, h("i"), h("i"), h("i")));
     ears.title = `${track.title} · ${track.artist}`;
     return;
@@ -131,8 +131,8 @@ function drawEars(active: Session | undefined) {
     $("ear-right").replaceChildren(h("span", { class: `dot ${active.state}` }));
     ears.title = `${agentName(active.agent)} · ${active.project}`;
   } else if (focus) {
-    $("ear-left").replaceChildren(h("span", { style: "color:#f59e0b;display:inline-grid" }, icon(TABLER.history, 14)));
-    $("ear-right").replaceChildren(h("span", { style: "color:#f59e0b;font-weight:600;font-size:11px", text: `${Math.ceil(left() / 60)}m` }));
+    $("ear-left").replaceChildren(h("span", { style: "color:var(--indigo);display:inline-grid" }, icon(TABLER.history, 14)));
+    $("ear-right").replaceChildren(h("span", { style: "color:var(--indigo);font-weight:600;font-size:11px", text: `${Math.ceil(left() / 60)}m` }));
     ears.title = "Enfoque";
   }
 }
@@ -230,7 +230,7 @@ function drawFocus() {
     const ring = document.createElementNS(ns, "svg");
     ring.setAttribute("width", "46");
     ring.setAttribute("height", "46");
-    for (const [stroke, dash] of [["rgba(255,255,255,0.15)", c], ["#f59e0b", (left() / total) * c]] as const) {
+    for (const [stroke, dash] of [["rgba(255,255,255,0.15)", c], ["#7c8cff", (left() / total) * c]] as const) {
       const circle = document.createElementNS(ns, "circle");
       const attrs = { cx: "23", cy: "23", r: String(r), fill: "none", stroke, "stroke-width": "4", "stroke-linecap": "round", "stroke-dasharray": `${dash} ${c}` };
       for (const [k, v] of Object.entries(attrs)) circle.setAttribute(k, v);

@@ -6,6 +6,9 @@
 }
 
 body.bar {
+  /* The palette's dark shades (design-tokens `color.accent` / `accentDeep`): the island is always black. */
+  --mint: #6ee7a0;
+  --indigo: #7c8cff;
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   color: #fafafa;
@@ -46,11 +49,11 @@ body.bar {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #3b82f6;
+  background: var(--indigo);
 }
 
 .dot.working {
-  background: #22c55e;
+  background: var(--mint);
   animation: pulse 1.8s ease-in-out infinite;
 }
 
@@ -463,7 +466,7 @@ button {
 .eq i {
   width: 3px;
   border-radius: 2px;
-  background: #22c55e;
+  background: var(--mint);
   animation: eq 0.9s ease-in-out infinite;
 }
 

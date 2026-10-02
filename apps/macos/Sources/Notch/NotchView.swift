@@ -184,11 +184,11 @@ struct NotchView: View {
                     right: AnyView(ThinkingDots()),
                     tip: "Buddy está respondiendo")
         case let .focus(focus):
-            earPair(left: AnyView(Image(systemName: "timer").font(.system(size: 12, weight: .semibold)).foregroundStyle(.orange)),
+            earPair(left: AnyView(Image(systemName: "timer").font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.buddyIndigo)),
                     right: AnyView(FocusCountdown(endsAt: focus.endsAt, compact: true)),
                     tip: "Enfoque")
         case let .music(track):
-            earPair(left: AnyView(Image(systemName: "music.note").font(.system(size: 12, weight: .semibold)).foregroundStyle(.green)),
+            earPair(left: AnyView(Image(systemName: "music.note").font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.accentColor)),
                     right: AnyView(Equalizer()),
                     tip: "\(track.title) · \(track.artist)")
         }
@@ -225,7 +225,7 @@ private struct Equalizer: View {
         HStack(alignment: .bottom, spacing: 2) {
             ForEach(0..<3) { i in
                 Capsule()
-                    .fill(.green)
+                    .fill(Color.accentColor)
                     .frame(width: 3)
                     .phaseAnimator(reduceMotion ? [0.6] : [0.35, 1.0, 0.55, 0.85]) { bar, phase in
                         bar.frame(height: 12 * (i == 1 ? phase : 1.35 - phase))
@@ -262,7 +262,7 @@ struct StateDot: View {
 
     var color: Color {
         switch state {
-        case "working": return .green
+        case "working": return .accentColor
         case "waiting": return .orange
         case "error": return .red
         default: return .blue
@@ -682,7 +682,7 @@ private struct FocusRing: View {
                 Circle().stroke(.white.opacity(0.15), lineWidth: 4)
                 Circle()
                     .trim(from: 0, to: left / total)
-                    .stroke(.orange, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .stroke(Color.buddyIndigo, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                 FocusCountdown(endsAt: focus.endsAt, compact: false)
             }
@@ -700,7 +700,7 @@ struct FocusCountdown: View {
             Text(compact ? "\(Int(ceil(Double(left) / 60)))m" : String(format: "%d:%02d", left / 60, left % 60))
                 .font(.system(size: compact ? 11 : 10, weight: .semibold))
                 .monospacedDigit()
-                .foregroundStyle(compact ? .orange : .white)
+                .foregroundStyle(compact ? Color.buddyIndigo : .white)
         }
     }
 }

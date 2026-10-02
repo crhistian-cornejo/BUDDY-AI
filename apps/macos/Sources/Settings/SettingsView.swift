@@ -15,7 +15,7 @@ enum SettingsWindow {
 
     static func show() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 460),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "Ajustes de Buddy"
             w.contentView = NSHostingView(rootView: SettingsView())
@@ -46,7 +46,7 @@ struct SettingsView: View {
                 BriefingSettings(core: core)
                     .tabItem { Label("Mensajitos", systemImage: "newspaper") }
             }
-            .frame(width: 560, height: 420)
+            .frame(width: 680, height: 460)
         } else {
             Text("Buddy aún no ha arrancado.").padding(40)
         }

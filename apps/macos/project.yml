@@ -52,6 +52,8 @@ targets:
         optional: true
       - path: ../../assets/design-tokens.json
         buildPhase: resources
+      # The accent (mint) and indigo of the palette, with light and dark shades.
+      - path: Resources/Assets.xcassets
     preBuildScripts:
       - name: buddy-core (Rust + UniFFI)
         shell: /bin/bash
@@ -96,6 +98,7 @@ targets:
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/Buddy.entitlements
         ENABLE_APP_SANDBOX: NO
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         # The pre-build phase runs cargo over the whole repository and ~/.cargo.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
 

@@ -71,3 +71,10 @@ extension NSColor {
                   alpha: 1)
     }
 }
+
+import SwiftUI
+
+extension Color {
+    /// The palette's second colour (deep indigo; a lighter shade in dark mode). The first, mint, is the app's accent.
+    static let buddyIndigo = Color("BuddyIndigo")
+}
