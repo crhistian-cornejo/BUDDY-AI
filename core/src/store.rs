@@ -58,6 +58,14 @@ const MIGRATIONS: &[&str] = &[
         cost_usd   REAL
     );
     CREATE INDEX token_events_by_time ON token_events(at);",
+    // v5: the briefing («mensajitos»).
+    "CREATE TABLE briefing_items (
+        id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        at    INTEGER NOT NULL,
+        topic TEXT NOT NULL,
+        text  TEXT NOT NULL,
+        url   TEXT
+    );",
 ];
 
 /// Tokens spent by one feature (and provider) over a period.
@@ -285,6 +293,27 @@ impl Store {
             params![feature, provider, t.model, t.input, t.output, t.cached, t.cost_usd],
         )?;
         Ok(())
+    }
+
+    pub fn add_briefing_items(&self, items: &[crate::briefing::BriefingItem]) -> Result<(), CoreError> {
+        for i in items {
+            self.conn.execute(
+                "INSERT INTO briefing_items (at, topic, text, url) VALUES (?1, ?2, ?3, ?4)",
+                params![i.at, i.topic, i.text, i.url],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Briefing lines of the last `seconds`, newest first.
+    pub fn briefing_items(&self, seconds: i64) -> Result<Vec<crate::briefing::BriefingItem>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT topic, text, url, at FROM briefing_items WHERE at >= unixepoch() - ?1 ORDER BY at DESC, id DESC LIMIT 30",
+        )?;
+        let rows = stmt.query_map(params![seconds], |r| {
+            Ok(crate::briefing::BriefingItem { topic: r.get(0)?, text: r.get(1)?, url: r.get(2)?, at: r.get(3)? })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Tokens per feature and provider over the last `days` days, the biggest first.

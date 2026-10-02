@@ -32,6 +32,8 @@ pub enum Event {
     FocusFinished { minutes: u32 },
     /// The plan figures changed (`usage()` has the new ones).
     UsageChanged,
+    /// New briefing lines («mensajitos»): how many and the first one.
+    BriefingReady { count: u32, headline: String },
     /// A plan window crossed 95 % used: `left_pct` is what remains.
     UsageLow { provider: String, label: String, left_pct: u32 },
     /// A Claude Code / Codex session changed state (from its hooks): `working`, `waiting` (it needs the user),

@@ -33,6 +33,7 @@ pub use providers::{ProviderId, ProviderStatus};
 pub use store::{ChatMessage, ChatSummary, SourceLink, TokenReport};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{FaceRect, Sprite, SpriteState};
+pub use briefing::BriefingItem;
 pub use tools::{FocusStatus, Shortcut};
 pub use usage::{ProviderUsage, UsageWindow};
 pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
@@ -82,6 +83,7 @@ pub struct BuddyCore {
     chat: Arc<ChatEngine>,
     focus: tools::Focus,
     usage: Arc<usage::Usage>,
+    briefing: Arc<briefing::Briefing>,
     sessions: Arc<SessionHub>,
 }
 
@@ -111,12 +113,13 @@ impl BuddyCore {
         let bus = Arc::new(EventBus::default());
         let usage = Arc::new(usage::Usage::new(store.clone(), bus.clone()));
         let sessions = Arc::new(SessionHub::new(data_dir.clone(), bus.clone()));
+        let briefing = Arc::new(briefing::Briefing::new(store.clone(), bus.clone(), Box::new(briefing::ClaudeSource)));
         let chat = Arc::new(
             ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers)
                 .with_usage(usage.clone())
                 .with_gate(sessions.clone()),
         );
-        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage })
+        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -249,6 +252,25 @@ impl BuddyCore {
     /// The token meter: what each feature spent over the last `days` days.
     pub fn token_report(&self, days: u32) -> Result<Vec<TokenReport>, CoreError> {
         self.with_store(|s| s.token_report(days))
+    }
+
+    /// The briefing lines of the last day («mensajitos»), newest first.
+    pub fn briefing(&self) -> Vec<BriefingItem> {
+        self.briefing.latest()
+    }
+
+    /// Runs the briefing when one of today's slots (8, 13, 19 h) is due. Call at launch and once an hour.
+    pub fn briefing_tick(&self) {
+        let (hour, today) = briefing::local_now();
+        self.briefing.tick(hour, &today);
+    }
+
+    /// One briefing run now, whatever the time (from Settings); off the caller's thread.
+    pub fn briefing_now(&self) {
+        let b = self.briefing.clone();
+        std::thread::spawn(move || {
+            let _ = b.run_now();
+        });
     }
 
     /// What is used of each plan (Claude, Codex), as last seen.
