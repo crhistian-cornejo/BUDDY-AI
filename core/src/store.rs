@@ -45,7 +45,35 @@ const MIGRATIONS: &[&str] = &[
     );",
     // v3: files attached to a message (paths of Buddy's own copies).
     "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';",
+    // v4: the token meter, one row per turn and feature.
+    "CREATE TABLE token_events (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        at         INTEGER NOT NULL DEFAULT (unixepoch()),
+        feature    TEXT NOT NULL,
+        provider   TEXT NOT NULL,
+        model      TEXT,
+        input      INTEGER NOT NULL,
+        output     INTEGER NOT NULL,
+        cached     INTEGER NOT NULL,
+        cost_usd   REAL
+    );
+    CREATE INDEX token_events_by_time ON token_events(at);",
 ];
+
+/// Tokens spent by one feature (and provider) over a period.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct TokenReport {
+    pub feature: String,
+    pub provider: String,
+    pub turns: i64,
+    pub input: i64,
+    pub output: i64,
+    pub cached: i64,
+    /// What it would have cost on the API (subscriptions pay nothing extra), when known.
+    pub cost_usd: f64,
+}
 
 /// A web page an answer used.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -246,6 +274,40 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    pub fn record_tokens(
+        &self,
+        feature: &str,
+        provider: &str,
+        t: &crate::providers::TokenCount,
+    ) -> Result<(), CoreError> {
+        self.conn.execute(
+            "INSERT INTO token_events (feature, provider, model, input, output, cached, cost_usd) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![feature, provider, t.model, t.input, t.output, t.cached, t.cost_usd],
+        )?;
+        Ok(())
+    }
+
+    /// Tokens per feature and provider over the last `days` days, the biggest first.
+    pub fn token_report(&self, days: u32) -> Result<Vec<TokenReport>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT feature, provider, COUNT(*), SUM(input), SUM(output), SUM(cached), COALESCE(SUM(cost_usd), 0)
+             FROM token_events WHERE at >= unixepoch() - ?1 * 86400
+             GROUP BY feature, provider ORDER BY SUM(input) + SUM(output) DESC",
+        )?;
+        let rows = stmt.query_map(params![days], |r| {
+            Ok(TokenReport {
+                feature: r.get(0)?,
+                provider: r.get(1)?,
+                turns: r.get(2)?,
+                input: r.get(3)?,
+                output: r.get(4)?,
+                cached: r.get(5)?,
+                cost_usd: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Removes the message `from_id` and every later one of the chat (to write an answer again).
     pub fn delete_messages_from(&self, chat_id: &str, from_id: i64) -> Result<(), CoreError> {
         self.conn.execute("DELETE FROM messages WHERE chat_id = ?1 AND id >= ?2", params![chat_id, from_id])?;
@@ -395,5 +457,18 @@ mod tests {
         assert_eq!(plain_preview("## Hola\n\n1. **Usa `let`** por defecto"), "Hola 1. Usa let por defecto");
         assert_eq!(plain_preview("[[pasar:parley]] Analiza"), "Analiza");
         assert_eq!(plain_preview("| a | b |\n|---|---|\nTexto"), "Texto");
+    }
+
+    #[test]
+    fn the_token_meter_adds_up_by_feature() {
+        let store = Store::open_in_memory().unwrap();
+        let t = |i, o| crate::providers::TokenCount { input: i, output: o, cached: 10, cost_usd: Some(0.01), model: None };
+        store.record_tokens("chat · Buddy", "claude", &t(100, 20)).unwrap();
+        store.record_tokens("chat · Buddy", "claude", &t(50, 5)).unwrap();
+        store.record_tokens("uso de planes", "claude", &t(30, 1)).unwrap();
+        let report = store.token_report(7).unwrap();
+        assert_eq!((report[0].feature.as_str(), report[0].turns, report[0].input, report[0].output), ("chat · Buddy", 2, 150, 25));
+        assert!((report[0].cost_usd - 0.02).abs() < 1e-9);
+        assert_eq!(report.len(), 2);
     }
 }

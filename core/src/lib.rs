@@ -27,7 +27,7 @@ pub use chat::ChatEngine;
 pub use events::{Event, EventBus};
 pub use orchestrator::Agent;
 pub use providers::{ProviderId, ProviderStatus};
-pub use store::{ChatMessage, ChatSummary, SourceLink};
+pub use store::{ChatMessage, ChatSummary, SourceLink, TokenReport};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{FaceRect, Sprite, SpriteState};
 pub use tools::{FocusStatus, Shortcut};
@@ -237,6 +237,11 @@ impl BuddyCore {
     /// Claude Code / Codex sessions Buddy heard from, most recent first.
     pub fn sessions(&self) -> Vec<SessionInfo> {
         self.sessions.sessions()
+    }
+
+    /// The token meter: what each feature spent over the last `days` days.
+    pub fn token_report(&self, days: u32) -> Result<Vec<TokenReport>, CoreError> {
+        self.with_store(|s| s.token_report(days))
     }
 
     /// What is used of each plan (Claude, Codex), as last seen.

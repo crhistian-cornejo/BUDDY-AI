@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::process;
-use super::{Cancel, Failure, FailureKind, Provider, ProviderId, TurnEvent, TurnRequest};
+use super::{Cancel, Failure, FailureKind, Provider, ProviderId, TokenCount, TurnEvent, TurnRequest};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -187,6 +187,17 @@ pub fn turn_events(method: &str, params: &Value, turn_id: &str) -> Vec<TurnEvent
             }
         }
         "account/rateLimits/updated" => vec![TurnEvent::Usage(params.clone())],
+        "thread/tokenUsage/updated" if params["turnId"].as_str() == Some(turn_id) => {
+            let last = &params["tokenUsage"]["last"];
+            let n = |k: &str| last[k].as_i64().unwrap_or(0);
+            vec![TurnEvent::Tokens(TokenCount {
+                input: n("inputTokens") - n("cachedInputTokens"),
+                output: n("outputTokens") + n("reasoningOutputTokens"),
+                cached: n("cachedInputTokens"),
+                cost_usd: None,
+                model: None,
+            })]
+        }
         "error" if params["willRetry"] != true => {
             let message = params["error"]["message"].as_str().unwrap_or("Codex tuvo un error.");
             vec![TurnEvent::Failed(Failure::new(message))]

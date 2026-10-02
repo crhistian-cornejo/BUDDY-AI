@@ -144,8 +144,11 @@ impl Usage {
             self.last_claude_read.store(now, Ordering::SeqCst);
             let me = self.clone();
             std::thread::spawn(move || {
-                if let Some(info) = read_claude() {
+                if let Some((info, tokens)) = read_claude() {
                     me.record_claude(&info);
+                    if let Some(t) = tokens {
+                        let _ = me.store.lock().unwrap_or_else(|p| p.into_inner()).record_tokens("uso de planes", "claude", &t);
+                    }
                 }
             });
         }
@@ -262,8 +265,8 @@ fn read_codex() -> Option<Value> {
     result
 }
 
-/// A one-word turn on the smallest Claude model: its `rate_limit_event` carries the windows.
-fn read_claude() -> Option<Value> {
+/// A one-word turn on the smallest Claude model: its `rate_limit_event` carries the windows (and its cost is metered).
+fn read_claude() -> Option<(Value, Option<crate::providers::TokenCount>)> {
     let exe = process::locate("claude")?;
     let mut cmd = process::command(&exe);
     cmd.args([
@@ -276,18 +279,19 @@ fn read_claude() -> Option<Value> {
         let _ = stdin.write_all(b"responde: ok");
     }
     let stdout = child.stdout.take()?;
-    let mut info = None;
+    let (mut info, mut tokens) = (None, None);
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
         if v["type"] == "rate_limit_event" {
             info = Some(v["rate_limit_info"].clone());
         }
         if v["type"] == "result" {
+            tokens = crate::providers::TokenCount::from_claude_result(&v);
             break;
         }
     }
     let _ = child.kill();
-    info
+    info.map(|i| (i, tokens))
 }
 
 fn now() -> i64 {

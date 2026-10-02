@@ -204,7 +204,17 @@ impl ChatEngine {
         prompt.push_str(&attachments_note(files));
         prompt.push_str(question);
         let system = format!("{}{}", buddy.prompt, orchestrator::roster_prompt(&agents));
-        let answer = self.run_agent(chat_id, &buddy, &prompt, &system, files, cancel, true);
+        // Small talk goes to the light model (router); a hand-off still works from there.
+        let router_on = self.lock().setting(crate::router::SETTING).ok().flatten().as_deref() != Some("false");
+        let mut buddy_turn = buddy.clone();
+        if router_on && files.is_empty() && crate::router::is_small_talk(question) {
+            let light = crate::router::light_for(buddy.provider);
+            if light.model.is_some() {
+                buddy_turn.model = light.model;
+            }
+            buddy_turn.effort = light.effort;
+        }
+        let answer = self.run_agent(chat_id, &buddy_turn, &prompt, &system, files, cancel, true);
 
         let (agent, answer) = match orchestrator::parse_handoff(&answer.text, &known) {
             Some((id, task)) if answer.failure.is_none() && !cancel.is_cancelled() => {
@@ -330,6 +340,9 @@ impl ChatEngine {
                         self.emit(Event::ChatSource { chat_id: chat_id.into(), title: title.clone(), url: url.clone() });
                         sources.push(SourceLink { title, url });
                     }
+                }
+                TurnEvent::Tokens(count) => {
+                    let _ = self.lock().record_tokens(&format!("chat · {}", agent.name), provider.id().as_str(), &count);
                 }
                 TurnEvent::Usage(info) => {
                     if let Some(usage) = &self.usage {

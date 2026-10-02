@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::process;
-use super::{Cancel, Failure, FailureKind, Provider, ProviderId, TurnEvent, TurnRequest};
+use super::{Cancel, Failure, FailureKind, Provider, ProviderId, TokenCount, TurnEvent, TurnRequest};
 
 /// Chat-only tools: search and read the web. No shell, no file edits (phase 4 adds them behind the approval gate).
 const TOOLS: &str = "WebSearch,WebFetch";
@@ -387,12 +387,14 @@ impl StreamParser {
             }
             Some("rate_limit_event") => vec![TurnEvent::Usage(obj["rate_limit_info"].clone())],
             Some("result") => {
+                let mut events: Vec<TurnEvent> = TokenCount::from_claude_result(&obj).map(TurnEvent::Tokens).into_iter().collect();
                 if obj["is_error"] == true {
                     let message = obj["result"].as_str().unwrap_or("Claude no pudo completar la respuesta.");
-                    vec![TurnEvent::Failed(Failure::new(message))]
+                    events.push(TurnEvent::Failed(Failure::new(message)));
                 } else {
-                    vec![TurnEvent::Done]
+                    events.push(TurnEvent::Done);
                 }
+                events
             }
             _ => vec![],
         }

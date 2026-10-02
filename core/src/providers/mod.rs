@@ -121,8 +121,37 @@ pub enum TurnEvent {
     Source { title: String, url: String },
     /// Plan figures the provider reported during the turn (Claude's `rate_limit_info`, Codex's rate limits).
     Usage(serde_json::Value),
+    /// What the turn spent (for the token meter).
+    Tokens(TokenCount),
     Done,
     Failed(Failure),
+}
+
+/// Tokens a turn spent, as the provider reported them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TokenCount {
+    pub input: i64,
+    pub output: i64,
+    /// Input served from the prompt cache (cheaper).
+    pub cached: i64,
+    /// What it would cost on the API, when the provider says (Claude does; the subscription pays nothing extra).
+    pub cost_usd: Option<f64>,
+    pub model: Option<String>,
+}
+
+impl TokenCount {
+    /// Claude Code's `result` event: `usage` and `total_cost_usd`.
+    pub fn from_claude_result(result: &serde_json::Value) -> Option<Self> {
+        let usage = result.get("usage")?;
+        let n = |k: &str| usage[k].as_i64().unwrap_or(0);
+        Some(Self {
+            input: n("input_tokens") + n("cache_creation_input_tokens"),
+            output: n("output_tokens"),
+            cached: n("cache_read_input_tokens"),
+            cost_usd: result["total_cost_usd"].as_f64(),
+            model: result["modelUsage"].as_object().and_then(|m| m.keys().next().cloned()),
+        })
+    }
 }
 
 /// Set from any thread to stop a turn (Stop button, new chat, quitting).
