@@ -20,7 +20,7 @@ interface ProviderUsage { provider: string; name: string; windows: UsageWindow[]
 type CoreEvent =
   | { type: "approvalRequest"; requestId: string; sessionId: string; agent: string; project: string; title: string; summary: string; detail: string; canAllow: boolean }
   | { type: "approvalClosed"; requestId: string }
-  | { type: "sessionUpdate"; sessionId: string; agent: string; project: string; state: string }
+  | { type: "sessionUpdate"; sessionId: string; agent: string; project: string; state: string; cwd: string; terminal: string; summary: string }
   | { type: "focusChanged"; running: boolean; endsAt: number }
   | { type: "focusFinished"; minutes: number }
   | { type: "mascotState"; state: string }
@@ -166,19 +166,20 @@ function drawOverview() {
   drawUsage();
 }
 
-/** What is used of each plan: one group per provider, a small bar per window. */
+/** What is used of each plan: one column per provider, a row per window under one another. */
 function drawUsage() {
   const el = $("usage");
   el.hidden = !usage.length;
   el.replaceChildren(...usage.map((plan) => h("div", { class: "plan" }, providerMark(plan.provider, 12),
-    ...plan.windows.slice(0, 3).map((w) => {
+    h("div", { class: "windows" }, ...plan.windows.slice(0, 3).map((w) => {
       const pct = Math.round(w.usedPct);
       const reset = w.resetsAt ? ` · se reinicia ${new Date(w.resetsAt * 1000).toLocaleString("es", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "";
       const level = pct >= 90 ? "high" : pct >= 70 ? "warn" : "";
       return h("div", { class: "window", title: `${pct} % usado (${w.label})${reset}` },
-        h("span", {}, h("span", { class: "muted", text: `${w.label} ` }), `${pct} %`),
-        h("div", { class: "meter" }, h("i", { class: level, style: `width:${Math.min(Math.max(pct, 0), 100)}%` })));
-    }))));
+        h("span", { class: "muted label", text: w.label }),
+        h("div", { class: "meter" }, h("i", { class: level, style: `width:${Math.min(Math.max(pct, 0), 100)}%` })),
+        h("span", { class: "pct", text: `${pct} %` }));
+    })))));
 }
 
 function drawMusic() {
@@ -370,7 +371,7 @@ function onCore(e: CoreEvent) {
       else sessions.unshift({ id: s.sessionId, agent: s.agent, project: s.project, state: s.state });
       if (before !== s.state) {
         const name = agentName(s.agent);
-        if (s.state === "done") show({ kind: "finished", agent: s.agent, title: `${name} terminó`, detail: s.project });
+        if (s.state === "done") show({ kind: "finished", agent: s.agent, title: `${name} terminó en ${s.project}`, detail: s.summary || "Terminó su turno." });
         if (s.state === "error") show({ kind: "failed", agent: s.agent, title: `${name} se detuvo por un error`, detail: s.project });
         if (s.state === "waiting") {
           // The permission request comes a moment after this state: wait for it before saying anything.
@@ -429,7 +430,7 @@ void listen<NowPlaying | null>("media-changed", ({ payload }) => { track = paylo
 void invoke("media_watch", { on: true });
 void invoke<NowPlaying | null>("media_now_playing").then((t) => { track = t; trackAt = Date.now(); render(); });
 void Promise.all([
-  invoke<{ sessionId: string; agent: string; project: string; state: string }[]>("sessions").catch(() => []),
+  invoke<{ sessionId: string; agent: string; project: string; state: string; cwd: string; terminal: string; summary: string }[]>("sessions").catch(() => []),
   invoke<FocusStatus>("focus_status").catch(() => null),
   invoke<Shortcut[]>("shortcuts").catch(() => []),
   invoke<ProviderUsage[]>("usage").catch(() => []),

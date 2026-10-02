@@ -342,27 +342,50 @@ button {
 
 #usage {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  align-items: flex-start;
+  gap: 18px;
   height: 34px;
 }
 
 .plan {
   display: flex;
-  align-items: center;
+  flex: 1;
+  align-items: flex-start;
   gap: 8px;
+}
+
+.plan > :first-child {
+  height: 14px;
+}
+
+.windows {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
 }
 
 .window {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  gap: 6px;
+  height: 14px;
   font-size: 10px;
   font-weight: 600;
 }
 
+.window .label {
+  width: 44px;
+}
+
+.window .pct {
+  width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .window .meter {
-  width: 64px;
+  flex: 1;
   height: 3px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.15);

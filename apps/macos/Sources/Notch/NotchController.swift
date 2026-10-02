@@ -104,22 +104,26 @@ final class NotchController {
             model.show(.init(kind: .finished, agent: "buddy", title: "Terminó tu bloque de enfoque",
                              detail: "\(minutes) minutos. Tómate un respiro."))
             NSSound(named: "Glass")?.play()
-        case let .sessionUpdate(sessionId, agent, project, state):
+        case let .sessionUpdate(sessionId, agent, project, state, cwd, terminal, summary):
             let previous = model.sessions.first { $0.id == sessionId }?.state
             model.update(session: sessionId, agent: agent, project: project, state: state)
             guard previous != state else { break }
             let name = agent == "codex" ? "Codex" : "Claude Code"
+            let place = cwd.isEmpty && terminal.isEmpty ? nil : NotchModel.Place(cwd: cwd, terminal: terminal)
             switch state {
-            case "done": model.show(.init(kind: .finished, agent: agent, title: "\(name) terminó", detail: project))
+            case "done":
+                // What it said last when the agent tells us (Claude Code and Codex send it on Stop), else the project.
+                model.show(.init(kind: .finished, agent: agent, title: "\(name) terminó en \(project)",
+                                 detail: summary.isEmpty ? "Toca para volver a la sesión." : summary, place: place))
             // A permission request also puts the session in "waiting": its own card says it better.
             case "waiting":
                 // The core sends the request a moment after this state: wait for it before saying anything.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                     guard let self, !self.hasPendingApproval(for: sessionId),
                           self.model.sessions.first(where: { $0.id == sessionId })?.state == "waiting" else { return }
-                    self.model.show(.init(kind: .waiting, agent: agent, title: "\(name) espera tu respuesta", detail: project))
+                    self.model.show(.init(kind: .waiting, agent: agent, title: "\(name) espera tu respuesta", detail: project, place: place))
                 }
-            case "error": model.show(.init(kind: .failed, agent: agent, title: "\(name) se detuvo por un error", detail: project))
+            case "error": model.show(.init(kind: .failed, agent: agent, title: "\(name) se detuvo por un error", detail: project, place: place))
             default: break
             }
         default:
@@ -153,8 +157,11 @@ final class NotchController {
         guard let panel, let geometry else { return }
         let p = NSEvent.mouseLocation
         // While idle, the notch itself (a little wider) is what opens the island.
-        let trigger = model.mode == .idle ? geometry.frame(for: geometry.notch).insetBy(dx: -6, dy: -2) : islandRect
-        let inside = trigger.contains(p)
+        // The pointer at the very top of the screen sits exactly on the rectangle's upper edge, which `contains` leaves
+        // out: it flickered in and out there, opening and closing the island. The areas reach past the top edge, and
+        // once open the island gets a margin so the pointer hugging its border does not close it.
+        let trigger = model.mode == .idle ? geometry.frame(for: geometry.notch).insetBy(dx: -6, dy: -2) : islandRect.insetBy(dx: -10, dy: -10)
+        let inside = NSRect(x: trigger.minX, y: trigger.minY, width: trigger.width, height: trigger.height + 30).contains(p)
         panel.ignoresMouseEvents = !inside
         if inside {
             leaveWork?.cancel(); leaveWork = nil
@@ -189,6 +196,7 @@ final class NotchController {
                           self?.core.answerApproval(requestId: id, allow: allow)
                           self?.model.closeApproval(id)
                       },
+                      openPlace: { [weak self] place in self?.open(place) },
                       connect: { [weak self] in self?.connectHooks() },
                       media: { [weak self] action in self?.media.send(action) },
                       seek: { [weak self] ms in self?.media.seek(toMs: ms) },
@@ -250,6 +258,18 @@ final class NotchController {
     }
 
     // MARK: Tools
+
+    /// Brings the terminal of a session to the front; if that app is not running (or unknown), shows its folder.
+    private func open(_ place: NotchModel.Place) {
+        if !place.terminal.isEmpty,
+           let app = NSRunningApplication.runningApplications(withBundleIdentifier: place.terminal).first,
+           app.activate() {
+            return
+        }
+        if !place.cwd.isEmpty, FileManager.default.fileExists(atPath: place.cwd) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: place.cwd))
+        }
+    }
 
     private func open(_ item: Shortcut) {
         model.setHovering(false)

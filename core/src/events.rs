@@ -36,7 +36,11 @@ pub enum Event {
     UsageLow { provider: String, label: String, left_pct: u32 },
     /// A Claude Code / Codex session changed state (from its hooks): `working`, `waiting` (it needs the user),
     /// `done` (the turn finished), `error` (the turn failed) or `ended` (the session closed; it is forgotten).
-    SessionUpdate { session_id: String, agent: String, project: String, state: String },
+    ///
+    /// `cwd` is the session's folder, `terminal` the bundle id of the app it runs in (empty when unknown) and `summary`
+    /// what the agent said last (only on `done`, a short preview): enough for a card that says what happened and
+    /// brings the user back to it.
+    SessionUpdate { session_id: String, agent: String, project: String, state: String, cwd: String, terminal: String, summary: String },
     /// An agent asks permission for a tool (from its PermissionRequest hook). Answer with `answer_approval`; the
     /// agent waits until then, up to ~110 s, and otherwise asks in its own terminal. `can_allow` is false when the
     /// request arrived cut short: only "deny" (or the terminal) is offered then.

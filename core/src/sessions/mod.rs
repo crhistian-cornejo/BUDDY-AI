@@ -102,6 +102,26 @@ fn text<'a>(payload: &'a Value, key: &str) -> &'a str {
     payload.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// Where a session runs and what it last said, from one hook payload.
+#[derive(Default)]
+struct Place {
+    cwd: String,
+    terminal: String,
+    summary: String,
+}
+
+impl Place {
+    fn of(payload: &Value) -> Self {
+        let summary = text(payload, "last_assistant_message").trim();
+        let summary: String = summary.chars().take(240).collect();
+        Self {
+            cwd: text(payload, "cwd").into(),
+            terminal: text(payload, "bundle_id").into(),
+            summary: summary.split_whitespace().collect::<Vec<_>>().join(" "),
+        }
+    }
+}
+
 fn unix_now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -259,7 +279,7 @@ impl SessionHub {
     }
 
     /// Records the session's new state; emits `SessionUpdate` only when something shown changed.
-    fn update_session(&self, agent: &str, session_id: &str, project: &str, state: &str) {
+    fn update_session(&self, agent: &str, session_id: &str, project: &str, state: &str, place: &Place) {
         let now = unix_now();
         let key = (agent.to_string(), session_id.to_string());
         let event = {
@@ -273,6 +293,9 @@ impl SessionHub {
                     agent: agent.into(),
                     project,
                     state: state.into(),
+                    cwd: place.cwd.clone(),
+                    terminal: place.terminal.clone(),
+                    summary: String::new(),
                 })
             } else {
                 let entry = inner.sessions.entry(key).or_insert_with(|| SessionInfo {
@@ -293,6 +316,9 @@ impl SessionHub {
                     agent: entry.agent.clone(),
                     project: entry.project.clone(),
                     state: entry.state.clone(),
+                    cwd: place.cwd.clone(),
+                    terminal: place.terminal.clone(),
+                    summary: if state == "done" { place.summary.clone() } else { String::new() },
                 })
             }
         };
@@ -309,7 +335,7 @@ impl server::Sink for SessionHub {
         // Never the payload itself: tool inputs may hold secrets.
         log::line(format!("gancho {event} ({agent})"));
         if let Some(state) = state_for(event) {
-            self.update_session(agent, text(&payload, "session_id"), &project_of(text(&payload, "cwd")), state);
+            self.update_session(agent, text(&payload, "session_id"), &project_of(text(&payload, "cwd")), state, &Place::of(&payload));
         }
     }
 
@@ -317,7 +343,7 @@ impl server::Sink for SessionHub {
         let agent = agent_of(&payload);
         let session_id = text(&payload, "session_id").to_string();
         let project = project_of(text(&payload, "cwd"));
-        self.update_session(agent, &session_id, &project, "waiting");
+        self.update_session(agent, &session_id, &project, "waiting", &Place::of(&payload));
 
         let shown = format::approval_text(&payload);
         let request_id = format!("{}-{}", std::process::id(), self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -420,11 +446,29 @@ mod tests {
     }
 
     fn drain(rx: &Receiver<Event>) -> Vec<Event> {
-        rx.try_iter().collect()
+        rx.try_iter().map(bare).collect()
+    }
+
+    /// The event without where the session runs (the tests below compare what changed, not the place).
+    fn bare(mut event: Event) -> Event {
+        if let Event::SessionUpdate { cwd, terminal, summary, .. } = &mut event {
+            cwd.clear();
+            terminal.clear();
+            summary.clear();
+        }
+        event
     }
 
     fn update(session: &str, agent: &str, project: &str, state: &str) -> Event {
-        Event::SessionUpdate { session_id: session.into(), agent: agent.into(), project: project.into(), state: state.into() }
+        Event::SessionUpdate {
+            session_id: session.into(),
+            agent: agent.into(),
+            project: project.into(),
+            state: state.into(),
+            cwd: String::new(),
+            terminal: String::new(),
+            summary: String::new(),
+        }
     }
 
     #[test]
@@ -567,7 +611,7 @@ mod tests {
                 let left = deadline.saturating_duration_since(Instant::now());
                 let event = rx.recv_timeout(left).expect("the expected event never came");
                 if pred(&event) {
-                    return event;
+                    return super::bare(event);
                 }
             }
         }
@@ -675,6 +719,32 @@ mod tests {
             let mut stream = UnixStream::connect(&socket).unwrap();
             stream.write_all(b"{\"hook_event_name\":\"StopFailure\",\"session_id\":\"e\",\"cwd\":\"/x\"}\n").unwrap();
             assert_eq!(next_where(&rx, |_| true), update("e", "claude", "x", "error"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+    use serde_json::json;
+    use server::Sink;
+
+    #[test]
+    fn a_stop_carries_where_it_ran_and_what_it_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = Arc::new(EventBus::default());
+        let rx = bus.subscribe();
+        let hub = SessionHub::new(dir.path().to_path_buf(), bus);
+        hub.event(json!({
+            "hook_event_name": "Stop", "session_id": "s1", "cwd": "/p/buddy", "bundle_id": "com.mitchellh.ghostty",
+            "last_assistant_message": "Listo.\n\nArreglé   el scroll."
+        }));
+        match rx.try_recv().unwrap() {
+            Event::SessionUpdate { cwd, terminal, summary, state, .. } => {
+                assert_eq!((cwd.as_str(), terminal.as_str(), state.as_str()), ("/p/buddy", "com.mitchellh.ghostty", "done"));
+                assert_eq!(summary, "Listo. Arreglé el scroll.");
+            }
+            other => panic!("{other:?}"),
         }
     }
 }

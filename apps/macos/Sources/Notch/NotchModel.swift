@@ -8,6 +8,12 @@ import Observation
 final class NotchModel {
     enum Mode: Equatable { case idle, notice, open, drop }
 
+    /// Where a session runs: its folder and the app (bundle id) holding its terminal, to bring the user back to it.
+    struct Place: Equatable {
+        var cwd: String
+        var terminal: String
+    }
+
     struct Notice: Identifiable, Equatable {
         enum Kind: Equatable { case approval(requestID: String, canAllow: Bool), finished, waiting, failed }
         let id = UUID()
@@ -16,6 +22,8 @@ final class NotchModel {
         var title: String
         var detail: String
         var command: String = ""
+        /// A click on the card goes here (a session's terminal) instead of only closing it.
+        var place: Place?
     }
 
     struct Session: Identifiable, Equatable {

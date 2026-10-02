@@ -11,7 +11,13 @@ enum NotchLayout {
     static let tileHeight: CGFloat = 116
     static let playerHeight: CGFloat = 92
     static let dropHeight: CGFloat = 112
-    static let usageHeight: CGFloat = 34
+    static let usageRow: CGFloat = 14
+    /// The usage strip: each plan is a column, its windows (5 h, week…) rows under one another.
+    @MainActor
+    static func usageHeight(_ usage: [ProviderUsage]) -> CGFloat {
+        let rows = CGFloat(min(usage.map { $0.windows.count }.max() ?? 1, 3))
+        return rows * usageRow + (rows - 1) * 5
+    }
 
     /// Lines the command box shows (wrapped at ~50 characters, at most 6).
     static func commandLines(_ text: String) -> Int {
@@ -35,7 +41,7 @@ enum NotchLayout {
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + extra)
         case .open:
             let player = model.nowPlaying == nil ? 0 : playerHeight + 16
-            let usage = model.usage.isEmpty ? 0 : usageHeight + 12
+            let usage = model.usage.isEmpty ? 0 : usageHeight(model.usage) + 12
             return CGSize(width: max(openWidth, notch.width + 48), height: notch.height + 16 + player + tileHeight + usage + 20)
         case .drop:
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + 16 + dropHeight + 20)
@@ -64,6 +70,7 @@ extension NotchModel {
 /// What the island can ask the controller to do.
 struct NotchActions {
     var answer: (String, Bool) -> Void
+    var openPlace: (NotchModel.Place) -> Void
     var connect: () -> Void
     var media: (MediaAction) -> Void
     var seek: (Int) -> Void
@@ -119,7 +126,8 @@ struct NotchView: View {
         switch model.mode {
         case .notice:
             if let notice = model.notice {
-                NoticeCard(notice: notice, onAnswer: actions.answer, onDismiss: { model.dismiss() })
+                NoticeCard(notice: notice, onAnswer: actions.answer, onDismiss: { model.dismiss() },
+                           onOpen: { place in actions.openPlace(place); model.dismiss() })
             }
         case .open:
             VStack(spacing: 16) {
@@ -261,6 +269,7 @@ private struct NoticeCard: View {
     let notice: NotchModel.Notice
     var onAnswer: (String, Bool) -> Void
     var onDismiss: () -> Void
+    var onOpen: (NotchModel.Place) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -317,7 +326,11 @@ private struct NoticeCard: View {
         .padding(.top, 12)
         .padding(.bottom, 20)
         .contentShape(Rectangle())
-        .onTapGesture { if !notice.isApproval { onDismiss() } }
+        .onTapGesture {
+            guard !notice.isApproval else { return }
+            if let place = notice.place { onOpen(place) } else { onDismiss() }
+        }
+        .tip(notice.place == nil ? "" : "Volver a \(notice.agentName)")
     }
 }
 
@@ -442,23 +455,27 @@ private struct SeekBar: View {
 
 // MARK: - Usage
 
-/// What is used of each plan: one group per provider, a small bar per window.
+/// What is used of each plan: one column per provider (its mark on the left), a row per window under one another, so
+/// every row is plainly that provider's.
 private struct UsageStrip: View {
     let usage: [ProviderUsage]
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(alignment: .top, spacing: 18) {
             ForEach(usage, id: \.provider) { plan in
-                HStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
                     ProviderMark(provider: plan.provider, size: 12)
-                    ForEach(plan.windows.prefix(3), id: \.label) { window in
-                        UsageBar(window: window)
+                        .frame(height: NotchLayout.usageRow)
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(plan.windows.prefix(3), id: \.label) { window in
+                            UsageBar(window: window)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Spacer(minLength: 0)
         }
-        .frame(height: NotchLayout.usageHeight)
+        .frame(height: NotchLayout.usageHeight(usage), alignment: .top)
     }
 }
 
@@ -468,18 +485,23 @@ private struct UsageBar: View {
     private var color: Color { window.usedPct >= 90 ? .red : window.usedPct >= 70 ? .orange : .white }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(window.label).foregroundStyle(.secondary)
-                Text("\(Int(window.usedPct.rounded())) %").monospacedDigit()
-            }
-            .font(.system(size: 10, weight: .semibold))
+        HStack(spacing: 6) {
+            Text(window.label)
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
             ZStack(alignment: .leading) {
                 Capsule().fill(.white.opacity(0.15))
-                Capsule().fill(color).frame(width: 64 * min(max(window.usedPct / 100, 0), 1))
+                GeometryReader { geo in
+                    Capsule().fill(color).frame(width: geo.size.width * min(max(window.usedPct / 100, 0), 1))
+                }
             }
-            .frame(width: 64, height: 3)
+            .frame(height: 3)
+            Text("\(Int(window.usedPct.rounded())) %")
+                .monospacedDigit()
+                .frame(width: 34, alignment: .trailing)
         }
+        .font(.system(size: 10, weight: .semibold))
+        .frame(height: NotchLayout.usageRow)
         .tip(Self.help(window))
     }
 
