@@ -17,7 +17,10 @@ const BLOCKED_ENV: &[&str] = &[
 
 /// The environment a CLI runs with: the app's own, minus the API keys.
 pub fn scrubbed_env() -> Vec<(OsString, OsString)> {
-    std::env::vars_os().filter(|(k, _)| !BLOCKED_ENV.iter().any(|b| k == *b)).collect()
+    // Windows variable names are case-insensitive.
+    std::env::vars_os()
+        .filter(|(k, _)| !BLOCKED_ENV.iter().any(|b| k.to_string_lossy().eq_ignore_ascii_case(b)))
+        .collect()
 }
 
 /// Finds a CLI by name. An app opened from Finder or the Start menu has a short PATH, so the usual install
@@ -78,7 +81,8 @@ mod tests {
     fn api_keys_never_reach_a_cli() {
         // SAFETY: tests in this module do not read these variables concurrently.
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-test") };
-        assert!(!scrubbed_env().iter().any(|(k, _)| k == "ANTHROPIC_API_KEY"));
-        assert!(scrubbed_env().iter().any(|(k, _)| k == "PATH"));
+        let env = scrubbed_env();
+        assert!(!env.iter().any(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case("ANTHROPIC_API_KEY")));
+        assert!(env.iter().any(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case("PATH")));
     }
 }

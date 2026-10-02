@@ -1,5 +1,6 @@
 // Ported from MIKA (MIT, revision d050bc5).
 import XCTest
+@testable import Buddy
 
 final class MarkdownParserTests: XCTestCase {
     private func item(_ text: String, _ children: [MarkdownBlock] = []) -> MarkdownListItem { MarkdownListItem(text: text, children: children) }

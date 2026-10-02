@@ -1,5 +1,6 @@
 // Ported from MIKA (MIT, revision d050bc5).
 import XCTest
+@testable import Buddy
 
 final class MathParserTests: XCTestCase {
     private func sym(_ s: String, italic: Bool = false) -> MathNode { .symbol(s, italic: italic) }
