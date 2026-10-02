@@ -84,7 +84,8 @@ final class NotchController {
             approvalSessions[requestId] = sessionId
             let name = agent == "codex" ? "Codex" : "Claude Code"
             model.show(.init(kind: .approval(requestID: requestId, canAllow: canAllow), agent: agent,
-                             title: "\(name) pide permiso en \(project)", detail: "\(title): \(summary)", command: detail))
+                             title: agent == "buddy" ? "Buddy quiere ejecutar un comando" : "\(name) pide permiso en \(project)",
+                             detail: "\(title): \(summary)", command: detail))
             NSSound(named: "Tink")?.play()
         case let .approvalClosed(requestId):
             approvalSessions[requestId] = nil
