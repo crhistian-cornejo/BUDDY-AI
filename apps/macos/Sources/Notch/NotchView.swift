@@ -4,7 +4,7 @@ import SwiftUI
 /// Sizes of the island in each mode (the controller hit-tests with the same numbers). A 4-pt grid: 24 pt sides,
 /// 16 pt between blocks, 20 pt at the bottom.
 enum NotchLayout {
-    static let earWidth: CGFloat = 34
+    static let earWidth: CGFloat = 40
     static let side: CGFloat = 24
     static let noticeWidth: CGFloat = 420
     static let openWidth: CGFloat = 560
@@ -23,8 +23,7 @@ enum NotchLayout {
     static func size(_ model: NotchModel, notch: CGSize) -> CGSize {
         switch model.mode {
         case .idle:
-            return model.activeSession == nil && model.focus?.running != true
-                ? notch : CGSize(width: notch.width + 2 * earWidth, height: notch.height)
+            return model.ear == .none ? notch : CGSize(width: notch.width + 2 * earWidth, height: notch.height)
         case .notice:
             let extra: CGFloat
             if let notice = model.notice, notice.isApproval {
@@ -47,6 +46,18 @@ extension NotchModel {
     var activeSession: Session? {
         sessions.first { $0.state == "waiting" } ?? sessions.first { $0.state == "working" }
     }
+
+    /// What sits beside the notch at rest, by priority: an agent that needs you or works, Buddy answering, the focus
+    /// countdown, the music playing.
+    enum Ear: Equatable { case none, session(Session), buddy, focus(FocusStatus), music(EarTrack) }
+
+    var ear: Ear {
+        if let session = activeSession { return .session(session) }
+        if buddyBusy { return .buddy }
+        if let focus, focus.running { return .focus(focus) }
+        if let track = earTrack, track.playing { return .music(track) }
+        return .none
+    }
 }
 
 /// What the island can ask the controller to do.
@@ -54,6 +65,7 @@ struct NotchActions {
     var answer: (String, Bool) -> Void
     var connect: () -> Void
     var media: (MediaAction) -> Void
+    var seek: (Int) -> Void
     var focusStart: (UInt32) -> Void
     var focusStop: () -> Void
     var openShortcut: (Shortcut) -> Void
@@ -111,7 +123,7 @@ struct NotchView: View {
         case .open:
             VStack(spacing: 16) {
                 if let playing = model.nowPlaying {
-                    MusicPlayer(track: playing, readAt: model.nowPlayingAt, onMedia: actions.media)
+                    MusicPlayer(track: playing, readAt: model.nowPlayingAt, onMedia: actions.media, onSeek: actions.seek)
                 }
                 HStack(spacing: 12) {
                     SessionsTile(sessions: model.sessions, connected: hooksConnected, onConnect: actions.connect)
@@ -130,33 +142,40 @@ struct NotchView: View {
         }
     }
 
-    /// At rest: the agent working (mark + dot) and the focus countdown, beside the notch.
+    /// At rest, beside the notch: whatever matters most right now (see `NotchModel.ear`).
     @ViewBuilder
     private var ears: some View {
-        let session = model.activeSession
-        let focusing = model.focus?.running == true
-        if session != nil || focusing {
-            HStack {
-                Group {
-                    if let session {
-                        ProviderMark(provider: session.agent == "codex" ? "codex" : "claude", size: 14)
-                            .tip("\(session.agent == "codex" ? "Codex" : "Claude Code") · \(session.project)")
-                    } else {
-                        Image(systemName: "timer").font(.system(size: 12, weight: .semibold)).foregroundStyle(.orange)
-                    }
-                }
-                .frame(width: NotchLayout.earWidth)
-                Spacer()
-                Group {
-                    if let session {
-                        StateDot(state: session.state)
-                    } else if let focus = model.focus {
-                        FocusCountdown(endsAt: focus.endsAt, compact: true)
-                    }
-                }
-                .frame(width: NotchLayout.earWidth)
-            }
+        switch model.ear {
+        case .none:
+            EmptyView()
+        case let .session(session):
+            earPair(left: AnyView(ProviderMark(provider: session.agent == "codex" ? "codex" : "claude", size: 14)),
+                    right: AnyView(StateDot(state: session.state)),
+                    tip: "\(session.agent == "codex" ? "Codex" : "Claude Code") · \(session.project) · \(SessionsTile.stateText(session.state))")
+        case .buddy:
+            earPair(left: AnyView(AvatarView(size: 18)),
+                    right: AnyView(ThinkingDots()),
+                    tip: "Buddy está respondiendo")
+        case let .focus(focus):
+            earPair(left: AnyView(Image(systemName: "timer").font(.system(size: 12, weight: .semibold)).foregroundStyle(.orange)),
+                    right: AnyView(FocusCountdown(endsAt: focus.endsAt, compact: true)),
+                    tip: "Enfoque")
+        case let .music(track):
+            earPair(left: AnyView(Image(systemName: "music.note").font(.system(size: 12, weight: .semibold)).foregroundStyle(.green)),
+                    right: AnyView(Equalizer()),
+                    tip: "\(track.title) · \(track.artist)")
         }
+    }
+
+    private func earPair(left: AnyView, right: AnyView, tip: String) -> some View {
+        HStack {
+            left.frame(width: NotchLayout.earWidth - 8)
+            Spacer()
+            right.frame(width: NotchLayout.earWidth - 8)
+        }
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        .tip(tip)
     }
 
     static func urls(from providers: [NSItemProvider]) async -> [URL] {
@@ -168,6 +187,42 @@ struct NotchView: View {
             }
         }
         return out
+    }
+}
+
+/// Three bars moving like a level meter while music plays (still with reduced motion).
+private struct Equalizer: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(0..<3) { i in
+                Capsule()
+                    .fill(.green)
+                    .frame(width: 3)
+                    .phaseAnimator(reduceMotion ? [0.6] : [0.35, 1.0, 0.55, 0.85]) { bar, phase in
+                        bar.frame(height: 12 * (i == 1 ? phase : 1.35 - phase))
+                    } animation: { _ in .easeInOut(duration: 0.32 + Double(i) * 0.07) }
+            }
+        }
+        .frame(height: 12)
+    }
+}
+
+/// Three dots that breathe while Buddy writes.
+private struct ThinkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<3) { i in
+                Circle()
+                    .fill(.white)
+                    .frame(width: 4, height: 4)
+                    .phaseAnimator(reduceMotion ? [1.0] : [0.3, 1.0]) { dot, phase in dot.opacity(phase) }
+                        animation: { _ in .easeInOut(duration: 0.5).delay(Double(i) * 0.15) }
+            }
+        }
     }
 }
 
@@ -268,6 +323,9 @@ private struct MusicPlayer: View {
     let track: NowPlaying
     let readAt: Date
     var onMedia: (MediaAction) -> Void
+    var onSeek: (Int) -> Void
+    /// While the bar is being dragged: where it would go.
+    @State private var scrub: Double?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -300,12 +358,12 @@ private struct MusicPlayer: View {
             // Runs on from the last reading while it plays, redrawn once a second (only while the island is open).
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let elapsed = track.status == .playing ? Int(context.date.timeIntervalSince(readAt) * 1000) : 0
-                let now = min(position + elapsed, duration)
+                let now = scrub.map { Int($0 * Double(duration)) } ?? min(position + elapsed, duration)
                 HStack(spacing: 8) {
                     Text(Self.time(now)).monospacedDigit()
-                    ProgressView(value: Double(now), total: Double(duration))
-                        .progressViewStyle(.linear)
-                        .tint(.white)
+                    SeekBar(fraction: Double(now) / Double(duration), scrubbing: $scrub) { fraction in
+                        onSeek(Int(fraction * Double(duration)))
+                    }
                     Text("-" + Self.time(duration - now)).monospacedDigit()
                 }
                 .font(.system(size: 10, weight: .medium))
@@ -344,6 +402,39 @@ private struct MusicPlayer: View {
     }
 }
 
+/// The track's progress: tap or drag to move through the song.
+private struct SeekBar: View {
+    let fraction: Double
+    @Binding var scrubbing: Double?
+    var onSeek: (Double) -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = max(geo.size.width, 1)
+            ZStack(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.18))
+                Capsule().fill(.white).frame(width: width * min(max(fraction, 0), 1))
+            }
+            .frame(height: hovering || scrubbing != nil ? 6 : 4)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { scrubbing = min(max($0.location.x / width, 0), 1) }
+                .onEnded { value in
+                    let f = min(max(value.location.x / width, 0), 1)
+                    onSeek(f)
+                    // Keep the dragged spot until the player reports the new position.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { scrubbing = nil }
+                })
+            .onHover { hovering = $0 }
+        }
+        .frame(height: 14)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .tip("Toca o arrastra para avanzar")
+    }
+}
+
 // MARK: - Tiles
 
 /// A tile of the overview: title with its symbol, then its content.
@@ -367,7 +458,7 @@ private struct Tile<Content: View>: View {
     }
 }
 
-private struct SessionsTile: View {
+struct SessionsTile: View {
     let sessions: [NotchModel.Session]
     let connected: Bool
     var onConnect: () -> Void

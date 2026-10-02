@@ -19,10 +19,40 @@ struct ComposerView: View {
     var onClose: () -> Void
     @FocusState private var focused: Bool
 
-    private var empty: Bool { chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var empty: Bool { chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && chat.attachments.isEmpty }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            if !chat.attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(chat.attachments, id: \.self) { url in
+                            FileChip(path: url.path) { chat.detach(url) }
+                        }
+                    }
+                }
+            }
+            field
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .frame(width: ChatMetrics.composerWidth)
+        .onAppear { focused = true }
+        .onExitCommand(perform: onClose)
+    }
+
+    private var field: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            Button(action: pickFiles) {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .tip("Adjuntar archivos (imágenes, PDF, texto)")
             TextField("Pregúntale a Buddy", text: $chat.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.body)
@@ -52,12 +82,18 @@ struct ComposerView: View {
             .buttonBorderShape(.circle)
             .controlSize(.small)
         }
-        .padding(.leading, 16)
-        .padding(.trailing, 8)
-        .padding(.vertical, 8)
-        .frame(width: ChatMetrics.composerWidth)
-        .onAppear { focused = true }
-        .onExitCommand(perform: onClose)
+    }
+
+    private func pickFiles() {
+        let panel = NSOpenPanel()
+        panel.title = "Adjuntar a Buddy"
+        panel.prompt = "Adjuntar"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        chat.attach(panel.urls)
+        focused = true
     }
 }
 
@@ -143,6 +179,13 @@ private struct MessageRow: View {
 
     var body: some View {
         if message.role == "user" {
+            VStack(alignment: .trailing, spacing: 6) {
+                if !message.files.isEmpty {
+                    HStack(spacing: 6) {
+                        Spacer(minLength: 48)
+                        ForEach(message.files, id: \.self) { FileChip(path: $0, onRemove: nil) }
+                    }
+                }
             HStack {
                 Spacer(minLength: 48)
                 Text(message.content)
@@ -152,9 +195,10 @@ private struct MessageRow: View {
                     .padding(.vertical, 8)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
+            }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                AuthorLine(name: message.author ?? "Buddy", provider: message.provider)
+                AuthorLine(name: message.author ?? "Buddy")
                 if let activity = message.activity {
                     ActivityLine(activity: activity)
                 }
@@ -166,7 +210,7 @@ private struct MessageRow: View {
                     AssistantBubble(message: message)
                 }
                 if !message.isStreaming && !message.content.isEmpty {
-                    MessageActions(text: message.content, canRegenerate: isLastAnswer && canRegenerate,
+                    MessageActions(text: message.content, provider: message.provider, canRegenerate: isLastAnswer && canRegenerate,
                                    onRegenerate: onRegenerate)
                         .opacity(isLastAnswer || hovering ? 1 : 0)
                 }
@@ -178,10 +222,9 @@ private struct MessageRow: View {
     }
 }
 
-/// Buddy's face, the agent's name and the mark of the service that wrote it.
+/// Buddy's face and the agent's name.
 private struct AuthorLine: View {
     let name: String
-    let provider: String?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -190,14 +233,14 @@ private struct AuthorLine: View {
             Text(name)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            ProviderMark(provider: provider)
         }
     }
 }
 
-/// Copy and write again, under an answer, like the usual chat apps.
+/// Copy and write again, under an answer, followed by the mark of the service that wrote it.
 private struct MessageActions: View {
     let text: String
+    let provider: String?
     let canRegenerate: Bool
     let onRegenerate: () -> Void
     @State private var copied = false
@@ -213,6 +256,8 @@ private struct MessageActions: View {
             if canRegenerate {
                 ActionButton(symbol: "arrow.clockwise", help: "Rehacer la respuesta", action: onRegenerate)
             }
+            ProviderMark(provider: provider)
+                .padding(.leading, 6)
         }
         .padding(.leading, -6)
     }
@@ -268,5 +313,37 @@ struct BubbleView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .fixedSize()
+    }
+}
+
+/// A file as a small chip: its icon and name; with a remove button while it waits in the composer.
+struct FileChip: View {
+    let path: String
+    let onRemove: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+                .resizable()
+                .frame(width: 16, height: 16)
+            Text((path as NSString).lastPathComponent)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 160, alignment: .leading)
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .tip("Quitar")
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .background(.quaternary, in: Capsule())
+        .tip(path)
+        .onTapGesture(count: 2) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     }
 }

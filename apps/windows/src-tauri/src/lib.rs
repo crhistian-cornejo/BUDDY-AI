@@ -186,6 +186,7 @@ pub fn run() {
             open_shortcut,
             reveal_path,
             give_files,
+            pick_files,
             messages,
             agents,
             open_url
@@ -440,9 +441,9 @@ async fn connect_hooks(app: AppHandle) -> Result<(), String> {
     for status in core.hooks_status().into_iter().filter(|s| s.available && !s.installed) {
         let preview = core.hooks_preview(status.agent.clone(), true).map_err(|e| e.to_string())?;
         let text = format!(
-            "Buddy añadirá sus avisos a {} y guardará antes una copia. No toca nada más de tu configuración; puedes quitarlos cuando quieras.\n\n{}",
+            "Buddy añadirá sus avisos a {}:\n{}\n\nAntes guarda una copia del archivo, no toca tus otros hooks y puedes quitarlos cuando quieras.",
             preview.path,
-            preview.diff.chars().take(1200).collect::<String>()
+            hook_events(&preview.diff).join(", ")
         );
         let dialog = app.dialog().clone();
         let title = format!("¿Conectar {} con Buddy?", status.name);
@@ -522,14 +523,24 @@ fn reveal_path(app: AppHandle, path: String) -> Result<(), String> {
     app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
-/// Files dropped on the bar: a new chat with them in the field (attachments proper arrive in phase 4).
+/// Files dropped on the bar: a new chat with them attached.
 #[tauri::command]
 fn give_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
     if !app.state::<AppCore>().chat_open.load(Ordering::SeqCst) {
         toggle_chat(app.clone())?;
     }
-    let lead = if paths.len() == 1 { "Revisa este archivo:" } else { "Revisa estos archivos:" };
-    app.emit_to(CHAT, "prefill", format!("{lead}\n{}\n\n", paths.join("\n"))).map_err(|e| e.to_string())
+    app.emit_to(CHAT, "attach", paths).map_err(|e| e.to_string())
+}
+
+/// The hook events a preview adds (the last word of each new `buddy-hook` command line), for a short summary.
+fn hook_events(diff: &str) -> Vec<String> {
+    let mut events: Vec<String> = diff
+        .lines()
+        .filter(|l| l.starts_with('+') && l.contains("buddy-hook"))
+        .filter_map(|l| l.trim_end_matches([',', '"', ' ']).rsplit(' ').next().map(str::to_string))
+        .collect();
+    events.dedup();
+    events
 }
 
 // MARK: Chat
@@ -604,8 +615,29 @@ fn place_chat(app: &AppHandle) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn send_message(state: State<'_, AppCore>, chat_id: Option<String>, text: String) -> Result<String, String> {
-    state.core.send_message(chat_id, text).map_err(|e| e.to_string())
+fn send_message(
+    state: State<'_, AppCore>,
+    chat_id: Option<String>,
+    text: String,
+    attachments: Vec<String>,
+) -> Result<String, String> {
+    state.core.send_message(chat_id, text, attachments).map_err(|e| e.to_string())
+}
+
+/// The system's file picker for attachments (several at once).
+#[tauri::command]
+async fn pick_files(app: AppHandle) -> Vec<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let dialog = app.dialog().clone();
+    tauri::async_runtime::spawn_blocking(move || dialog.file().set_title("Adjuntar a Buddy").blocking_pick_files())
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[tauri::command]
@@ -708,6 +740,12 @@ mod tests {
         assert_eq!(parse_point(" 3 , 4 "), Some((3, 4)));
         assert_eq!(parse_point("x,1"), None);
         assert_eq!(parse_point("12"), None);
+    }
+
+    #[test]
+    fn the_connect_summary_lists_the_events() {
+        let diff = "+   \"command\": \"\\\"/x/buddy-hook\\\" Stop\",\n+   \"command\": \"\\\"/x/buddy-hook\\\" PermissionRequest\",\n  \"model\": \"x\"";
+        assert_eq!(hook_events(diff), ["Stop", "PermissionRequest"]);
     }
 
     #[test]

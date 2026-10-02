@@ -26,6 +26,22 @@ impl Claude {
 
     /// `--safe-mode` ignores the user's hooks, plugins and CLAUDE.md (Buddy's own prompt rules); no MCP servers.
     pub fn arguments(request: &TurnRequest) -> Vec<String> {
+        // With attachments, Read is added, allowed only inside the folders that hold them.
+        let dirs: Vec<String> = {
+            let mut d: Vec<String> = request
+                .attachments
+                .iter()
+                .filter_map(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
+                .collect();
+            d.sort();
+            d.dedup();
+            d
+        };
+        let tools = if dirs.is_empty() { TOOLS.to_string() } else { format!("{TOOLS},Read") };
+        let allowed = std::iter::once(TOOLS.to_string())
+            .chain(dirs.iter().map(|d| format!("Read(//{}/**)", d.trim_start_matches('/'))))
+            .collect::<Vec<_>>()
+            .join(",");
         let mut args: Vec<String> = [
             "-p",
             "--output-format",
@@ -36,16 +52,16 @@ impl Claude {
             "--strict-mcp-config",
             "--mcp-config",
             r#"{"mcpServers":{}}"#,
-            "--tools",
-            TOOLS,
-            "--allowedTools",
-            TOOLS,
             "--permission-mode",
             "dontAsk",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
+        args.extend(["--tools".into(), tools, "--allowedTools".into(), allowed]);
+        for dir in &dirs {
+            args.extend(["--add-dir".into(), dir.clone()]);
+        }
         if let Some(model) = &request.model {
             args.extend(["--model".into(), model.clone()]);
         }
@@ -349,6 +365,20 @@ mod tests {
     fn errors_are_classified() {
         let events = feed_all(&[r#"{"type":"result","is_error":true,"result":"Claude AI usage limit reached"}"#]);
         assert!(matches!(&events[0], TurnEvent::Failed(f) if f.kind == FailureKind::Limit));
+    }
+
+    #[test]
+    fn attachments_allow_reading_only_their_folder() {
+        let args = Claude::arguments(&TurnRequest {
+            attachments: vec!["/data/adjuntos/c1/foto.png".into(), "/data/adjuntos/c1/notas.txt".into()],
+            ..Default::default()
+        });
+        let joined = args.join(" ");
+        assert!(joined.contains("--tools WebSearch,WebFetch,Read"));
+        assert!(joined.contains("--allowedTools WebSearch,WebFetch,Read(//data/adjuntos/c1/**)"), "{joined}");
+        assert_eq!(joined.matches("--add-dir /data/adjuntos/c1").count(), 1);
+        let plain = Claude::arguments(&TurnRequest::default()).join(" ");
+        assert!(!plain.contains("Read") && !plain.contains("--add-dir"));
     }
 
     #[test]

@@ -58,6 +58,8 @@ pub struct TurnRequest {
     pub resume: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Files the user attached, already copied into Buddy's attachments folder (the only files a turn may read).
+    pub attachments: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

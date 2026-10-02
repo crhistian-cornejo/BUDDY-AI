@@ -36,11 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 chat?.open(id)
                 windows?.open()
             }
-            // Files dropped on the notch: a new chat with them in the field (attachments proper arrive in phase 4).
+            // Files dropped on the notch: a new chat with them attached.
             notch.onGiveFiles = { [weak chat, weak windows] files in
                 chat?.newChat()
-                chat?.draft = "Revisa " + (files.count == 1 ? "este archivo" : "estos archivos") + ":\n"
-                    + files.map(\.path).joined(separator: "\n") + "\n\n"
+                chat?.attach(files)
                 windows?.open()
             }
             // Chat events draw the chat, session events the notch; mascot events animate Buddy.
@@ -69,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     windows.open()
                     chat.draft = prompt
+                    if let file = ProcessInfo.processInfo.environment["BUDDY_DEBUG_ATTACH"] { chat.attach([URL(fileURLWithPath: file)]) }
                     chat.send()
                 }
             }

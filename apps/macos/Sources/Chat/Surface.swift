@@ -24,23 +24,19 @@ extension View {
             .clipShape(shape)
             // Tooltips are drawn by the surface itself: the system's do not show in these panels.
             .tooltipHost()
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+            // Barely there: a hairline that only separates it from a background of the same colour, a very soft shadow.
+            .overlay(shape.strokeBorder(Color.dynamic(light: "#000000", dark: "#FFFFFF").opacity(0.05), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
             .padding(Surface.margin)
     }
 }
 
-/// The system's glass behind the content: Liquid Glass (NSGlassEffectView) on macOS 26 and later, the popover
-/// material blending with what is behind the window before. Both follow light and dark mode.
+/// The system's popover material behind the content: blurs what is behind the window and follows light and dark
+/// mode, without the bright rim Liquid Glass draws on its edge (which read as a grey border here).
 struct GlassBackdrop: NSViewRepresentable {
     let cornerRadius: CGFloat
 
-    func makeNSView(context: Context) -> NSView {
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.cornerRadius = cornerRadius
-            return glass
-        }
+    func makeNSView(context: Context) -> NSVisualEffectView {
         let effect = NSVisualEffectView()
         effect.material = .popover
         effect.blendingMode = .behindWindow
@@ -48,11 +44,7 @@ struct GlassBackdrop: NSViewRepresentable {
         return effect
     }
 
-    func updateNSView(_ view: NSView, context: Context) {
-        if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
-            glass.cornerRadius = cornerRadius
-        }
-    }
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 /// A borderless, transparent panel that can take the keyboard without a title bar (composer, chat, history).

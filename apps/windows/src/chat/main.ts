@@ -13,7 +13,7 @@ import { makeSource, type ChatSource } from "./markdown";
 
 applyTokens();
 
-interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean }
+interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean; attachments?: string[] }
 interface Agent { id: string; name: string }
 type CoreEvent =
   | { type: "chatStarted"; chatId: string; agent: string; agentName: string; provider: string }
@@ -31,12 +31,34 @@ const input = $<HTMLTextAreaElement>("input");
 const send = $<HTMLButtonElement>("send");
 
 let chatId: string | null = null;
+/** Files waiting to go with the next message. */
+let files: string[] = [];
+const filesEl = $("files");
+const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
+
+function chip(path: string, onRemove?: () => void): HTMLElement {
+  const el = h("span", { class: "chip", title: path }, icon(TABLER.fileText, 14), h("span", { text: baseName(path) }));
+  if (onRemove) el.append(h("button", { type: "button", title: "Quitar", "aria-label": "Quitar", onclick: onRemove }, icon(TABLER.x, 12)));
+  return el;
+}
+
+function drawFiles() {
+  filesEl.hidden = !files.length;
+  filesEl.replaceChildren(...files.map((f) => chip(f, () => { files = files.filter((x) => x !== f); drawFiles(); render(); })));
+}
+
+function attach(paths: string[]) {
+  for (const p of paths) if (!files.includes(p)) files.push(p);
+  drawFiles();
+  render();
+}
 let streaming = false;
 /** The answer being written. */
 let live: { view: AnswerView; author: HTMLElement; activity: HTMLElement; actions: HTMLElement; text: string; sources: ChatSource[] } | null = null;
 
 const icon = (path: string, size = 16) => svg(path, size, { fill: "none", stroke: "currentColor", "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round" });
 $("new").append(icon(TABLER.edit));
+$("attach").append(icon(TABLER.paperclip));
 $("history").append(icon(TABLER.history));
 $("close").append(icon(TABLER.x));
 
@@ -51,20 +73,25 @@ function activityFor(tool: string, summary: string): Activity {
   return { icon: TABLER.dots, text: "Trabajando…" };
 }
 
-function addUser(text: string) {
+function addUser(text: string, attached: string[] = []) {
+  if (attached.length) list.append(h("div", { class: "msg-files" }, ...attached.map((f) => chip(f))));
   list.append(h("div", { class: "msg-user", text }));
 }
 
-/** Buddy's face, the agent's name and the mark of the service that wrote the answer, with tooltips. */
-function setAuthor(el: HTMLElement, name: string, provider?: string | null) {
+/** Buddy's face and the agent's name, with tooltips. */
+function setAuthor(el: HTMLElement, name: string) {
   const face = h("img", { class: "avatar", alt: "", title: name === "Buddy" ? "Buddy" : `${name}, del equipo de Buddy` });
   void buddyFace().then((url) => { if (url) face.setAttribute("src", url); });
+  el.replaceChildren(face, h("span", { text: name }));
+}
+
+/** The mark of the service that wrote the answer, after the copy and redo buttons. */
+function setMark(actions: HTMLElement, provider?: string | null) {
+  actions.querySelector(".provider")?.remove();
   const mark = provider ? PROVIDER_MARKS[provider] : undefined;
-  const markEl = mark
-    ? h("span", { class: "provider", title: mark.label, "aria-label": mark.label, style: mark.color ? `color:${mark.color}` : "" },
-        svg(mark.path, 12, { fill: "currentColor" }))
-    : null;
-  el.replaceChildren(face, h("span", { text: name }), ...(markEl ? [markEl] : []));
+  if (!mark) return;
+  actions.append(h("span", { class: "provider", title: mark.label, "aria-label": mark.label, style: mark.color ? `color:${mark.color}` : "" },
+    svg(mark.path, 12, { fill: "currentColor" })));
 }
 
 /** Copy (and, on the last answer, write again) under an answer. */
@@ -92,13 +119,14 @@ function failure(text: string) {
 
 function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false) {
   const authorEl = h("div", { class: "msg-author" });
-  setAuthor(authorEl, name, provider);
+  setAuthor(authorEl, name);
   const activityEl = h("div", { class: "activity", role: "status" });
   activityEl.hidden = true;
   const wrap = h("div", { class: "msg-assistant" }, authorEl, activityEl);
   const view = new AnswerView();
   const state = { text };
   const actions = actionsFor(() => state.text);
+  setMark(actions, provider);
   if (failed) wrap.append(failure(text));
   else {
     view.update(text, { sources });
@@ -114,7 +142,7 @@ function render() {
   panel.hidden = list.childElementCount === 0;
   send.replaceChildren(icon(streaming ? TABLER.playerStop : TABLER.arrowUp, 16));
   send.title = streaming ? "Detener la respuesta" : "Enviar (Enter)";
-  send.disabled = !streaming && !input.value.trim();
+  send.disabled = !streaming && !input.value.trim() && !files.length;
   const first = list.querySelector(".msg-user")?.textContent ?? "Buddy";
   $("title").textContent = first.split("\n")[0]!;
   list.scrollTop = list.scrollHeight;
@@ -125,16 +153,20 @@ async function submit() {
     if (chatId) await invoke("cancel_chat", { chatId });
     return;
   }
-  const text = input.value.trim();
-  if (!text) return;
+  let text = input.value.trim();
+  if (!text && !files.length) return;
+  if (!text) text = files.length === 1 ? "Revisa este archivo." : "Revisa estos archivos.";
+  const sending = files;
+  files = [];
+  drawFiles();
   input.value = "";
   autosize();
-  addUser(text);
+  addUser(text, sending);
   startLive();
   streaming = true;
   render();
   try {
-    chatId = await invoke<string>("send_message", { chatId, text });
+    chatId = await invoke<string>("send_message", { chatId, text, attachments: sending });
   } catch (e) {
     finish(`No se pudo enviar: ${e}`);
   }
@@ -184,7 +216,8 @@ function onCore(event: CoreEvent) {
   switch (event.type) {
     case "chatStarted": {
       const e = event as Extract<CoreEvent, { type: "chatStarted" }>;
-      setAuthor(live.author, e.agentName, e.provider);
+      setAuthor(live.author, e.agentName);
+      setMark(live.actions, e.provider);
       if (!live.text) {
         setActivity(live.activity, e.agent === "buddy" ? THINKING : { icon: TABLER.gitBranch, text: `Buddy le pasa la tarea a ${e.agentName}…` });
       }
@@ -228,7 +261,7 @@ async function openChat(id: string) {
   live = null;
   list.textContent = "";
   for (const m of messages) {
-    if (m.role === "user") addUser(m.text);
+    if (m.role === "user") addUser(m.text, m.attachments ?? []);
     else {
       const sources = m.sources.map((s) => makeSource(s.title, s.url)).filter((s): s is ChatSource => !!s);
       addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed);
@@ -290,13 +323,12 @@ void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));
 void listen<string>("open-chat", ({ payload }) => void openChat(payload));
-// Files dropped on the top bar: a new chat with them in the field.
-void listen<string>("prefill", ({ payload }) => {
+// Files dropped on the top bar: a new chat with them attached.
+void listen<string[]>("attach", ({ payload }) => {
   newChat();
-  input.value = payload;
-  autosize();
-  render();
+  attach(payload);
   input.focus();
 });
+$("attach").addEventListener("click", () => void invoke<string[]>("pick_files").then(attach));
 render();
 input.focus();

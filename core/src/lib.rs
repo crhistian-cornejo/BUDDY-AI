@@ -156,8 +156,9 @@ impl BuddyCore {
     }
 
     /// Sends a message to Buddy; the answer arrives as events. Returns the chat id (a new one when `chat_id` is None).
-    pub fn send_message(&self, chat_id: Option<String>, text: String) -> Result<String, CoreError> {
-        self.chat.send(chat_id, text)
+    /// `attachments` are paths the user chose (dropped, picked): they are copied into Buddy's own folder first.
+    pub fn send_message(&self, chat_id: Option<String>, text: String, attachments: Vec<String>) -> Result<String, CoreError> {
+        self.chat.send(chat_id, text, attachments)
     }
 
     /// Stops the answer being written in that chat.

@@ -38,6 +38,8 @@ struct LiveMessage: Identifiable, Equatable, Sendable {
     /// Who answered ("Buddy", "PARLEY") and with which provider ("claude", "codex").
     var author: String?
     var provider: String?
+    /// Files attached to a user message (Buddy's copies).
+    var files: [String] = []
     /// What the agent is doing right now, with its symbol. Never saved.
     var activity: ChatActivity?
     var failed = false
@@ -56,6 +58,8 @@ struct ChatActivity: Equatable, Sendable {
             return ChatActivity(symbol: "magnifyingglass", text: summary.isEmpty ? "Buscando en la web…" : "Buscando: \(summary)")
         case "WebFetch":
             return ChatActivity(symbol: "doc.text.magnifyingglass", text: "Leyendo \(WebHost.of(summary) ?? "una página")…")
+        case "Read":
+            return ChatActivity(symbol: "doc.text.magnifyingglass", text: "Leyendo el archivo…")
         case "Cambio":
             return ChatActivity(symbol: "arrow.left.arrow.right", text: summary)
         default:

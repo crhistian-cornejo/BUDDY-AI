@@ -39,6 +39,17 @@ final class NotchModel {
     var dropped: [URL] = []
     /// Files are being dragged over the island.
     var dragging = false
+    /// Buddy is answering in the chat (the ears show it while the chat is closed).
+    var buddyBusy = false
+    /// What a player says is playing, from its own change notifications (no polling): for the ears.
+    var earTrack: EarTrack?
+
+    struct EarTrack: Equatable {
+        var title: String
+        var artist: String
+        var app: String
+        var playing: Bool
+    }
     @ObservationIgnored private var queue: [Notice] = []
     @ObservationIgnored private var dismissTask: Task<Void, Never>?
 

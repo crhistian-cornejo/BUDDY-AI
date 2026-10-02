@@ -11,6 +11,8 @@ final class ChatController {
     private(set) var streaming = false
     private(set) var recent: [ChatSummary] = []
     var draft = ""
+    /// Files waiting to go with the next message.
+    var attachments: [URL] = []
 
     @ObservationIgnored private let core: BuddyCore
 
@@ -27,15 +29,26 @@ final class ChatController {
         return line.count > 48 ? String(line.prefix(48)) + "…" : line
     }
 
+    func attach(_ urls: [URL]) {
+        for url in urls where !attachments.contains(url) { attachments.append(url) }
+    }
+
+    func detach(_ url: URL) {
+        attachments.removeAll { $0 == url }
+    }
+
     func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !attachments.isEmpty else { return }
+        if text.isEmpty { text = attachments.count == 1 ? "Revisa este archivo." : "Revisa estos archivos." }
+        let files = attachments
         draft = ""
-        messages.append(LiveMessage(role: "user", content: text))
+        attachments = []
+        messages.append(LiveMessage(role: "user", content: text, files: files.map(\.path)))
         messages.append(LiveMessage(role: "assistant", content: "", isStreaming: true, author: "Buddy", activity: .thinking))
         streaming = true
         do {
-            chatID = try core.sendMessage(chatId: chatID, text: text)
+            chatID = try core.sendMessage(chatId: chatID, text: text, attachments: files.map(\.path))
         } catch {
             finish(failure: "No se pudo enviar: \(error)")
         }
@@ -85,6 +98,7 @@ final class ChatController {
                         sources: m.sources.compactMap { ChatSource.make(title: $0.title, url: $0.url) },
                         author: m.role == "assistant" ? (agents[m.agent] ?? m.agent) : nil,
                         provider: m.provider,
+                        files: m.attachments,
                         failed: m.failed)
         }
     }

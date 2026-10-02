@@ -61,6 +61,8 @@ struct HistorySearchView: View {
     @State private var query = ""
     @State private var results: [ChatSummary] = []
     @State private var selected: String?
+    /// Set only by the arrow keys: scrolling after a hover would move the rows under the pointer and loop.
+    @State private var keyboardTarget: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -110,7 +112,7 @@ struct HistorySearchView: View {
                         }
                         .padding(8)
                     }
-                    .onChange(of: selected) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
+                    .onChange(of: keyboardTarget) { _, id in if let id { proxy.scrollTo(id) } }
                 }
             }
         }
@@ -172,7 +174,9 @@ struct HistorySearchView: View {
         let list = ordered
         guard !list.isEmpty else { return }
         let index = list.firstIndex { $0.id == selected } ?? -step
-        selected = list[min(max(index + step, 0), list.count - 1)].id
+        let next = list[min(max(index + step, 0), list.count - 1)].id
+        selected = next
+        keyboardTarget = next
     }
 
     private func openSelected() {

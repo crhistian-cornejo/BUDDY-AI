@@ -116,10 +116,7 @@ impl Provider for Codex {
         session.drain();
         let turn = session.request(
             "turn/start",
-            json!({
-                "threadId": session.thread_id,
-                "input": [{ "type": "text", "text": request.prompt, "text_elements": [] }],
-            }),
+            json!({ "threadId": session.thread_id, "input": turn_input(request) }),
         );
         let turn_id = match turn.ok().and_then(|t| t["turn"]["id"].as_str().map(str::to_string)) {
             Some(id) => id,
@@ -148,6 +145,18 @@ impl Provider for Codex {
             }
         }
     }
+}
+
+/// The text, plus attached images as `localImage` items (other files are named in the text and read from disk).
+pub fn turn_input(request: &TurnRequest) -> Value {
+    let mut input = vec![json!({ "type": "text", "text": request.prompt, "text_elements": [] })];
+    for path in &request.attachments {
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if ["png", "jpg", "jpeg", "gif", "webp"].contains(&ext.as_str()) {
+            input.push(json!({ "type": "localImage", "path": path }));
+        }
+    }
+    Value::Array(input)
 }
 
 /// What one app-server notification means for the turn `turn_id`.
@@ -320,6 +329,17 @@ mod tests {
             TurnEvent::Failed(f) if f.kind == FailureKind::Limit
         ));
         assert!(turn_events("error", &json!({ "willRetry": true, "error": { "message": "x" } }), "t").is_empty());
+    }
+
+    #[test]
+    fn images_go_as_local_images() {
+        let input = turn_input(&TurnRequest {
+            prompt: "mira".into(),
+            attachments: vec!["/a/foto.PNG".into(), "/a/notas.txt".into()],
+            ..Default::default()
+        });
+        assert_eq!(input.as_array().unwrap().len(), 2);
+        assert_eq!(input[1]["type"], "localImage");
     }
 
     #[test]

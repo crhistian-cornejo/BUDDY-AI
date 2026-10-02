@@ -70,4 +70,6 @@ export const TABLER = {
   playerSkipBack: "M20 5v14l-12 -7z M4 5l0 14",
   /** player-skip-forward */
   playerSkipForward: "M4 5v14l12 -7z M20 5l0 14",
+  /** music */
+  musicNote: "M3 17a3 3 0 1 0 6 0a3 3 0 0 0 -6 0 M9 17v-13h10v13 M9 8h10",
 } as const;

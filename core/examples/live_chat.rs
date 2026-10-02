@@ -8,7 +8,7 @@ fn main() {
     let core = BuddyCore::open(&dir).expect("core");
     let rx = core.events();
     let start = std::time::Instant::now();
-    let chat = core.send_message(None, question).expect("send");
+    let chat = core.send_message(None, question, std::env::var("BUDDY_ATTACH").map(|a| vec![a]).unwrap_or_default()).expect("send");
     while let Ok(event) = rx.recv() {
         let end = matches!(&event, Event::MascotState { state } if ["done", "error", "idle"].contains(&state.as_str()));
         match &event {

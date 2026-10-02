@@ -18,6 +18,8 @@
         <div id="messages" role="log" aria-live="polite"></div>
       </section>
       <form id="composer" class="card" autocomplete="off">
+        <div id="files" hidden></div>
+        <button type="button" id="attach" class="ghost" title="Adjuntar archivos (imágenes, PDF, texto)" aria-label="Adjuntar archivos"></button>
         <textarea id="input" rows="1" placeholder="Pregúntale a Buddy" aria-label="Mensaje para Buddy"></textarea>
         <button type="submit" id="send" class="primary" title="Enviar (Enter)" aria-label="Enviar"></button>
       </form>

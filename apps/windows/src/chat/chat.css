@@ -146,6 +146,8 @@ button {
 
 .provider {
   display: inline-grid;
+  align-self: center;
+  margin-left: 6px;
   color: var(--color-text);
 }
 
@@ -198,10 +200,52 @@ button {
 
 #composer {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
-  padding: 8px 8px 8px 16px;
+  padding: 8px;
   border-radius: 22px;
+}
+
+#files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 200px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--color-surface-raised);
+  font-size: 12px;
+}
+
+.chip span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: none;
+  color: var(--color-text-muted);
+  padding: 0;
+}
+
+.msg-files {
+  align-self: flex-end;
+  display: flex;
+  gap: 6px;
+  margin-bottom: -10px;
 }
 
 #input {

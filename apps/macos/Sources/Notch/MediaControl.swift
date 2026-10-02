@@ -312,6 +312,12 @@ enum MediaControl {
         runScript(controlScript(action, for: player)) != nil
     }
 
+    /// Jumps the player to `seconds` into the track (blocking: off the main thread). Buddy addition.
+    @discardableResult
+    static func seek(toSeconds seconds: Double, in player: MediaPlayer) -> Bool {
+        runScript("tell application id \"\(player.bundleID)\" to set player position to \(max(0, seconds))") != nil
+    }
+
     /// Sets the shown player's own volume (blocking: off the main thread). False when the script failed or timed out.
     @discardableResult
     static func setVolume(_ percent: Int, to player: MediaPlayer) -> Bool {
@@ -403,6 +409,17 @@ final class MediaWatcher {
         guard timer != nil, let shown = last, let player = MediaPlayer(bundleID: shown.bundleID) else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             MediaControl.send(action, to: player)
+            DispatchQueue.main.async {
+                Task { @MainActor [weak self] in self?.poll() }
+            }
+        }
+    }
+
+    /// Moves the shown track to `ms` (the progress bar). Buddy addition.
+    func seek(toMs ms: Int) {
+        guard timer != nil, let shown = last, let player = MediaPlayer(bundleID: shown.bundleID) else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            MediaControl.seek(toSeconds: Double(ms) / 1000, in: player)
             DispatchQueue.main.async {
                 Task { @MainActor [weak self] in self?.poll() }
             }

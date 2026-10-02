@@ -21,6 +21,7 @@ type CoreEvent =
   | { type: "sessionUpdate"; sessionId: string; agent: string; project: string; state: string }
   | { type: "focusChanged"; running: boolean; endsAt: number }
   | { type: "focusFinished"; minutes: number }
+  | { type: "mascotState"; state: string }
   | { type: string };
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -50,6 +51,8 @@ let dropped: string[] = [];
 let dragging = false;
 let tick = 0;
 let hooksConnected = false;
+/** Buddy is answering in the chat (shown beside the bar while the chat is closed). */
+let buddyBusy = false;
 const pendingApproval = new Map<string, string>();
 
 const agentName = (agent: string) => (agent === "codex" ? "Codex" : agent === "buddy" ? "Buddy" : "Claude Code");
@@ -78,23 +81,46 @@ function render() {
   dropEl.hidden = m !== "drop";
   const active = activeSession();
   const focusing = !!focus?.running;
-  ears.hidden = m !== "idle" || (!active && !focusing);
+  const ear = earKind();
+  ears.hidden = m !== "idle" || ear === "none";
   if (m === "idle") drawEars(active);
   if (m === "notice") drawNotice();
   if (m === "open") drawOverview();
   if (m === "drop") drawDrop();
   // A countdown or a playing track redraws once a second, only while it is on screen.
   window.clearInterval(tick);
-  if ((m === "open" && (focusing || track?.status === "playing")) || (m === "idle" && focusing && !active)) {
+  if ((m === "open" && (focusing || track?.status === "playing")) || (m === "idle" && ear === "focus")) {
     tick = window.setInterval(() => (m === "open" ? drawOverview() : drawEars(active)), 1000);
   }
   requestAnimationFrame(() => {
-    const size = m === "idle" ? (active || focusing ? EARS : PILL) : { width: WIDTH[m], height: Math.ceil(island.scrollHeight) };
+    const size = m === "idle" ? (ear !== "none" ? EARS : PILL) : { width: WIDTH[m], height: Math.ceil(island.scrollHeight) };
     void invoke("bar_resize", size);
   });
 }
 
+/** What sits beside the bar at rest, by priority: an agent, Buddy answering, the focus countdown, the music playing. */
+function earKind(): "session" | "buddy" | "focus" | "music" | "none" {
+  if (activeSession()) return "session";
+  if (buddyBusy) return "buddy";
+  if (focus?.running) return "focus";
+  if (track?.status === "playing") return "music";
+  return "none";
+}
+
 function drawEars(active: Session | undefined) {
+  const kind = earKind();
+  if (kind === "buddy") {
+    $("ear-left").replaceChildren(h("span", { style: "display:inline-grid" }, icon(TABLER.sparkles, 14)));
+    $("ear-right").replaceChildren(h("span", { class: "thinking" }, h("i"), h("i"), h("i")));
+    ears.title = "Buddy está respondiendo";
+    return;
+  }
+  if (kind === "music" && track) {
+    $("ear-left").replaceChildren(h("span", { style: "color:#22c55e;display:inline-grid" }, icon(TABLER.musicNote, 14)));
+    $("ear-right").replaceChildren(h("span", { class: "eq" }, h("i"), h("i"), h("i")));
+    ears.title = `${track.title} · ${track.artist}`;
+    return;
+  }
   if (active) {
     $("ear-left").replaceChildren(providerMark(active.agent, 14));
     $("ear-right").replaceChildren(h("span", { class: `dot ${active.state}` }));
@@ -290,6 +316,12 @@ function onCore(e: CoreEvent) {
       closeApproval(id);
       break;
     }
+    case "mascotState": {
+      const state = (e as Extract<CoreEvent, { type: "mascotState" }>).state;
+      const busy = state === "think" || state === "work";
+      if (busy !== buddyBusy) { buddyBusy = busy; render(); }
+      break;
+    }
     case "focusChanged":
       void invoke<FocusStatus>("focus_status").then((f) => { focus = f.running ? f : null; render(); });
       break;
@@ -335,16 +367,11 @@ async function refreshHooks() {
 island.addEventListener("mouseenter", () => {
   hovering = true;
   window.clearTimeout(dismissTimer);
-  if (!notice) {
-    void refreshHooks();
-    void invoke("media_watch", { on: true });
-    void invoke<NowPlaying | null>("media_now_playing").then((t) => { track = t; trackAt = Date.now(); render(); });
-  }
+  if (!notice) void refreshHooks();
   render();
 });
 island.addEventListener("mouseleave", () => {
   hovering = false;
-  void invoke("media_watch", { on: false });
   if (notice && notice.kind !== "approval") dismissTimer = window.setTimeout(dismiss, 2000);
   render();
 });
@@ -364,7 +391,10 @@ void getCurrentWebview().onDragDropEvent(({ payload }) => {
 });
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));
-void listen<NowPlaying | null>("media-changed", ({ payload }) => { track = payload; trackAt = Date.now(); if (hovering) render(); });
+// Windows raises its own media events, so the bar listens all the time (the worker sleeps between them: no polling).
+void listen<NowPlaying | null>("media-changed", ({ payload }) => { track = payload; trackAt = Date.now(); render(); });
+void invoke("media_watch", { on: true });
+void invoke<NowPlaying | null>("media_now_playing").then((t) => { track = t; trackAt = Date.now(); render(); });
 void Promise.all([
   invoke<{ sessionId: string; agent: string; project: string; state: string }[]>("sessions").catch(() => []),
   invoke<FocusStatus>("focus_status").catch(() => null),

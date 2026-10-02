@@ -53,6 +53,7 @@ final class NotchController {
             self?.model.nowPlayingAt = Date()
         }
         model.focus = core.focusStatus().running ? core.focusStatus() : nil
+        watchPlayers()
         model.shortcuts = (try? core.shortcuts()) ?? []
         observe()
         let handler: (NSEvent) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.pointerMoved() } }
@@ -87,6 +88,8 @@ final class NotchController {
         case let .approvalClosed(requestId):
             approvalSessions[requestId] = nil
             model.closeApproval(requestId)
+        case let .mascotState(state):
+            model.buddyBusy = state == "think" || state == "work"
         case let .focusChanged(running, _):
             model.focus = running ? core.focusStatus() : nil
         case let .focusFinished(minutes):
@@ -180,6 +183,7 @@ final class NotchController {
                       },
                       connect: { [weak self] in self?.connectHooks() },
                       media: { [weak self] action in self?.media.send(action) },
+                      seek: { [weak self] ms in self?.media.seek(toMs: ms) },
                       focusStart: { [weak self] minutes in _ = self?.core.focusStart(minutes: minutes) },
                       focusStop: { [weak self] in self?.core.focusStop() },
                       openShortcut: { [weak self] item in self?.open(item) },
@@ -205,6 +209,36 @@ final class NotchController {
                           self?.model.dragging = false
                           if !urls.isEmpty { self?.model.dropped = urls }
                       }))
+    }
+
+    // MARK: Music for the ears
+
+    /// Spotify and Music announce every change themselves: the ears follow those notices, no polling. One reading at
+    /// launch (only if a player is already running) fills them until the first notice.
+    private func watchPlayers() {
+        let center = DistributedNotificationCenter.default()
+        for (name, app) in [("com.spotify.client.PlaybackStateChanged", "Spotify"), ("com.apple.Music.playerInfo", "Música")] {
+            center.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] note in
+                let info = note.userInfo ?? [:]
+                let state = info["Player State"] as? String ?? ""
+                let title = info["Name"] as? String ?? ""
+                let artist = info["Artist"] as? String ?? ""
+                MainActor.assumeIsolated {
+                    self?.model.earTrack = state.isEmpty || state == "Stopped" ? nil
+                        : NotchModel.EarTrack(title: title, artist: artist, app: app, playing: state == "Playing")
+                }
+            }
+        }
+        let players = MediaControl.runningPlayers()
+        guard !players.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let reading = MediaControl.read(players)
+            Task { @MainActor in
+                guard let self, self.model.earTrack == nil, let reading else { return }
+                self.model.earTrack = .init(title: reading.title, artist: reading.artist, app: reading.app,
+                                            playing: reading.status == .playing)
+            }
+        }
     }
 
     // MARK: Tools
@@ -257,6 +291,8 @@ final class NotchController {
             _ = model.shortcuts
             _ = model.dropped
             _ = model.dragging
+            _ = model.buddyBusy
+            _ = model.earTrack
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -294,9 +330,10 @@ final class NotchController {
             guard let preview = try? core.hooksPreview(agent: status.agent, install: true) else { continue }
             let confirm = NSAlert()
             confirm.messageText = "¿Conectar \(status.name) con Buddy?"
-            confirm.informativeText = "Buddy añadirá sus avisos a \(preview.path) y guardará antes una copia. "
-                + "No toca nada más de tu configuración; puedes quitarlos cuando quieras.\n\n"
-                + String(preview.diff.prefix(1200))
+            confirm.informativeText = "Buddy añadirá sus avisos (inicio y fin de sesión, permisos, notificaciones) a "
+                + "\((preview.path as NSString).abbreviatingWithTildeInPath). Antes guarda una copia del archivo, "
+                + "no toca tus otros hooks y puedes quitarlos cuando quieras."
+            confirm.accessoryView = Self.diffView(preview.diff)
             confirm.addButton(withTitle: "Conectar")
             confirm.addButton(withTitle: "Cancelar")
             NSApp.activate()
@@ -309,6 +346,20 @@ final class NotchController {
         }
         refreshHooks()
         host?.rootView = view()
+    }
+
+    /// The exact change, in a small scrolling box (the alert itself stays short, its buttons always in view).
+    private static func diffView(_ diff: String) -> NSView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 460, height: 220)
+        scroll.borderType = .bezelBorder
+        if let text = scroll.documentView as? NSTextView {
+            text.isEditable = false
+            text.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+            text.textContainerInset = NSSize(width: 6, height: 6)
+            text.string = diff
+        }
+        return scroll
     }
 
     private func alert(_ title: String, _ text: String) {

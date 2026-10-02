@@ -43,6 +43,8 @@ const MIGRATIONS: &[&str] = &[
         session_id TEXT NOT NULL,
         PRIMARY KEY (chat_id, agent, provider)
     );",
+    // v3: files attached to a message (paths of Buddy's own copies).
+    "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';",
 ];
 
 /// A web page an answer used.
@@ -76,6 +78,8 @@ pub struct ChatMessage {
     pub sources: Vec<SourceLink>,
     pub failed: bool,
     pub created_at: i64,
+    /// Buddy's copies of the files attached to this message.
+    pub attachments: Vec<String>,
 }
 
 /// What a new message carries.
@@ -87,6 +91,7 @@ pub struct NewMessage<'a> {
     pub text: &'a str,
     pub sources: &'a [SourceLink],
     pub failed: bool,
+    pub attachments: &'a [String],
 }
 
 pub struct Store {
@@ -197,9 +202,11 @@ impl Store {
 
     pub fn add_message(&self, m: NewMessage<'_>) -> Result<i64, CoreError> {
         let sources = serde_json::to_string(m.sources).unwrap_or_else(|_| "[]".into());
+        let attachments = serde_json::to_string(m.attachments).unwrap_or_else(|_| "[]".into());
         self.conn.execute(
-            "INSERT INTO messages (chat_id, role, agent, provider, text, sources, failed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![m.chat_id, m.role, m.agent, m.provider, m.text, sources, m.failed],
+            "INSERT INTO messages (chat_id, role, agent, provider, text, sources, failed, attachments)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![m.chat_id, m.role, m.agent, m.provider, m.text, sources, m.failed, attachments],
         )?;
         let id = self.conn.last_insert_rowid();
         self.conn.execute("UPDATE chats SET updated_at = unixepoch() WHERE id = ?1", params![m.chat_id])?;
@@ -220,7 +227,7 @@ impl Store {
 
     pub fn messages(&self, chat_id: &str) -> Result<Vec<ChatMessage>, CoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, role, agent, provider, text, sources, failed, created_at FROM messages WHERE chat_id = ?1 ORDER BY id",
+            "SELECT id, role, agent, provider, text, sources, failed, created_at, attachments FROM messages WHERE chat_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![chat_id], |r| {
             let sources: String = r.get(5)?;
@@ -233,6 +240,7 @@ impl Store {
                 sources: serde_json::from_str(&sources).unwrap_or_default(),
                 failed: r.get(6)?,
                 created_at: r.get(7)?,
+                attachments: serde_json::from_str(&r.get::<_, String>(8)?).unwrap_or_default(),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -347,7 +355,7 @@ mod tests {
         store.ensure_chat("c1", "otro título").unwrap();
         let src = [SourceLink { title: "SENAMHI".into(), url: "https://senamhi.gob.pe".into() }];
         let msg = |role, text, sources: &'static [SourceLink]| NewMessage {
-            chat_id: "c1", role, agent: "buddy", provider: Some("claude"), text, sources, failed: false,
+            chat_id: "c1", role, agent: "buddy", provider: Some("claude"), text, sources, failed: false, attachments: &[],
         };
         store.add_message(msg("user", "¿Llueve?", &[])).unwrap();
         let src: &'static [SourceLink] = Box::leak(Box::new(src));
@@ -370,7 +378,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         for (id, title, text) in [("a", "Clásico", "¿Quién gana el Madrid?"), ("b", "Clima", "Lluvia en Lima")] {
             store.ensure_chat(id, title).unwrap();
-            store.add_message(NewMessage { chat_id: id, role: "user", agent: "buddy", provider: None, text, sources: &[], failed: false }).unwrap();
+            store.add_message(NewMessage { chat_id: id, role: "user", agent: "buddy", provider: None, text, sources: &[], failed: false, attachments: &[] }).unwrap();
         }
         let ids = |q: &str| store.search_chats(q, 10).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>();
         assert_eq!(ids("CLASICO"), ["a"]);
