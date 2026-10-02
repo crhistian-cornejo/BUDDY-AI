@@ -9,6 +9,10 @@ fn main() {
     if let Ok(folder) = std::env::var("BUDDY_FOLDER") {
         core.add_folder(folder, false).expect("folder");
     }
+    if let Ok(relay) = std::env::var("BUDDY_RELAY") {
+        core.start_sessions(relay).expect("sessions");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
     let rx = core.events();
     if std::env::var("BUDDY_PREWARM").is_ok() {
         core.prewarm();
@@ -19,6 +23,10 @@ fn main() {
     let chat = core.send_message(None, question, std::env::var("BUDDY_ATTACH").map(|a| vec![a]).unwrap_or_default()).expect("send");
     while let Ok(event) = rx.recv() {
         let end = matches!(&event, Event::MascotState { state } if ["done", "error", "idle"].contains(&state.as_str()));
+        if let Event::ApprovalRequest { request_id, summary, .. } = &event {
+            println!("\n¿Permitir «{summary}»? (prueba: sí)");
+            core.answer_approval(request_id.clone(), true);
+        }
         match &event {
             Event::ChatDelta { .. } => {
                 if first.is_none() {

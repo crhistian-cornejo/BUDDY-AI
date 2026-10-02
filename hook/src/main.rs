@@ -18,11 +18,16 @@
 //!
 //! Wire protocol: one JSON line from us; for `PermissionRequest` the server answers one line (`allow` or `deny`)
 //! on the same connection.
+//!
+//! The same binary is also a stdio MCP server: `buddy-hook --mcp [--out <dir>]` gives the agents Buddy runs the
+//! Office tools (Word, Excel, PowerPoint), writing only inside `<dir>` (see `mcp`).
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
+mod mcp;
+mod office;
 mod transport;
 #[cfg(windows)]
 mod win;
@@ -70,7 +75,14 @@ fn parse_args(args: &[String]) -> (Agent, String) {
 }
 
 fn main() {
-    let Some((payload, event)) = read_event() else { std::process::exit(0) };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--mcp") {
+        std::process::exit(mcp::main(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("--gate") {
+        run_gate();
+    }
+    let Some((payload, event)) = read_event(&args) else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
@@ -93,6 +105,48 @@ fn main() {
     std::process::exit(0);
 }
 
+/// The PreToolUse output of the gate (Buddy's own agents, `buddy-hook --gate PreToolUse`). Here silence is not
+/// an option: the command runs only if Buddy answers `allow`; anything else, including no answer, is a denial with
+/// the reason Claude Code shows the model. Ported from MIKA's `mika-hook --gate` (MIT, revision d050bc5).
+fn gate_json(answer: Option<&str>) -> String {
+    let (decision, reason) = match answer.map(str::trim) {
+        Some("allow") => ("allow", "Aprobado por el usuario en Buddy"),
+        Some("deny") => ("deny", "El usuario denegó el comando en Buddy: no se ejecutó"),
+        _ => ("deny", "Buddy no respondió: el comando no se ejecutó"),
+    };
+    format!(
+        r#"{{"hookSpecificOutput":{{"hookEventName":"PreToolUse","permissionDecision":"{decision}","permissionDecisionReason":"{reason}"}}}}"#
+    )
+}
+
+/// The gate: forwards the hook with this run's secret (BUDDY_GATE_TOKEN, set only on the `claude` processes Buddy
+/// starts), waits for the word and prints the verdict. Always exits here.
+fn run_gate() -> ! {
+    let verdict = |answer: Option<String>| -> ! {
+        let mut out = std::io::stdout();
+        let _ = writeln!(out, "{}", gate_json(answer.as_deref()));
+        let _ = out.flush();
+        std::process::exit(0)
+    };
+    let token = std::env::var("BUDDY_GATE_TOKEN").unwrap_or_default();
+    let mut raw = Vec::new();
+    if token.trim().is_empty() || std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
+        verdict(None)
+    }
+    let Some((payload, event)) = prepare(raw, Agent::Claude, "PreToolUse".into()) else { verdict(None) };
+    if event != "PreToolUse" {
+        verdict(None)
+    }
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(payload.trim_end()) else { verdict(None) };
+    json["_gate"] = serde_json::Value::String(token);
+    let line = format!("{json}\n");
+    let (tx, rx) = mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(talk(&line, true));
+    });
+    verdict(rx.recv_timeout(DECISION_BUDGET).ok().flatten())
+}
+
 /// The documented PermissionRequest output. Anything we do not recognise prints nothing at all rather than
 /// guessing — silence is the safe answer.
 ///
@@ -109,14 +163,13 @@ fn decision_json(decision: &str) -> Option<String> {
     Some(format!(r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{behavior}}}}}"#))
 }
 
-/// Reads stdin and argv, and returns the payload to forward plus the event name.
-fn read_event() -> Option<(String, String)> {
+/// Reads stdin, and returns the payload to forward plus the event name (`args` is argv without the program).
+fn read_event(args: &[String]) -> Option<(String, String)> {
     let mut raw = Vec::new();
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         return None;
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let (agent, arg_event) = parse_args(&args);
+    let (agent, arg_event) = parse_args(args);
     prepare(raw, agent, arg_event)
 }
 
@@ -141,8 +194,9 @@ fn prepare(mut raw: Vec<u8>, agent: Agent, arg_event: String) -> Option<(String,
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
     // Always overwritten: whatever the agent sent under this name, argv decides.
     map.insert("_agent".into(), serde_json::Value::String(agent.tag().into()));
-    // Only the relay may say a payload was cut.
+    // Only the relay may say a payload was cut, and only gate mode may carry a secret.
     map.remove("_truncated");
+    map.remove("_gate");
 
     for field in DROPPED_FIELDS {
         map.remove(*field);
@@ -383,5 +437,19 @@ mod tests {
         let mut cut = false;
         truncate_strings(&mut v, "", &mut cut);
         assert!(!cut);
+    }
+
+    #[test]
+    fn the_gate_allows_only_on_an_explicit_allow() {
+        assert!(gate_json(Some("allow\n")).contains(r#""permissionDecision":"allow""#));
+        for answer in [Some("deny"), Some("maybe"), None] {
+            assert!(gate_json(answer).contains(r#""permissionDecision":"deny""#), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn a_forwarded_payload_never_carries_a_secret() {
+        let (line, _) = prepare(br#"{"hook_event_name":"Stop","_gate":"robado"}"#.to_vec(), Agent::Claude, String::new()).unwrap();
+        assert!(!line.contains("robado"));
     }
 }

@@ -76,6 +76,16 @@ fn normalize(path: &str) -> Result<String, CoreError> {
     Ok(text)
 }
 
+/// The note about Buddy's Office tools (create_document / create_spreadsheet / create_presentation).
+pub fn office_note(dir: &std::path::Path) -> String {
+    format!(
+        "\n\n## Documentos\nPuedes crear documentos de Word, hojas de Excel y presentaciones de PowerPoint con tus \
+herramientas create_document, create_spreadsheet y create_presentation. Se guardan en {} (nunca sobrescriben). \
+Cuando crees uno, di su nombre y dónde quedó.",
+        dir.display()
+    )
+}
+
 /// The note added to an agent's instructions: what it may touch.
 pub fn prompt_note(folders: &[AuthorizedFolder]) -> String {
     if folders.is_empty() {

@@ -78,6 +78,9 @@ impl Default for Codex {
 /// opens that behind Buddy's approval gate).
 pub fn thread_params(request: &TurnRequest) -> Value {
     let mut config = json!({ "web_search": "live" });
+    if let Some(office) = &request.office {
+        config["mcp_servers"] = json!({ "buddy": office.server() });
+    }
     if let Some(effort) = &request.effort {
         config["model_reasoning_effort"] = json!(effort);
     }

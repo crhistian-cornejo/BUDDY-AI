@@ -64,6 +64,25 @@ pub struct TurnRequest {
     pub folders: Vec<crate::folders::AuthorizedFolder>,
     /// When set, the agent may ask to run commands; each one waits for the user's click (see `sessions` gate).
     pub gate: Option<Gate>,
+    /// When set, the agent can create Word, Excel and PowerPoint files (Buddy's MCP server, `buddy-hook --mcp`).
+    pub office: Option<Office>,
+}
+
+/// Buddy's Office tools: the relay that serves them and the folder the files go to (never anywhere else).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Office {
+    pub relay: PathBuf,
+    pub dir: PathBuf,
+}
+
+impl Office {
+    /// The tool names as Claude Code exposes them.
+    pub const TOOLS: [&'static str; 3] =
+        ["mcp__buddy__create_document", "mcp__buddy__create_spreadsheet", "mcp__buddy__create_presentation"];
+
+    pub fn server(&self) -> serde_json::Value {
+        serde_json::json!({ "command": self.relay, "args": ["--mcp", "--out", self.dir] })
+    }
 }
 
 impl TurnRequest {

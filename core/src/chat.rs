@@ -61,6 +61,12 @@ impl ChatEngine {
         })
     }
 
+    /// Buddy's Office tools, when the relay that serves them is in place.
+    fn office(&self) -> Option<crate::providers::Office> {
+        let relay = self.gate.as_ref()?.relay_path();
+        relay.exists().then(|| crate::providers::Office { relay, dir: self.data_dir.join("documentos") })
+    }
+
     /// Plan figures reported during turns go here.
     pub fn with_usage(mut self, usage: Arc<crate::usage::Usage>) -> Self {
         self.usage = Some(usage);
@@ -184,10 +190,17 @@ impl ChatEngine {
             let Some(buddy) = agents.iter().find(|a| a.id == ORCHESTRATOR) else { return };
             let folders = crate::folders::list(&engine.lock()).unwrap_or_default();
             let request = TurnRequest {
-                system: format!("{}{}{}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders)),
+                system: format!(
+                    "{}{}{}{}",
+                    buddy.prompt,
+                    orchestrator::roster_prompt(&agents),
+                    crate::folders::prompt_note(&folders),
+                    engine.office().map(|o| crate::folders::office_note(&o.dir)).unwrap_or_default()
+                ),
                 workspace: orchestrator::workspace(&engine.data_dir, &buddy.id),
                 folders,
                 gate: engine.gate(),
+                office: engine.office(),
                 model: buddy.model.clone(),
                 effort: buddy.effort.clone(),
                 ..Default::default()
@@ -244,7 +257,8 @@ impl ChatEngine {
         prompt.push_str(&attachments_note(files));
         prompt.push_str(question);
         let folders = crate::folders::list(&self.lock()).unwrap_or_default();
-        let system = format!("{}{}{}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders));
+        let office = self.office().map(|o| crate::folders::office_note(&o.dir)).unwrap_or_default();
+        let system = format!("{}{}{}{office}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders));
         // Small talk goes to the light model (router); a hand-off still works from there.
         let router_on = self.lock().setting(crate::router::SETTING).ok().flatten().as_deref() != Some("false");
         let mut buddy_turn = buddy.clone();
@@ -261,7 +275,7 @@ impl ChatEngine {
             Some((id, task)) if answer.failure.is_none() && !cancel.is_cancelled() => {
                 let specialist = agents.iter().find(|a| a.id == id).cloned().expect("parse_handoff checks known ids");
                 let prompt = attachments_note(files) + &orchestrator::task_prompt(&specialist.name, &task, question);
-                let system = format!("{}{}", specialist.prompt, crate::folders::prompt_note(&folders));
+                let system = format!("{}{}{office}", specialist.prompt, crate::folders::prompt_note(&folders));
                 let answer = self.run_agent(chat_id, &specialist, &prompt, &system, files, cancel, false);
                 (specialist, answer)
             }
@@ -361,6 +375,7 @@ impl ChatEngine {
                 attachments: files.to_vec(),
                 folders,
                 gate: self.gate(),
+                office: self.office(),
             };
             let mut text = String::new();
             let mut shown = 0usize;

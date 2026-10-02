@@ -100,16 +100,25 @@ impl Claude {
             "--include-partial-messages",
             // `--safe-mode` turns every hook off, the gate's too; `--restricted` ignores the user's settings files
             // but keeps the `--settings` hook.
-            if request.gate.is_some() { "--restricted" } else { "--safe-mode" },
+            // (and MCP servers, so Buddy's Office tools need it too).
+            if request.gate.is_some() || request.office.is_some() { "--restricted" } else { "--safe-mode" },
             "--strict-mcp-config",
-            "--mcp-config",
-            r#"{"mcpServers":{}}"#,
             "--permission-mode",
             "dontAsk",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
+        // Only Buddy's own MCP server, never the user's: the Office tools, pre-allowed (they write only in their folder).
+        let mcp = match &request.office {
+            Some(office) => serde_json::json!({ "mcpServers": { "buddy": office.server() } }).to_string(),
+            None => r#"{"mcpServers":{}}"#.to_string(),
+        };
+        let allowed = match &request.office {
+            Some(_) => format!("{allowed},{}", super::Office::TOOLS.join(",")),
+            None => allowed,
+        };
+        args.extend(["--mcp-config".into(), mcp]);
         args.extend(["--tools".into(), tools, "--allowedTools".into(), allowed]);
         for dir in &dirs {
             args.extend(["--add-dir".into(), dir.clone()]);
@@ -581,6 +590,21 @@ mod tests {
         let settings = &args[args.iter().position(|a| a == "--settings").unwrap() + 1];
         assert!(settings.contains("\\\"/d/bin/buddy-hook\\\" --gate PreToolUse") && settings.contains("\"matcher\":\"Bash\""), "{settings}");
         assert!(!joined.contains("\"t\""), "the secret travels in the environment, not the arguments");
+    }
+
+    #[test]
+    fn office_tools_come_from_buddys_own_mcp_server() {
+        let args = Claude::arguments(&TurnRequest {
+            office: Some(super::super::Office { relay: "/d/bin/buddy-hook".into(), dir: "/d/documentos".into() }),
+            ..Default::default()
+        });
+        let joined = args.join(" ");
+        assert!(joined.contains("--restricted"));
+        let mcp = &args[args.iter().position(|a| a == "--mcp-config").unwrap() + 1];
+        assert!(mcp.contains("\"buddy\"") && mcp.contains("--mcp") && mcp.contains("/d/documentos"), "{mcp}");
+        assert!(joined.contains("mcp__buddy__create_document,mcp__buddy__create_spreadsheet,mcp__buddy__create_presentation"));
+        let plain = Claude::arguments(&TurnRequest::default());
+        assert_eq!(plain[plain.iter().position(|a| a == "--mcp-config").unwrap() + 1], r#"{"mcpServers":{}}"#);
     }
 
     #[test]
