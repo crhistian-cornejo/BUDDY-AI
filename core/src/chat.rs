@@ -145,9 +145,11 @@ impl ChatEngine {
         std::thread::spawn(move || {
             let agents = engine.agents();
             let Some(buddy) = agents.iter().find(|a| a.id == ORCHESTRATOR) else { return };
+            let folders = crate::folders::list(&engine.lock()).unwrap_or_default();
             let request = TurnRequest {
-                system: format!("{}{}", buddy.prompt, orchestrator::roster_prompt(&agents)),
+                system: format!("{}{}{}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders)),
                 workspace: orchestrator::workspace(&engine.data_dir, &buddy.id),
+                folders,
                 model: buddy.model.clone(),
                 effort: buddy.effort.clone(),
                 ..Default::default()
@@ -203,7 +205,8 @@ impl ChatEngine {
         }
         prompt.push_str(&attachments_note(files));
         prompt.push_str(question);
-        let system = format!("{}{}", buddy.prompt, orchestrator::roster_prompt(&agents));
+        let folders = crate::folders::list(&self.lock()).unwrap_or_default();
+        let system = format!("{}{}{}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders));
         // Small talk goes to the light model (router); a hand-off still works from there.
         let router_on = self.lock().setting(crate::router::SETTING).ok().flatten().as_deref() != Some("false");
         let mut buddy_turn = buddy.clone();
@@ -220,7 +223,8 @@ impl ChatEngine {
             Some((id, task)) if answer.failure.is_none() && !cancel.is_cancelled() => {
                 let specialist = agents.iter().find(|a| a.id == id).cloned().expect("parse_handoff checks known ids");
                 let prompt = attachments_note(files) + &orchestrator::task_prompt(&specialist.name, &task, question);
-                let answer = self.run_agent(chat_id, &specialist, &prompt, &specialist.prompt, files, cancel, false);
+                let system = format!("{}{}", specialist.prompt, crate::folders::prompt_note(&folders));
+                let answer = self.run_agent(chat_id, &specialist, &prompt, &system, files, cancel, false);
                 (specialist, answer)
             }
             _ => {
@@ -302,15 +306,18 @@ impl ChatEngine {
                 provider: provider.id().as_str().into(),
             });
             let same_provider = provider.id() == agent.provider;
+            let folders = crate::folders::list(&self.lock()).unwrap_or_default();
+            let resume = self.lock().session(chat_id, &agent.id, provider.id().as_str()).ok().flatten();
             let request = TurnRequest {
                 prompt: prompt.into(),
                 system: system.into(),
                 workspace: orchestrator::workspace(&self.data_dir, &agent.id),
-                resume: self.lock().session(chat_id, &agent.id, provider.id().as_str()).ok().flatten(),
+                resume,
                 // A model name belongs to its provider; another provider uses its own default.
                 model: agent.model.clone().filter(|_| same_provider),
                 effort: agent.effort.clone(),
                 attachments: files.to_vec(),
+                folders,
             };
             let mut text = String::new();
             let mut shown = 0usize;

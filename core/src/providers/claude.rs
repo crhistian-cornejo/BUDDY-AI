@@ -63,22 +63,31 @@ impl Claude {
 
     /// `--safe-mode` ignores the user's hooks, plugins and CLAUDE.md (Buddy's own prompt rules); no MCP servers.
     pub fn arguments(request: &TurnRequest) -> Vec<String> {
-        // With attachments, Read is added, allowed only inside the folders that hold them.
-        let dirs: Vec<String> = {
-            let mut d: Vec<String> = request
-                .attachments
-                .iter()
-                .filter_map(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
-                .collect();
-            d.sort();
-            d.dedup();
-            d
-        };
-        let tools = if dirs.is_empty() { TOOLS.to_string() } else { format!("{TOOLS},Read") };
+        // Attachments and authorized folders add Read (and, for editable folders, Edit and Write), allowed only
+        // inside those folders; anything else is refused by `dontAsk`.
+        let mut reads: Vec<String> = request
+            .attachments
+            .iter()
+            .filter_map(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
+            .chain(request.folders.iter().map(|f| f.path.clone()))
+            .collect();
+        reads.sort();
+        reads.dedup();
+        let edits: Vec<&str> = request.folders.iter().filter(|f| f.can_edit).map(|f| f.path.as_str()).collect();
+        let mut tools = TOOLS.to_string();
+        if !reads.is_empty() {
+            tools.push_str(",Read,Glob,Grep");
+        }
+        if !edits.is_empty() {
+            tools.push_str(",Edit,Write");
+        }
+        let rule = |verb: &str, dir: &str| format!("{verb}(//{}/**)", dir.trim_start_matches('/'));
         let allowed = std::iter::once(TOOLS.to_string())
-            .chain(dirs.iter().map(|d| format!("Read(//{}/**)", d.trim_start_matches('/'))))
+            .chain(reads.iter().map(|d| rule("Read", d)))
+            .chain(edits.iter().flat_map(|d| [rule("Edit", d), rule("Write", d)]))
             .collect::<Vec<_>>()
             .join(",");
+        let dirs = reads;
         let mut args: Vec<String> = [
             "-p",
             "--output-format",
@@ -503,6 +512,22 @@ mod tests {
         assert_eq!(joined.matches("--add-dir /data/adjuntos/c1").count(), 1);
         let plain = Claude::arguments(&TurnRequest::default()).join(" ");
         assert!(!plain.contains("Read") && !plain.contains("--add-dir"));
+    }
+
+    #[test]
+    fn folders_allow_reading_and_editing_only_inside() {
+        let args = Claude::arguments(&TurnRequest {
+            folders: vec![
+                crate::folders::AuthorizedFolder { path: "/u/docs".into(), can_edit: false },
+                crate::folders::AuthorizedFolder { path: "/u/proyecto".into(), can_edit: true },
+            ],
+            ..Default::default()
+        })
+        .join(" ");
+        assert!(args.contains("--tools WebSearch,WebFetch,Read,Glob,Grep,Edit,Write"), "{args}");
+        assert!(args.contains("Read(//u/docs/**)") && args.contains("Read(//u/proyecto/**)"));
+        assert!(args.contains("Edit(//u/proyecto/**),Write(//u/proyecto/**)") && !args.contains("Edit(//u/docs"));
+        assert!(args.contains("--add-dir /u/docs") && args.contains("--add-dir /u/proyecto"));
     }
 
     #[test]

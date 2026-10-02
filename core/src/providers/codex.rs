@@ -81,9 +81,14 @@ pub fn thread_params(request: &TurnRequest) -> Value {
     if let Some(effort) = &request.effort {
         config["model_reasoning_effort"] = json!(effort);
     }
+    // Editable authorized folders become the only writable roots; otherwise nothing is writable.
+    let writable: Vec<&str> = request.folders.iter().filter(|f| f.can_edit).map(|f| f.path.as_str()).collect();
+    if !writable.is_empty() {
+        config["sandbox_workspace_write"] = json!({ "writable_roots": writable, "network_access": false });
+    }
     let mut params = json!({
         "cwd": request.workspace,
-        "sandbox": "read-only",
+        "sandbox": if writable.is_empty() { "read-only" } else { "workspace-write" },
         "approvalPolicy": "never",
         "developerInstructions": format!("{}\n\n{FORMAT}", request.system),
         "config": config,

@@ -6,6 +6,7 @@
 pub mod briefing;
 pub mod chat;
 pub mod events;
+pub mod folders;
 pub mod log;
 pub mod orchestrator;
 pub mod parley;
@@ -25,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 pub use chat::ChatEngine;
 pub use events::{Event, EventBus};
+pub use folders::AuthorizedFolder;
 pub use orchestrator::Agent;
 pub use providers::{ProviderId, ProviderStatus};
 pub use store::{ChatMessage, ChatSummary, SourceLink, TokenReport};
@@ -265,6 +267,19 @@ impl BuddyCore {
 
     pub fn focus_status(&self) -> FocusStatus {
         self.focus.status()
+    }
+
+    /// The folders the agents may use (read, or read and edit).
+    pub fn folders(&self) -> Result<Vec<AuthorizedFolder>, CoreError> {
+        self.with_store(folders::list)
+    }
+
+    pub fn add_folder(&self, path: String, can_edit: bool) -> Result<Vec<AuthorizedFolder>, CoreError> {
+        self.with_store(|s| folders::add(s, &path, can_edit))
+    }
+
+    pub fn remove_folder(&self, path: String) -> Result<Vec<AuthorizedFolder>, CoreError> {
+        self.with_store(|s| folders::remove(s, &path))
     }
 
     /// The pinned apps, folders, files and pages.

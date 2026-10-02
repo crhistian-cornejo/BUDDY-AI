@@ -6,6 +6,9 @@ fn main() {
     let dir = std::env::temp_dir().join("buddy-live-chat");
     let _ = std::fs::remove_dir_all(&dir);
     let core = BuddyCore::open(&dir).expect("core");
+    if let Ok(folder) = std::env::var("BUDDY_FOLDER") {
+        core.add_folder(folder, false).expect("folder");
+    }
     let rx = core.events();
     if std::env::var("BUDDY_PREWARM").is_ok() {
         core.prewarm();

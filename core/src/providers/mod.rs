@@ -60,6 +60,8 @@ pub struct TurnRequest {
     pub effort: Option<String>,
     /// Files the user attached, already copied into Buddy's attachments folder (the only files a turn may read).
     pub attachments: Vec<PathBuf>,
+    /// The folders the user authorized (read, or read and edit).
+    pub folders: Vec<crate::folders::AuthorizedFolder>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
