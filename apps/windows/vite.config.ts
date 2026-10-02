@@ -18,6 +18,7 @@ export default defineConfig({
         bubble: resolve(__dirname, "bubble.html"),
         chat: resolve(__dirname, "chat.html"),
         history: resolve(__dirname, "history.html"),
+        bar: resolve(__dirname, "bar.html"),
       },
     },
   },

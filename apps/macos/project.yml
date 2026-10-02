@@ -61,6 +61,21 @@ targets:
         outputFiles:
           - $(SRCROOT)/Generated/BuddyCore.swift
           - $(SRCROOT)/Generated/libbuddy_core.a
+    postBuildScripts:
+      - name: buddy-hook (relay)
+        shell: /bin/bash
+        script: |
+          set -e
+          mkdir -p "${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
+          cp "${SRCROOT}/Generated/buddy-hook" "${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Helpers/buddy-hook"
+          # Signed with the app's identity before Xcode signs the bundle (Release); Debug stays unsigned.
+          if [ "${CODE_SIGNING_ALLOWED}" = "YES" ]; then
+            codesign --force --options runtime --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Helpers/buddy-hook"
+          fi
+        inputFiles:
+          - $(SRCROOT)/Generated/buddy-hook
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/buddy-hook
     info:
       path: Resources/Info.plist
       properties:
@@ -72,12 +87,14 @@ targets:
         CFBundlePackageType: APPL
         CFBundleDevelopmentRegion: es
         LSUIElement: YES
+        NSAppleEventsUsageDescription: "Buddy pregunta a Spotify o Música qué suena y usa sus botones de anterior, pausa y siguiente en el notch. No toca nada más."
         NSHighResolutionCapable: YES
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.crhistian-cornejo.buddy
         PRODUCT_NAME: Buddy
         INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/Buddy.entitlements
         ENABLE_APP_SANDBOX: NO
         # The pre-build phase runs cargo over the whole repository and ~/.cargo.
         ENABLE_USER_SCRIPT_SANDBOXING: NO

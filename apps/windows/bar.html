@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Buddy</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/bar/bar.css" />
+  </head>
+  <body class="bar">
+    <div id="island" class="idle">
+      <div id="ears" hidden><span id="ear-left"></span><span class="spacer"></span><span id="ear-right"></span></div>
+      <section id="notice" hidden></section>
+      <section id="overview" hidden>
+        <div id="music" class="tile player" hidden></div>
+        <div class="tiles">
+          <div class="tile" id="agents"></div>
+          <div class="tile" id="focus"></div>
+          <div class="tile" id="shortcuts"></div>
+        </div>
+      </section>
+      <section id="drop" hidden></section>
+    </div>
+    <script type="module" src="/src/bar/main.ts"></script>
+  </body>
+</html>

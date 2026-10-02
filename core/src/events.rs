@@ -26,6 +26,28 @@ pub enum Event {
     /// The answer is complete and saved.
     ChatDone { chat_id: String, message_id: i64 },
     ChatFailed { chat_id: String, message: String },
+    /// The focus timer started (`running`, ends at unix seconds) or stopped.
+    FocusChanged { running: bool, ends_at: i64 },
+    /// A focus block of `minutes` ended.
+    FocusFinished { minutes: u32 },
+    /// A Claude Code / Codex session changed state (from its hooks): `working`, `waiting` (it needs the user),
+    /// `done` (the turn finished), `error` (the turn failed) or `ended` (the session closed; it is forgotten).
+    SessionUpdate { session_id: String, agent: String, project: String, state: String },
+    /// An agent asks permission for a tool (from its PermissionRequest hook). Answer with `answer_approval`; the
+    /// agent waits until then, up to ~110 s, and otherwise asks in its own terminal. `can_allow` is false when the
+    /// request arrived cut short: only "deny" (or the terminal) is offered then.
+    ApprovalRequest {
+        request_id: String,
+        session_id: String,
+        agent: String,
+        project: String,
+        title: String,
+        summary: String,
+        detail: String,
+        can_allow: bool,
+    },
+    /// The approval card must go: answered, timed out, or the agent stopped waiting.
+    ApprovalClosed { request_id: String },
 }
 
 #[derive(Default)]

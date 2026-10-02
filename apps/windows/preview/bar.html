@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- Development only (not built): the Windows top bar with a fake Tauri bridge, to check its look in a browser. -->
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/bar/bar.css" />
+    <style>html, body { background: #e5e5e5 !important; } body.bar { height: auto; } #island { width: 560px; height: auto; }</style>
+    <script>
+      const handlers = {};
+      let next = 1;
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "bar" }, currentWebview: { windowLabel: "bar", label: "bar" } },
+        transformCallback: (cb) => { const id = next++; handlers[id] = cb; return id; },
+        unregisterCallback: () => {},
+        invoke: async (cmd) => {
+          const now = Date.now() / 1000;
+          return ({
+            sessions: [{ sessionId: "s1", agent: "claude", project: "Buddy", state: "working" }, { sessionId: "s2", agent: "codex", project: "PARLEY", state: "waiting" }],
+            focus_status: { running: true, startedAt: now - 600, endsAt: now + 900, minutes: 25 },
+            shortcuts: [{ id: "a", name: "Descargas", target: "C:/Users/x/Downloads", kind: "folder" }, { id: "b", name: "github.com", target: "https://github.com", kind: "web" }],
+            hooks_status: [{ installed: true }],
+            media_now_playing: { app: "Spotify", title: "i'm way too self aware", artist: "oskar med k", status: "playing", positionMs: 23000, durationMs: 149000, thumbnail: null },
+          })[cmd] ?? null;
+        },
+      };
+    </script>
+  </head>
+  <body class="bar">
+    <div id="island" class="idle">
+      <div id="ears" hidden><span id="ear-left"></span><span class="spacer"></span><span id="ear-right"></span></div>
+      <section id="notice" hidden></section>
+      <section id="overview" hidden>
+        <div id="music" class="tile player" hidden></div>
+        <div class="tiles">
+          <div class="tile" id="agents"></div>
+          <div class="tile" id="focus"></div>
+          <div class="tile" id="shortcuts"></div>
+        </div>
+      </section>
+      <section id="drop" hidden></section>
+    </div>
+    <script type="module" src="/src/bar/main.ts"></script>
+  </body>
+</html>

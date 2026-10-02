@@ -290,5 +290,13 @@ void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));
 void listen<string>("open-chat", ({ payload }) => void openChat(payload));
+// Files dropped on the top bar: a new chat with them in the field.
+void listen<string>("prefill", ({ payload }) => {
+  newChat();
+  input.value = payload;
+  autosize();
+  render();
+  input.focus();
+});
 render();
 input.focus();

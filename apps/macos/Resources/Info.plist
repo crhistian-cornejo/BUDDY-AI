@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Buddy pregunta a Spotify o Música qué suena y usa sus botones de anterior, pausa y siguiente en el notch. No toca nada más.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

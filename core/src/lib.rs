@@ -16,6 +16,7 @@ pub mod providers;
 pub mod router;
 pub mod sessions;
 pub mod store;
+pub mod tools;
 pub mod usage;
 pub mod voice;
 
@@ -29,6 +30,8 @@ pub use providers::{ProviderId, ProviderStatus};
 pub use store::{ChatMessage, ChatSummary, SourceLink};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{FaceRect, Sprite, SpriteState};
+pub use tools::{FocusStatus, Shortcut};
+pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
 
 #[cfg(feature = "ffi")]
 uniffi::setup_scaffolding!();
@@ -43,6 +46,9 @@ pub enum CoreError {
     Character(String),
     #[error("archivo: {0}")]
     Io(String),
+    /// Agent hooks: installing them, or the channel the relay talks to.
+    #[error("{0}")]
+    Hooks(String),
 }
 
 impl From<rusqlite::Error> for CoreError {
@@ -70,6 +76,8 @@ pub struct BuddyCore {
     store: Arc<Mutex<store::Store>>,
     bus: Arc<EventBus>,
     chat: Arc<ChatEngine>,
+    focus: tools::Focus,
+    sessions: Arc<SessionHub>,
 }
 
 impl BuddyCore {
@@ -97,7 +105,8 @@ impl BuddyCore {
         let store = Arc::new(Mutex::new(store));
         let bus = Arc::new(EventBus::default());
         let chat = Arc::new(ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers));
-        Ok(Self { data_dir, store, bus, chat })
+        let sessions = Arc::new(SessionHub::new(data_dir.clone(), bus.clone()));
+        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default() })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -187,6 +196,64 @@ impl BuddyCore {
     /// Buddy and its specialists, as defined in the data folder.
     pub fn agents(&self) -> Vec<Agent> {
         self.chat.agents()
+    }
+
+    /// Starts listening to Claude Code / Codex hooks: copies the app's bundled relay from `relay_path` (empty = skip)
+    /// to `<data_dir>/bin/buddy-hook[.exe]`, then opens the local socket (Mac) or pipe (Windows) once. Never blocks.
+    pub fn start_sessions(&self, relay_path: String) -> Result<(), CoreError> {
+        self.sessions.start(&relay_path)
+    }
+
+    /// Whether each agent's hooks are installed, the agent is there, and the relay is in place.
+    pub fn hooks_status(&self) -> Vec<HookStatusInfo> {
+        self.sessions.hooks_status()
+    }
+
+    /// The change installing (or removing) Buddy's hooks would make to `agent`'s (`claude` | `codex`) config file.
+    pub fn hooks_preview(&self, agent: String, install: bool) -> Result<HookPreview, CoreError> {
+        self.sessions.hooks_preview(&agent, install)
+    }
+
+    /// Applies the change the user saw (refused if the file changed since `hooks_preview`). Takes a dated backup
+    /// first and returns its path (empty when there was no file yet).
+    pub fn hooks_write(&self, agent: String, install: bool, fingerprint: String) -> Result<String, CoreError> {
+        self.sessions.hooks_write(&agent, install, &fingerprint)
+    }
+
+    /// The user's click on an approval card (`ApprovalRequest`).
+    pub fn answer_approval(&self, request_id: String, allow: bool) {
+        self.sessions.answer_approval(&request_id, allow);
+    }
+
+    /// Claude Code / Codex sessions Buddy heard from, most recent first.
+    pub fn sessions(&self) -> Vec<SessionInfo> {
+        self.sessions.sessions()
+    }
+
+    /// Starts a focus block of `minutes` (replacing a running one).
+    pub fn focus_start(&self, minutes: u32) -> FocusStatus {
+        self.focus.start(minutes, &self.bus)
+    }
+
+    pub fn focus_stop(&self) {
+        self.focus.stop(&self.bus);
+    }
+
+    pub fn focus_status(&self) -> FocusStatus {
+        self.focus.status()
+    }
+
+    /// The pinned apps, folders, files and pages.
+    pub fn shortcuts(&self) -> Result<Vec<Shortcut>, CoreError> {
+        self.with_store(tools::shortcuts)
+    }
+
+    pub fn add_shortcut(&self, target: String) -> Result<Vec<Shortcut>, CoreError> {
+        self.with_store(|s| tools::add_shortcut(s, &target))
+    }
+
+    pub fn remove_shortcut(&self, id: String) -> Result<Vec<Shortcut>, CoreError> {
+        self.with_store(|s| tools::remove_shortcut(s, &id))
     }
 
     /// Forwards every event to `listener` from a dedicated thread, until the core is dropped.

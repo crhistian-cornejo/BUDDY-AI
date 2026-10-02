@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "core/uniffi-bindgen", "apps/windows/src-tauri"]
+members = ["core", "core/uniffi-bindgen", "hook", "apps/windows/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

@@ -37,7 +37,7 @@ struct ComposerView: View {
                             .font(.system(size: 10, weight: .bold))
                             .frame(width: 16, height: 16)
                     }
-                    .help("Detener la respuesta")
+                    .tip("Detener la respuesta")
                 } else {
                     Button(action: chat.send) {
                         Image(systemName: "arrow.up")
@@ -45,7 +45,7 @@ struct ComposerView: View {
                             .frame(width: 16, height: 16)
                     }
                     .disabled(empty)
-                    .help("Enviar (↩)")
+                    .tip("Enviar (↩)")
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -72,29 +72,25 @@ struct ChatView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(chat.messages) { message in
-                            MessageRow(message: message,
-                                       isLastAnswer: message.id == chat.messages.last(where: { $0.role == "assistant" })?.id,
-                                       canRegenerate: !chat.streaming,
-                                       onRegenerate: chat.regenerate)
-                                .id(message.id)
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(chat.messages) { message in
+                        MessageRow(message: message,
+                                   isLastAnswer: message.id == chat.messages.last(where: { $0.role == "assistant" })?.id,
+                                   canRegenerate: !chat.streaming,
+                                   onRegenerate: chat.regenerate)
                     }
-                    .padding(16)
-                    .background(GeometryReader { g in Color.clear.preference(key: HeightKey.self, value: g.size.height) })
                 }
-                .scrollIndicators(.automatic)
-                .onChange(of: chat.messages.last?.content) { _, _ in
-                    if let last = chat.messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
-                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight($0 + ChatMetrics.headerHeight + 1) }
             }
+            // New text keeps the end in view, without jumping the scroll by hand.
+            .defaultScrollAnchor(.bottom)
+            .scrollIndicators(.automatic)
         }
         .frame(width: ChatMetrics.chatWidth)
         .frame(maxHeight: .infinity, alignment: .top)
-        .onPreferenceChange(HeightKey.self) { h in onHeight(h + ChatMetrics.headerHeight + 1) }
         .onAppear { chat.refreshRecent() }
         .onChange(of: chat.streaming) { _, _ in chat.refreshRecent() }
         .onExitCommand(perform: onClose)
@@ -134,7 +130,7 @@ private struct HeaderButton: View {
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
-        .help(help)
+        .tip(help)
     }
 }
 
@@ -190,7 +186,7 @@ private struct AuthorLine: View {
     var body: some View {
         HStack(spacing: 6) {
             AvatarView(size: 18)
-                .help(name == "Buddy" ? "Buddy" : "\(name), del equipo de Buddy")
+                .tip(name == "Buddy" ? "Buddy" : "\(name), del equipo de Buddy")
             Text(name)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -237,7 +233,7 @@ private struct ActionButton: View {
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
-        .help(help)
+        .tip(help)
         .accessibilityLabel(help)
     }
 }
@@ -261,10 +257,6 @@ struct ActivityLine: View {
     }
 }
 
-private struct HeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
 
 /// A short line from Buddy next to the mascot (the hello).
 struct BubbleView: View {

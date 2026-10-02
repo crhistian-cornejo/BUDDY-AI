@@ -62,4 +62,12 @@ export const TABLER = {
   refresh: "M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4 M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4",
   /** check */
   check: "M5 12l5 5l10 -10",
+  /** player-play */
+  playerPlay: "M7 4v16l13 -8z",
+  /** player-pause */
+  playerPause: "M6 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z M14 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z",
+  /** player-skip-back */
+  playerSkipBack: "M20 5v14l-12 -7z M4 5l0 14",
+  /** player-skip-forward */
+  playerSkipForward: "M4 5v14l12 -7z M20 5l0 14",
 } as const;

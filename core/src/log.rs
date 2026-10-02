@@ -25,8 +25,14 @@ pub fn line(message: impl AsRef<str>) {
     }
 }
 
-/// `YYYY-MM-DD HH:MM:SSZ` without a date crate (days-from-civil, Howard Hinnant).
+/// `YYYY-MM-DD HH:MM:SSZ` without a date crate.
 fn utc_stamp(at: SystemTime) -> String {
+    let [year, month, day, hour, minute, second] = utc_parts(at);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// `[year, month, day, hour, minute, second]` in UTC (days-from-civil, Howard Hinnant).
+pub(crate) fn utc_parts(at: SystemTime) -> [i64; 6] {
     let secs = at.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     let z = days + 719_468;
@@ -38,7 +44,7 @@ fn utc_stamp(at: SystemTime) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    [year, month, day, rem / 3600, rem % 3600 / 60, rem % 60]
 }
 
 #[cfg(test)]

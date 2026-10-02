@@ -23,6 +23,7 @@ ARCHS="${ARCHS:-$(uname -m)}"
 
 cd "$ROOT"
 LIBS=()
+HOOKS=()
 for arch in $ARCHS; do
   case "$arch" in
     arm64) target="aarch64-apple-darwin" ;;
@@ -32,13 +33,18 @@ for arch in $ARCHS; do
   MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-15.0}" \
     cargo rustc -p buddy-core --lib --features ffi --crate-type staticlib --target "$target" ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"}
   LIBS+=("$ROOT/target/$target/$PROFILE/libbuddy_core.a")
+  # buddy-hook: the relay Claude Code and Codex run on each hook event (copied into Contents/Helpers).
+  cargo build -p buddy-hook --target "$target" ${CARGO_PROFILE[@]+"${CARGO_PROFILE[@]}"}
+  HOOKS+=("$ROOT/target/$target/$PROFILE/buddy-hook")
 done
 
 mkdir -p "$OUT"
 if [[ ${#LIBS[@]} -gt 1 ]]; then
   lipo -create "${LIBS[@]}" -output "$OUT/libbuddy_core.a"
+  lipo -create "${HOOKS[@]}" -output "$OUT/buddy-hook"
 else
   cp "${LIBS[0]}" "$OUT/libbuddy_core.a"
+  cp "${HOOKS[0]}" "$OUT/buddy-hook"
 fi
 
 cargo run -q -p uniffi-bindgen -- generate --library "${LIBS[0]}" --language swift --out-dir "$OUT/swift"

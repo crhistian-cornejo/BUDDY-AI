@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pet: PetWindowController?
     private var chat: ChatController?
     private var chatWindows: ChatWindows?
+    private var notch: NotchController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let tokens = DesignTokens.load()
@@ -30,11 +31,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let windows = ChatWindows(chat: chat, pet: { [weak pet] in pet?.frame ?? .zero })
             pet.onClick = { [weak windows] in windows?.toggle() }
             windows.onOpenChange = { [weak pet] open in pet?.holdStill = open }
-            // Chat events draw the chat; mascot events animate Buddy.
-            core.subscribe(listener: CoreEvents { [weak chat, weak pet] event in
+            let notch = NotchController(core: core)
+            notch.onOpenChat = { [weak chat, weak windows] id in
+                chat?.open(id)
+                windows?.open()
+            }
+            // Files dropped on the notch: a new chat with them in the field (attachments proper arrive in phase 4).
+            notch.onGiveFiles = { [weak chat, weak windows] files in
+                chat?.newChat()
+                chat?.draft = "Revisa " + (files.count == 1 ? "este archivo" : "estos archivos") + ":\n"
+                    + files.map(\.path).joined(separator: "\n") + "\n\n"
+                windows?.open()
+            }
+            // Chat events draw the chat, session events the notch; mascot events animate Buddy.
+            core.subscribe(listener: CoreEvents { [weak chat, weak pet, weak notch] event in
                 chat?.handle(event)
+                notch?.handle(event)
                 if case let .mascotState(state) = event { pet?.showMascotState(state) }
             })
+            notch.start()
+            // Claude Code and Codex hooks: the relay ships in the bundle; the core copies it to a stable place.
+            let relay = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/buddy-hook").path
+            try? core.startSessions(relayPath: FileManager.default.fileExists(atPath: relay) ? relay : "")
+            self.notch = notch
             pet.show()
             pet.say(core.hello())
             self.core = core

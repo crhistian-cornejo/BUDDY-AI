@@ -78,7 +78,7 @@ struct HistorySearchView: View {
                     Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.tertiary)
-                        .help("Borrar la búsqueda")
+                        .tip("Borrar la búsqueda")
                 }
             }
             .padding(.horizontal, 16)
@@ -190,20 +190,32 @@ final class HistoryWindow {
         let view = HistorySearchView(chat: chat,
                                      onOpen: { [weak self] id in self?.close(); onOpen(id) },
                                      onClose: { [weak self] in self?.close() })
-        let host = NSHostingView(rootView: view)
         let size = CGSize(width: 560, height: 420)
-        let panel = KeyPanel.make(size: size, content: host, cornerRadius: 20)
+        let (panel, _) = KeyPanel.make(visibleSize: size, cornerRadius: 20, view: view)
         let area = (screen ?? NSScreen.main)?.visibleFrame ?? .zero
-        panel.setFrameOrigin(CGPoint(x: area.midX - size.width / 2, y: area.midY - size.height / 2 + area.height * 0.08))
+        let visible = NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2 + area.height * 0.08,
+                             width: size.width, height: size.height)
+        panel.setFrame(Surface.windowFrame(for: visible), display: false)
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
         self.panel = panel
+        // A click outside closes it.
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let frame = self.frame, !frame.contains(NSEvent.mouseLocation) else { return }
+                self.close()
+            }
+        }
     }
 
-    var frame: NSRect? { panel?.frame }
+    private var monitor: Any?
+
+    var frame: NSRect? { panel.map(Surface.visibleFrame(of:)) }
 
     func close() {
         panel?.orderOut(nil)
         panel = nil
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }

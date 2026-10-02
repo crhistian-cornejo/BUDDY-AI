@@ -105,10 +105,6 @@ extension Color {
     }
 }
 
-extension View {
-    /// MIKA's tooltip; here the system one.
-    func tip(_ text: String) -> some View { help(text) }
-}
 
 /// A brand mark as an image, to sit inside a line of text (inline workspace links).
 @MainActor

@@ -1,6 +1,8 @@
 //! Buddy for Windows: the floating pixel mascot on top of buddy-core (the same core the Mac app links through UniFFI).
 //! The frontend only paints what these commands return; positions and data live in the core.
 
+mod media;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -19,6 +21,7 @@ const PET: &str = "pet";
 const BUBBLE: &str = "bubble";
 const CHAT: &str = "chat";
 const HISTORY: &str = "history";
+const BAR: &str = "bar";
 const CHAT_WIDTH: f64 = 400.0;
 const BUBBLE_SIZE: (f64, f64) = (340.0, 52.0);
 const SPRITE: &str = "buddy-base";
@@ -146,6 +149,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(media::MediaWatch::default())
         .invoke_handler(tauri::generate_handler![
             hello,
             sprite,
@@ -164,6 +169,23 @@ pub fn run() {
             regenerate,
             open_history,
             history_pick,
+            bar_resize,
+            media_watch,
+            media_now_playing,
+            media_control,
+            answer_approval,
+            sessions,
+            hooks_status,
+            connect_hooks,
+            focus_start,
+            focus_stop,
+            focus_status,
+            shortcuts,
+            remove_shortcut,
+            pick_shortcut,
+            open_shortcut,
+            reveal_path,
+            give_files,
             messages,
             agents,
             open_url
@@ -194,6 +216,8 @@ pub fn run() {
             place_pet(app.handle(), &pet)?;
             pet.show()?;
             open_bubble(app.handle())?;
+            open_bar(app.handle())?;
+            start_sessions(app.handle());
             #[cfg(debug_assertions)]
             debug_prompt(app.handle());
             Ok(())
@@ -324,6 +348,188 @@ fn debug_prompt(app: &AppHandle) {
             let _ = chat.eval(&js);
         }
     });
+}
+
+// MARK: Top bar (twin of the Mac notch)
+
+/// The bar at the top centre of the primary screen: a thin pill at rest, sized by its page as it grows.
+fn open_bar(app: &AppHandle) -> tauri::Result<()> {
+    let bar = WebviewWindowBuilder::new(app, BAR, WebviewUrl::App("bar.html".into()))
+        .title("Buddy")
+        .inner_size(160.0, 8.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .visible(false)
+        .build()?;
+    place_bar(&bar, 160.0, 8.0)?;
+    bar.show()
+}
+
+fn place_bar(bar: &WebviewWindow, width: f64, height: f64) -> tauri::Result<()> {
+    let Some(monitor) = bar.primary_monitor()?.or(bar.current_monitor()?) else { return Ok(()) };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let (x, y) = (area.position.x as f64 / scale, area.position.y as f64 / scale);
+    let w = area.size.width as f64 / scale;
+    bar.set_size(LogicalSize::new(width, height))?;
+    bar.set_position(LogicalPosition::new(x + (w - width) / 2.0, y))
+}
+
+#[tauri::command]
+fn bar_resize(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let Some(bar) = app.get_webview_window(BAR) else { return Ok(()) };
+    place_bar(&bar, width.clamp(40.0, 600.0), height.clamp(4.0, 420.0)).map_err(|e| e.to_string())
+}
+
+/// The bar listens to the system's "now playing" only while it is open.
+#[tauri::command]
+fn media_watch(app: AppHandle, watch: State<'_, media::MediaWatch>, on: bool) {
+    watch.set(&app, BAR, on);
+}
+
+#[tauri::command]
+async fn media_now_playing() -> Option<media::NowPlaying> {
+    tauri::async_runtime::spawn_blocking(media::now_playing).await.ok().flatten()
+}
+
+#[tauri::command]
+async fn media_control(action: String) -> bool {
+    let Some(action) = media::Action::parse(&action) else { return false };
+    tauri::async_runtime::spawn_blocking(move || media::control(action)).await.unwrap_or(false)
+}
+
+/// Claude Code and Codex hooks: the relay sits next to Buddy's exe (installed build) or in the target folder (dev).
+fn start_sessions(app: &AppHandle) {
+    let exe = if cfg!(windows) { "buddy-hook.exe" } else { "buddy-hook" };
+    let relay = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(exe)))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Err(e) = app.state::<AppCore>().core.start_sessions(relay) {
+        buddy_core::log::line(format!("hooks: {e}"));
+    }
+}
+
+#[tauri::command]
+fn answer_approval(state: State<'_, AppCore>, request_id: String, allow: bool) {
+    state.core.answer_approval(request_id, allow);
+}
+
+#[tauri::command]
+fn sessions(state: State<'_, AppCore>) -> Vec<buddy_core::SessionInfo> {
+    state.core.sessions()
+}
+
+#[tauri::command]
+fn hooks_status(state: State<'_, AppCore>) -> Vec<buddy_core::HookStatusInfo> {
+    state.core.hooks_status()
+}
+
+/// Shows what would change in each agent's configuration (native dialog) and writes it only after «Conectar».
+#[tauri::command]
+async fn connect_hooks(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let core = app.state::<AppCore>().core.clone();
+    for status in core.hooks_status().into_iter().filter(|s| s.available && !s.installed) {
+        let preview = core.hooks_preview(status.agent.clone(), true).map_err(|e| e.to_string())?;
+        let text = format!(
+            "Buddy añadirá sus avisos a {} y guardará antes una copia. No toca nada más de tu configuración; puedes quitarlos cuando quieras.\n\n{}",
+            preview.path,
+            preview.diff.chars().take(1200).collect::<String>()
+        );
+        let dialog = app.dialog().clone();
+        let title = format!("¿Conectar {} con Buddy?", status.name);
+        let ok = tauri::async_runtime::spawn_blocking(move || {
+            dialog
+                .message(text)
+                .title(title)
+                .kind(MessageDialogKind::Info)
+                .buttons(MessageDialogButtons::OkCancelCustom("Conectar".into(), "Cancelar".into()))
+                .blocking_show()
+        })
+        .await
+        .unwrap_or(false);
+        if ok {
+            core.hooks_write(status.agent.clone(), true, preview.fingerprint).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn focus_start(state: State<'_, AppCore>, minutes: u32) -> buddy_core::FocusStatus {
+    state.core.focus_start(minutes)
+}
+
+#[tauri::command]
+fn focus_stop(state: State<'_, AppCore>) {
+    state.core.focus_stop();
+}
+
+#[tauri::command]
+fn focus_status(state: State<'_, AppCore>) -> buddy_core::FocusStatus {
+    state.core.focus_status()
+}
+
+#[tauri::command]
+fn shortcuts(state: State<'_, AppCore>) -> Result<Vec<buddy_core::Shortcut>, String> {
+    state.core.shortcuts().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_shortcut(state: State<'_, AppCore>, id: String) -> Result<Vec<buddy_core::Shortcut>, String> {
+    state.core.remove_shortcut(id).map_err(|e| e.to_string())
+}
+
+/// The system's file picker: an app (.exe / .lnk) or a file to pin.
+#[tauri::command]
+async fn pick_shortcut(app: AppHandle) -> Result<Vec<buddy_core::Shortcut>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let dialog = app.dialog().clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || dialog.file().set_title("Fijar en Atajos").blocking_pick_file())
+        .await
+        .ok()
+        .flatten();
+    let core = app.state::<AppCore>().core.clone();
+    match picked.and_then(|p| p.into_path().ok()) {
+        Some(path) => core.add_shortcut(path.to_string_lossy().into_owned()).map_err(|e| e.to_string()),
+        None => core.shortcuts().map_err(|e| e.to_string()),
+    }
+}
+
+/// Opens a pinned shortcut: a web address in the browser (http/https only), anything else with its own app.
+#[tauri::command]
+fn open_shortcut(app: AppHandle, target: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if is_web_url(&target) {
+        app.opener().open_url(target, None::<&str>)
+    } else {
+        app.opener().open_path(target, None::<&str>)
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reveal_path(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+/// Files dropped on the bar: a new chat with them in the field (attachments proper arrive in phase 4).
+#[tauri::command]
+fn give_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    if !app.state::<AppCore>().chat_open.load(Ordering::SeqCst) {
+        toggle_chat(app.clone())?;
+    }
+    let lead = if paths.len() == 1 { "Revisa este archivo:" } else { "Revisa estos archivos:" };
+    app.emit_to(CHAT, "prefill", format!("{lead}\n{}\n\n", paths.join("\n"))).map_err(|e| e.to_string())
 }
 
 // MARK: Chat

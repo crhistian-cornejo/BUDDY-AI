@@ -21,7 +21,17 @@ serde_json.workspace = true
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 
 [target.'cfg(windows)'.dependencies]
 # GetLastInputInfo (seconds since the last input, for "Buddy sleeps when you are away"). A query, not a hook.
-windows = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
+windows = { version = "0.61", features = [
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_SystemInformation",
+  # Media control (media.rs): Windows' own "now playing" sessions; no network.
+  "Foundation",
+  "Graphics_Imaging",
+  "Media_Control",
+  "Storage_Streams",
+  "Win32_System_Com",
+] }

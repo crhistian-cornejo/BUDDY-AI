@@ -1,0 +1,28 @@
+[package]
+name = "buddy-hook"
+description = "Relays Claude Code and Codex hook events to Buddy (Unix socket on Mac, named pipe on Windows)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "buddy-hook"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+
+# Who is on the other end of the socket (getpeereid / SO_PEERCRED).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Just enough Win32 to know our own SID and to check who is serving the pipe.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }

@@ -45,7 +45,7 @@ struct ProviderMark: View {
             Image(systemName: "sparkles")
                 .font(.system(size: size - 1, weight: .semibold))
                 .foregroundStyle(.blue)
-                .help("Escrito con Gemini")
+                .tip("Escrito con Gemini")
         default:
             EmptyView()
         }
@@ -55,7 +55,7 @@ struct ProviderMark: View {
         BrandMarkShape(mark: brand)
             .fill(brand == .openai ? Color.primary : brand.color)
             .frame(width: size, height: size)
-            .help(help)
+            .tip(help)
             .accessibilityLabel(help)
     }
 }
