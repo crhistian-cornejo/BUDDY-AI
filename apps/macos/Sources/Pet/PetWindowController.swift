@@ -170,6 +170,9 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         walk.target = self
         walk.state = wander ? .on : .off
         menu.addItem(walk)
+        let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Salir de Buddy", action: #selector(quit), keyEquivalent: "")
         quit.target = self
@@ -182,6 +185,11 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    /// The system's Settings window (an LSUIElement app has no menu for it).
+    @objc private func openSettings() {
+        SettingsWindow.show()
+    }
 
     // MARK: Bubble
 

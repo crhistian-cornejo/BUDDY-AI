@@ -146,6 +146,9 @@ pub struct SessionHub {
     started: AtomicBool,
     next_id: AtomicU64,
     decision_timeout: Duration,
+    /// Secret of this run of the app: only `claude` processes Buddy starts get it (BUDDY_GATE_TOKEN), and only a
+    /// gate request carrying it can ever be allowed.
+    gate_token: String,
 }
 
 impl SessionHub {
@@ -162,7 +165,18 @@ impl SessionHub {
             started: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             decision_timeout,
+            gate_token: random_token(),
         }
+    }
+
+    /// The secret Buddy's own agents carry to ask for a command (see `gate`).
+    pub fn gate_token(&self) -> &str {
+        &self.gate_token
+    }
+
+    /// Whether the server runs (so a gate request would reach someone).
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::SeqCst)
     }
 
     /// The stable copy of the relay the agents' config files point at.
@@ -344,8 +358,22 @@ impl server::Sink for SessionHub {
         let session_id = text(&payload, "session_id").to_string();
         let project = project_of(text(&payload, "cwd"));
         self.update_session(agent, &session_id, &project, "waiting", &Place::of(&payload));
+        self.ask(&payload, agent, session_id, project, closed)
+    }
 
-        let shown = format::approval_text(&payload);
+    fn gate(&self, payload: Value, closed: &dyn Fn() -> bool) -> &'static str {
+        if payload.get("_gate").and_then(Value::as_str) != Some(self.gate_token.as_str()) {
+            log::line("puerta: petición sin el secreto de esta sesión, rechazada");
+            return "deny";
+        }
+        self.ask(&payload, "buddy", "buddy".into(), "Buddy".into(), closed).unwrap_or("deny")
+    }
+}
+
+impl SessionHub {
+    /// Puts an approval card in front of the user and waits for the click (or the timeout, or the asker hanging up).
+    fn ask(&self, payload: &Value, agent: &str, session_id: String, project: String, closed: &dyn Fn() -> bool) -> Option<&'static str> {
+        let shown = format::approval_text(payload);
         let request_id = format!("{}-{}", std::process::id(), self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = channel();
         self.lock().pending.insert(request_id.clone(), Pending { answer: tx, can_allow: shown.can_allow });
@@ -392,6 +420,23 @@ impl server::Sink for SessionHub {
         }
         decision.map(|allow| if allow { "allow" } else { "deny" })
     }
+}
+
+/// 128 random bits as hex, from the OS (the clock or a counter would be guessable).
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    let filled = std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes));
+    if filled.is_err() {
+        // Windows (no /dev/urandom): the OS-seeded hasher keys of std, mixed with time and pid.
+        use std::hash::{BuildHasher, Hasher};
+        for chunk in bytes.chunks_mut(8) {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+            h.write_u32(std::process::id());
+            chunk.copy_from_slice(&h.finish().to_le_bytes());
+        }
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Copies the relay to `dest` (mode 0755 on Unix) unless an identical copy is already there. Written beside the
@@ -622,6 +667,37 @@ mod tests {
             let (_hub, _rx, socket, dir) = started();
             assert_eq!(std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777, 0o600);
             assert_eq!(std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+
+        #[test]
+        fn the_gate_asks_with_the_secret_and_refuses_without_it() {
+            let (hub, rx, socket, _dir) = started();
+            let ask = |token: String| {
+                let socket = socket.clone();
+                std::thread::spawn(move || {
+                    let mut stream = UnixStream::connect(&socket).unwrap();
+                    let line = json!({
+                        "hook_event_name": "PreToolUse", "_gate": token, "session_id": "s", "cwd": "/tmp/x",
+                        "tool_name": "Bash", "tool_input": { "command": "ls -la" }
+                    });
+                    stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+                    let mut answer = String::new();
+                    BufReader::new(stream).read_line(&mut answer).unwrap();
+                    answer
+                })
+            };
+            assert_eq!(ask("adivinado".into()).join().unwrap(), "deny\n", "a wrong secret is refused at once");
+
+            let client = ask(hub.gate_token().to_string());
+            let Event::ApprovalRequest { request_id, agent, summary, .. } =
+                next_where(&rx, |e| matches!(e, Event::ApprovalRequest { .. }))
+            else {
+                unreachable!()
+            };
+            assert_eq!((agent.as_str(), summary.as_str()), ("buddy", "ls -la"));
+            hub.answer_approval(&request_id, true);
+            assert_eq!(client.join().unwrap(), "allow\n");
+            assert!(hub.sessions().is_empty(), "Buddy's own commands are not an outside session");
         }
 
         #[test]

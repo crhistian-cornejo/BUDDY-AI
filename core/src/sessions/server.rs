@@ -39,6 +39,9 @@ pub(crate) trait Sink: Send + Sync + 'static {
     /// A `PermissionRequest`: blocks until there is a decision (`"allow"` / `"deny"`) or none. `closed` says whether
     /// the relay hung up meanwhile (the user answered in the terminal, the agent was stopped).
     fn permission(&self, payload: Value, closed: &dyn Fn() -> bool) -> Option<&'static str>;
+    /// A command one of Buddy's own agents wants to run (the relay's `--gate` mode). Always answers: anything but
+    /// an explicit allow is a deny.
+    fn gate(&self, payload: Value, closed: &dyn Fn() -> bool) -> &'static str;
 }
 
 /// Where to listen.
@@ -99,6 +102,15 @@ fn handle(conn: &mut dyn Conn, sink: &dyn Sink) {
     let Some(line) = conn.read_request() else { return };
     let Ok(payload) = serde_json::from_slice::<Value>(&line) else { return };
     if !payload.is_object() {
+        return;
+    }
+    // Only the relay's gate mode sends `_gate` (it strips the key from anything else it forwards).
+    if payload.get("_gate").and_then(Value::as_str).is_some() {
+        let word = {
+            let conn: &dyn Conn = conn;
+            sink.gate(payload, &|| conn.peer_closed())
+        };
+        conn.send_line(word);
         return;
     }
     if payload.get("hook_event_name").and_then(Value::as_str) != Some("PermissionRequest") {

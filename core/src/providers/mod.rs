@@ -62,6 +62,25 @@ pub struct TurnRequest {
     pub attachments: Vec<PathBuf>,
     /// The folders the user authorized (read, or read and edit).
     pub folders: Vec<crate::folders::AuthorizedFolder>,
+    /// When set, the agent may ask to run commands; each one waits for the user's click (see `sessions` gate).
+    pub gate: Option<Gate>,
+}
+
+impl TurnRequest {
+    /// The attached files that are images (already shrunk by `images::prepare`). Every provider hands these over
+    /// in its own way: Claude as `image` blocks, Codex as `localImage`, Gemini by path.
+    pub fn images(&self) -> Vec<&PathBuf> {
+        self.attachments.iter().filter(|p| crate::images::is_image(p)).collect()
+    }
+}
+
+/// How a turn reaches the command gate: the relay to run as the PreToolUse hook, the secret of this run of the app,
+/// and Buddy's data folder (where the relay finds the socket).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gate {
+    pub relay: PathBuf,
+    pub token: String,
+    pub data_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -178,6 +197,11 @@ pub trait Provider: Send + Sync {
     fn installed(&self) -> bool;
     /// Gets ready for a turn like `request` (start-up done while the user types). Optional.
     fn prewarm(&self, _request: &TurnRequest) {}
+    /// Whether it can look at images (`TurnRequest::images`). A provider that cannot is skipped for turns that
+    /// carry images while another one can take them.
+    fn sees_images(&self) -> bool {
+        false
+    }
     /// Runs one turn to the end, calling `emit` as events arrive. Always ends with `Done` or `Failed`.
     fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent));
 }

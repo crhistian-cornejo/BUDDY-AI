@@ -7,7 +7,7 @@ struct BuddyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings { SettingsView() }
     }
 }
 
@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             // An empty folder lets the core use ~/Library/Application Support/Buddy.
             let core = try BuddyCore(dataDir: "")
+            AppServices.core = core
             let sprite = try core.sprite(id: "buddy-base")
             Avatar.configure(sprite: sprite)
             let pet = PetWindowController(core: core, sprite: sprite, tokens: tokens)
@@ -61,6 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.chatWindows = windows
             #if DEBUG
             // BUDDY_DEBUG_PROMPT="…": opens the composer and sends it, to try the whole flow from a terminal.
+            if ProcessInfo.processInfo.environment["BUDDY_DEBUG_SETTINGS"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { SettingsWindow.show() }
+            }
             if ProcessInfo.processInfo.environment["BUDDY_DEBUG_HISTORY"] != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { windows.showHistory() }
             }

@@ -104,6 +104,10 @@ impl Provider for Codex {
         ProviderId::Codex
     }
 
+    fn sees_images(&self) -> bool {
+        true
+    }
+
     fn installed(&self) -> bool {
         self.exe.is_some()
     }
@@ -155,11 +159,8 @@ impl Provider for Codex {
 /// The text, plus attached images as `localImage` items (other files are named in the text and read from disk).
 pub fn turn_input(request: &TurnRequest) -> Value {
     let mut input = vec![json!({ "type": "text", "text": request.prompt, "text_elements": [] })];
-    for path in &request.attachments {
-        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-        if ["png", "jpg", "jpeg", "gif", "webp"].contains(&ext.as_str()) {
-            input.push(json!({ "type": "localImage", "path": path }));
-        }
+    for path in request.images() {
+        input.push(json!({ "type": "localImage", "path": path }));
     }
     Value::Array(input)
 }

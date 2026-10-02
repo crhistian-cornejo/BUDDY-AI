@@ -7,6 +7,7 @@ pub mod briefing;
 pub mod chat;
 pub mod events;
 pub mod folders;
+pub mod images;
 pub mod log;
 pub mod orchestrator;
 pub mod parley;
@@ -109,8 +110,12 @@ impl BuddyCore {
         let store = Arc::new(Mutex::new(store));
         let bus = Arc::new(EventBus::default());
         let usage = Arc::new(usage::Usage::new(store.clone(), bus.clone()));
-        let chat = Arc::new(ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers).with_usage(usage.clone()));
         let sessions = Arc::new(SessionHub::new(data_dir.clone(), bus.clone()));
+        let chat = Arc::new(
+            ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers)
+                .with_usage(usage.clone())
+                .with_gate(sessions.clone()),
+        );
         Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage })
     }
 

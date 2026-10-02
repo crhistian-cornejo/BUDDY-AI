@@ -81,6 +81,10 @@ impl Claude {
         if !edits.is_empty() {
             tools.push_str(",Edit,Write");
         }
+        // Bash is available only behind the gate, and never pre-allowed: the PreToolUse hook asks the user each time.
+        if request.gate.is_some() {
+            tools.push_str(",Bash");
+        }
         let rule = |verb: &str, dir: &str| format!("{verb}(//{}/**)", dir.trim_start_matches('/'));
         let allowed = std::iter::once(TOOLS.to_string())
             .chain(reads.iter().map(|d| rule("Read", d)))
@@ -94,7 +98,9 @@ impl Claude {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--safe-mode",
+            // `--safe-mode` turns every hook off, the gate's too; `--restricted` ignores the user's settings files
+            // but keeps the `--settings` hook.
+            if request.gate.is_some() { "--restricted" } else { "--safe-mode" },
             "--strict-mcp-config",
             "--mcp-config",
             r#"{"mcpServers":{}}"#,
@@ -107,6 +113,13 @@ impl Claude {
         args.extend(["--tools".into(), tools, "--allowedTools".into(), allowed]);
         for dir in &dirs {
             args.extend(["--add-dir".into(), dir.clone()]);
+        }
+        if let Some(gate) = &request.gate {
+            let command = format!("\"{}\" --gate PreToolUse", gate.relay.to_string_lossy().replace('\\', "/"));
+            let settings = serde_json::json!({
+                "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": command, "timeout": 120 }] }] }
+            });
+            args.extend(["--settings".into(), settings.to_string()]);
         }
         if let Some(model) = &request.model {
             args.extend(["--model".into(), model.clone()]);
@@ -139,6 +152,10 @@ impl Provider for Claude {
         self.exe.is_some()
     }
 
+    fn sees_images(&self) -> bool {
+        true
+    }
+
     fn prewarm(&self, request: &TurnRequest) {
         let Some(exe) = &self.exe else { return };
         let fresh = TurnRequest { resume: None, ..request.clone() };
@@ -158,7 +175,7 @@ impl Provider for Claude {
         };
         let message = serde_json::json!({
             "type": "user",
-            "message": { "role": "user", "content": [{ "type": "text", "text": request.prompt }] },
+            "message": { "role": "user", "content": user_content(request) },
         })
         .to_string();
         // A warm process for this conversation (or a spare), else a new one; a dead one is replaced once.
@@ -266,6 +283,26 @@ impl Claude {
 }
 
 /// What makes two requests answerable by the same process: everything but the conversation to resume.
+/// The user message's content: the text and each image as a base64 `image` block, so Claude sees them
+/// without having to decide to read a file.
+fn user_content(request: &TurnRequest) -> serde_json::Value {
+    use base64::Engine;
+    let mut content = vec![serde_json::json!({ "type": "text", "text": request.prompt })];
+    for path in request.images() {
+        if let Ok(bytes) = std::fs::read(path) {
+            content.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": crate::images::mime(path),
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+            }));
+        }
+    }
+    serde_json::Value::Array(content)
+}
+
 fn signature(request: &TurnRequest) -> String {
     let fresh = TurnRequest { resume: None, prompt: String::new(), ..request.clone() };
     format!("{}\u{1f}{}", Claude::arguments(&fresh).join("\u{1f}"), request.workspace.display())
@@ -276,6 +313,9 @@ fn spawn_live(exe: &std::path::Path, request: &TurnRequest) -> Result<Live, Stri
     let _ = std::fs::create_dir_all(&request.workspace);
     let mut cmd = process::command(exe);
     cmd.args(Claude::arguments(request)).args(["--input-format", "stream-json"]).current_dir(&request.workspace);
+    if let Some(gate) = &request.gate {
+        cmd.env("BUDDY_GATE_TOKEN", &gate.token).env("BUDDY_DATA_DIR", &gate.data_dir);
+    }
     let mut child = cmd.spawn().map_err(|e| format!("No se pudo iniciar Claude: {e}"))?;
     let stdin = child.stdin.take().ok_or("sin stdin")?;
     let stdout = child.stdout.take().ok_or("sin stdout")?;
@@ -501,6 +541,20 @@ mod tests {
     }
 
     #[test]
+    fn images_travel_as_image_blocks_after_the_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("a.png");
+        image::RgbaImage::new(2, 2).save(&img).unwrap();
+        let request = TurnRequest { prompt: "mira".into(), attachments: vec![img, "/x/notas.txt".into()], ..Default::default() };
+        let content = user_content(&request);
+        assert_eq!(content.as_array().unwrap().len(), 2, "the text file is not an image block");
+        assert_eq!(content[0]["text"], "mira");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert!(content[1]["source"]["data"].as_str().unwrap().starts_with("iVBOR"));
+    }
+
+    #[test]
     fn attachments_allow_reading_only_their_folder() {
         let args = Claude::arguments(&TurnRequest {
             attachments: vec!["/data/adjuntos/c1/foto.png".into(), "/data/adjuntos/c1/notas.txt".into()],
@@ -512,6 +566,21 @@ mod tests {
         assert_eq!(joined.matches("--add-dir /data/adjuntos/c1").count(), 1);
         let plain = Claude::arguments(&TurnRequest::default()).join(" ");
         assert!(!plain.contains("Read") && !plain.contains("--add-dir"));
+    }
+
+    #[test]
+    fn the_gate_adds_bash_never_preallowed_with_its_hook() {
+        let args = Claude::arguments(&TurnRequest {
+            gate: Some(super::super::Gate { relay: "/d/bin/buddy-hook".into(), token: "t".into(), data_dir: "/d".into() }),
+            ..Default::default()
+        });
+        let joined = args.join(" ");
+        assert!(joined.contains("--restricted") && !joined.contains("--safe-mode"));
+        assert!(joined.contains("--tools WebSearch,WebFetch,Bash"));
+        assert!(!joined.contains("--allowedTools WebSearch,WebFetch,Bash"), "Bash is never pre-allowed");
+        let settings = &args[args.iter().position(|a| a == "--settings").unwrap() + 1];
+        assert!(settings.contains("\\\"/d/bin/buddy-hook\\\" --gate PreToolUse") && settings.contains("\"matcher\":\"Bash\""), "{settings}");
+        assert!(!joined.contains("\"t\""), "the secret travels in the environment, not the arguments");
     }
 
     #[test]

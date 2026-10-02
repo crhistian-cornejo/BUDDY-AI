@@ -15,6 +15,9 @@ use crate::providers::{Cancel, FailureKind, Provider, ProviderId, TurnEvent, Tur
 use crate::store::{NewMessage, SourceLink, Store};
 use crate::CoreError;
 
+/// Setting: "false" means the agents never get to run commands, not even with a click.
+pub const COMMANDS_SETTING: &str = "commands.enabled";
+
 pub struct ChatEngine {
     data_dir: PathBuf,
     store: Arc<Mutex<Store>>,
@@ -22,6 +25,7 @@ pub struct ChatEngine {
     providers: Vec<Arc<dyn Provider>>,
     running: Mutex<HashMap<String, Cancel>>,
     usage: Option<Arc<crate::usage::Usage>>,
+    gate: Option<Arc<crate::sessions::SessionHub>>,
 }
 
 /// What one agent's turn produced.
@@ -36,7 +40,25 @@ struct Answer {
 
 impl ChatEngine {
     pub fn new(data_dir: PathBuf, store: Arc<Mutex<Store>>, bus: Arc<EventBus>, providers: Vec<Arc<dyn Provider>>) -> Self {
-        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()), usage: None }
+        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()), usage: None, gate: None }
+    }
+
+    /// Commands go through this hub's gate (a click each time) while it runs and the user allows commands.
+    pub fn with_gate(mut self, hub: Arc<crate::sessions::SessionHub>) -> Self {
+        self.gate = Some(hub);
+        self
+    }
+
+    /// The gate for a turn, when the server runs, its relay is in place and commands are not turned off.
+    fn gate(&self) -> Option<crate::providers::Gate> {
+        let hub = self.gate.as_ref()?;
+        let off = self.lock().setting(COMMANDS_SETTING).ok().flatten().as_deref() == Some("false");
+        let relay = hub.relay_path();
+        (hub.is_started() && relay.exists() && !off).then(|| crate::providers::Gate {
+            relay,
+            token: hub.gate_token().to_string(),
+            data_dir: self.data_dir.clone(),
+        })
     }
 
     /// Plan figures reported during turns go here.
@@ -107,14 +129,29 @@ impl ChatEngine {
             if meta.len() > MAX_BYTES {
                 return Err(CoreError::Io(format!("«{path}» pesa más de 25 MB")));
             }
-            let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "archivo".into());
+            let mut name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "archivo".into());
+            // Images are shrunk once here, so every provider gets the same small file; if it cannot be decoded
+            // it is copied as it is.
+            let prepared = if crate::images::is_image(source) {
+                std::fs::read(source).ok().and_then(|b| crate::images::prepare(&b).ok())
+            } else {
+                None
+            };
+            if let Some((_, ext)) = &prepared {
+                name = std::path::Path::new(&name).with_extension(ext).to_string_lossy().into_owned();
+            }
             let mut target = dir.join(&name);
             let mut n = 1;
             while target.exists() {
                 n += 1;
                 target = dir.join(format!("{n}-{name}"));
             }
-            std::fs::copy(source, &target)?;
+            match prepared {
+                Some((bytes, _)) => std::fs::write(&target, bytes)?,
+                None => {
+                    std::fs::copy(source, &target)?;
+                }
+            }
             out.push(target.to_string_lossy().into_owned());
         }
         Ok(out)
@@ -150,6 +187,7 @@ impl ChatEngine {
                 system: format!("{}{}{}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders)),
                 workspace: orchestrator::workspace(&engine.data_dir, &buddy.id),
                 folders,
+                gate: engine.gate(),
                 model: buddy.model.clone(),
                 effort: buddy.effort.clone(),
                 ..Default::default()
@@ -288,6 +326,10 @@ impl ChatEngine {
     ) -> Answer {
         let mut order: Vec<Arc<dyn Provider>> = self.providers.iter().filter(|p| p.id() == agent.provider).cloned().collect();
         order.extend(self.providers.iter().filter(|p| p.id() != agent.provider && p.installed()).cloned());
+        // A turn with images goes first to a provider that can look at them (Claude, Codex, later Gemini).
+        if files.iter().any(|f| crate::images::is_image(f)) {
+            order.sort_by_key(|p| !p.sees_images());
+        }
         let mut last_failure = None;
         let mut provider_used = agent.provider;
         for (attempt, provider) in order.iter().enumerate() {
@@ -318,6 +360,7 @@ impl ChatEngine {
                 effort: agent.effort.clone(),
                 attachments: files.to_vec(),
                 folders,
+                gate: self.gate(),
             };
             let mut text = String::new();
             let mut shown = 0usize;
@@ -424,13 +467,18 @@ mod tests {
     struct Fake {
         id: ProviderId,
         installed: bool,
+        vision: bool,
         script: Mutex<Vec<Vec<TurnEvent>>>,
         prompts: Mutex<Vec<(String, String)>>,
     }
 
     impl Fake {
         fn new(id: ProviderId, scripts: Vec<Vec<TurnEvent>>) -> Arc<Self> {
-            Arc::new(Self { id, installed: true, script: Mutex::new(scripts), prompts: Mutex::default() })
+            Arc::new(Self { id, installed: true, vision: false, script: Mutex::new(scripts), prompts: Mutex::default() })
+        }
+
+        fn seeing(id: ProviderId, scripts: Vec<Vec<TurnEvent>>) -> Arc<Self> {
+            Arc::new(Self { id, installed: true, vision: true, script: Mutex::new(scripts), prompts: Mutex::default() })
         }
     }
 
@@ -440,6 +488,9 @@ mod tests {
         }
         fn installed(&self) -> bool {
             self.installed
+        }
+        fn sees_images(&self) -> bool {
+            self.vision
         }
         fn run(&self, request: &TurnRequest, _: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
             self.prompts.lock().unwrap().push((request.prompt.clone(), request.system.clone()));
@@ -581,6 +632,21 @@ mod tests {
         let texts: Vec<&str> = messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, ["hola", "Segunda"]);
         assert_eq!(claude.prompts.lock().unwrap()[1].0, "hola");
+    }
+
+    #[test]
+    fn images_are_shrunk_and_go_to_a_provider_that_can_see_them() {
+        let blind = Fake::new(ProviderId::Claude, vec![vec![TurnEvent::Delta("no veo".into()), TurnEvent::Done]]);
+        let sighted = Fake::seeing(ProviderId::Codex, vec![vec![TurnEvent::Delta("veo".into()), TurnEvent::Done]]);
+        let (engine, rx, dir) = engine(vec![blind.clone(), sighted.clone()]);
+        let big = dir.path().join("captura.png");
+        image::RgbImage::new(3000, 2000).save(&big).unwrap();
+        let chat = engine.send(None, "¿qué ves?".into(), vec![big.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(deltas(&until_end(&rx)), "veo");
+        assert!(blind.prompts.lock().unwrap().is_empty());
+        let saved = engine.lock().messages(&chat).unwrap()[0].attachments.clone();
+        let img = image::open(&saved[0]).unwrap();
+        assert_eq!(img.width().max(img.height()), crate::images::MAX_SIDE);
     }
 
     #[test]
