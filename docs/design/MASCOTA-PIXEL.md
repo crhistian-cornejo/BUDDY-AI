@@ -55,6 +55,21 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 
 **Con varias tareas a la vez**, se muestra la de mayor prioridad, como en ChatGPT: primero necesita decisión, luego bloqueado, listo y trabajando.
 
+### Estados dibujados (2026-10-02)
+
+`idle`, `blink`, `look`, `wave`, `walk-right`, `walk-left`, `drag`, `think`, `work`, `ask`, `error`, `done` y `sleep`. Las hojas de cada estado salen con `scripts/characters/buddy_base.py --preview DIR`.
+
+### Vida en reposo (núcleo: `core/src/pet.rs`)
+
+- **`PetBrain` decide** cada 4–9 s: respirar, parpadear, mirar a los lados, saludar o pasear (22 %).
+  - **Pasea** 24–180 pt a 32 pt/s, sin salir del ancho útil de la pantalla.
+  - Cerca de un borde **se da la vuelta**; si no hay sitio, hace otra cosa.
+- **Duerme** tras 5 min sin teclado ni ratón: `CGEventSource` en Mac, `GetLastInputInfo` en Windows, consultas sin ganchos.
+- **«Reducir movimiento»:** solo parpadea.
+- **«Pasear por la pantalla»** se desactiva desde el clic derecho.
+- **Al soltarla** después de arrastrarla, `clamp_to_area` la devuelve entera dentro del área útil (bordes y esquinas, bajo la barra de menús y sobre el Dock o la barra de tareas).
+- **Entre planes no corre nada.**
+
 ## Interacción
 
 | Gesto | Qué pasa |

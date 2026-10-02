@@ -1,46 +1,80 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import tokens, { applyTokens } from "./tokens";
-import { argbToRgba, breathFrames, type Sprite } from "./sprite";
+import { type Sprite } from "./sprite";
+import { Player, sleep } from "./player";
 
 applyTokens();
 
+interface PetPlan {
+  waitMs: number;
+  state: string;
+  durationMs: number;
+  dx: number;
+}
+
 const canvas = document.getElementById("pet") as HTMLCanvasElement;
-const ctx = canvas.getContext("2d")!;
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+let player: Player;
+/** Bumped to end the idle loop (drag, click); a new loop starts afterwards. */
+let lifeToken = 0;
 
 async function main(): Promise<void> {
   const sprite = await invoke<Sprite>("sprite", { id: "buddy-base" });
   const scale = tokens.pet.scaleNormal;
-  canvas.width = sprite.size;
-  canvas.height = sprite.size;
   canvas.style.width = `${sprite.size * scale}px`;
   canvas.style.height = `${sprite.size * scale}px`;
-  ctx.imageSmoothingEnabled = false;
-
-  const idle = sprite.states.find((s) => s.name === "idle") ?? sprite.states[0];
-  const frames = idle.frames.map((f) => new ImageData(argbToRgba(f), sprite.size, sprite.size));
-  const show = (i: number) => ctx.putImageData(frames[i], 0, 0);
-  show(0);
-
-  // Idle: a still frame; every 6–10 s a ~2 s breath. Timers sleep in between, and reduced motion never moves.
-  const rate = Math.max(1, Math.min(idle.fps, tokens.motion.maxFps));
-  const breathe = () => {
-    const { breathEveryMin, breathEveryMax } = tokens.motion;
-    const wait = breathEveryMin + Math.random() * (breathEveryMax - breathEveryMin);
-    window.setTimeout(() => {
-      const sequence = reduceMotion.matches ? [] : breathFrames(frames.length, idle.fps, tokens.motion);
-      sequence.forEach((frame, i) => window.setTimeout(() => show(frame), (i * 1000) / rate));
-      window.setTimeout(breathe, (sequence.length * 1000) / rate);
-    }, wait * 1000);
-  };
-  breathe();
+  player = new Player(canvas, sprite, tokens.motion.maxFps);
+  await player.play("wave", 1);
+  void life();
 }
 
-// Drag with the left button; the native menu with the right one.
-canvas.addEventListener("mousedown", (e) => {
-  if (e.button === 0) void getCurrentWindow().startDragging();
+/** Ask the core what to do, wait, play it, repeat. Timers sleep in between. */
+async function life(): Promise<void> {
+  const token = ++lifeToken;
+  while (token === lifeToken) {
+    const plan = await invoke<PetPlan>("pet_next", { reduceMotion: reduceMotion.matches });
+    await sleep(plan.waitMs);
+    if (token !== lifeToken) return;
+    const seconds = plan.durationMs / 1000;
+    if (plan.dx !== 0 && seconds > 0) {
+      const speed = plan.dx / seconds;
+      await player.play(plan.state, seconds, (interval) => invoke("pet_step", { dx: speed * interval }));
+    } else {
+      await player.play(plan.state, seconds);
+    }
+  }
+}
+
+// Click or drag: past 3 px of movement it is a drag (native, so it is smooth); otherwise a click.
+canvas.addEventListener("mousedown", (down) => {
+  if (down.button !== 0) return;
+  const move = (e: MouseEvent) => {
+    if (Math.hypot(e.screenX - down.screenX, e.screenY - down.screenY) <= 3) return;
+    cleanup();
+    lifeToken++;
+    void player.loop("drag");
+    void getCurrentWindow()
+      .startDragging()
+      .finally(async () => {
+        player.stop();
+        player.show("idle");
+        await invoke("pet_settle");
+        void life();
+      });
+  };
+  const up = () => {
+    cleanup();
+    void player.play("wave", 1);
+  };
+  const cleanup = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
 });
+
 window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   void invoke("show_pet_menu");

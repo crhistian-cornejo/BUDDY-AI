@@ -1,50 +1,60 @@
 import AppKit
 import Observation
 
-/// Which frame of the mascot is on screen. Idle is one still frame; every 6–10 s Buddy breathes for ~2 s at the
-/// state's fps and stops. Nothing runs between breaths (the task sleeps), and with "reduce motion" it never moves.
+/// Plays the mascot's states (frames from the core). Only the current frame is published; between plans nothing runs.
 @MainActor
 @Observable
 final class PetModel {
     private(set) var image: CGImage?
+    private(set) var state = "idle"
     let size: Int
 
-    @ObservationIgnored private let idleFrames: [CGImage]
-    @ObservationIgnored private let idleFps: Double
-    @ObservationIgnored private let motion: DesignTokens.Motion
-    @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var states: [String: (fps: Double, frames: [CGImage])] = [:]
+    @ObservationIgnored private let maxFps: Double
 
-    init(sprite: Sprite, motion: DesignTokens.Motion) {
+    init(sprite: Sprite, maxFps: Double) {
         size = Int(sprite.size)
-        let idle = sprite.states.first { $0.name == "idle" } ?? sprite.states.first
-        idleFrames = (idle?.frames ?? []).compactMap { PixelImage.make(pixels: $0, size: Int(sprite.size)) }
-        idleFps = min(Double(idle?.fps ?? 2), motion.maxFps)
-        self.motion = motion
-        image = idleFrames.first
+        self.maxFps = maxFps
+        for s in sprite.states {
+            let frames = s.frames.compactMap { PixelImage.make(pixels: $0, size: Int(sprite.size)) }
+            if !frames.isEmpty { states[s.name] = (min(Double(s.fps), maxFps), frames) }
+        }
+        show("idle")
     }
 
-    func start() {
-        guard task == nil else { return }
-        task = Task { [weak self] in await self?.idleLoop() }
+    func has(_ name: String) -> Bool { states[name] != nil }
+
+    func fps(_ name: String) -> Double { states[name]?.fps ?? 1 }
+
+    func show(_ name: String, frame: Int = 0) {
+        guard let s = states[name] ?? states["idle"] else { return }
+        state = name
+        image = s.frames[frame % s.frames.count]
     }
 
-    func stop() {
-        task?.cancel()
-        task = nil
+    /// Loops `name` for `duration` seconds (at least one pass), calling `step` once per frame. Ends on idle.
+    func play(_ name: String, duration: TimeInterval, step: ((TimeInterval) -> Void)? = nil) async {
+        guard let s = states[name] else { return }
+        let interval = 1 / s.fps
+        let count = max(s.frames.count, Int((duration / interval).rounded()))
+        for i in 0..<count {
+            if Task.isCancelled { return }
+            show(name, frame: i)
+            step?(interval)
+            try? await Task.sleep(for: .seconds(interval))
+        }
+        if !Task.isCancelled { show("idle") }
     }
 
-    private func idleLoop() async {
+    /// Loops `name` until the task is cancelled (agent states, being dragged).
+    func loop(_ name: String) async {
+        guard let s = states[name] else { return }
+        var i = 0
         while !Task.isCancelled {
-            let wait = Double.random(in: motion.breathEveryMin...motion.breathEveryMax)
-            try? await Task.sleep(for: .seconds(wait))
-            guard idleFrames.count > 1, idleFps > 0,
-                  !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { continue }
-            let steps = max(1, Int(motion.breathDuration * idleFps))
-            for step in 1...steps where !Task.isCancelled {
-                image = idleFrames[step % idleFrames.count]
-                try? await Task.sleep(for: .seconds(1 / idleFps))
-            }
-            image = idleFrames.first
+            show(name, frame: i)
+            i += 1
+            if s.frames.count == 1 { break }
+            try? await Task.sleep(for: .seconds(1 / s.fps))
         }
     }
 }

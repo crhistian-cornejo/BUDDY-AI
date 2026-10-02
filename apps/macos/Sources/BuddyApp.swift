@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let core = try BuddyCore(dataDir: "")
             let sprite = try core.sprite(id: "buddy-base")
             let pet = PetWindowController(core: core, sprite: sprite, tokens: tokens)
+            pet.onClick = { [weak pet] in pet?.react("wave") }
             pet.show()
             pet.say(core.hello())
             self.core = core

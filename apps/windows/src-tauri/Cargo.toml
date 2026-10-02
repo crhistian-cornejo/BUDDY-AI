@@ -20,3 +20,7 @@ serde_json.workspace = true
 # macos-private-api only lets the window be transparent when the app is run on a Mac during development.
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+# GetLastInputInfo (seconds since the last input, for "Buddy sleeps when you are away"). A query, not a hook.
+windows = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }

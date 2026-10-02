@@ -9,6 +9,7 @@ pub mod log;
 pub mod orchestrator;
 pub mod parley;
 pub mod paths;
+pub mod pet;
 pub mod pixel;
 pub mod providers;
 pub mod router;
@@ -21,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub use events::{Event, EventBus};
+pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{Sprite, SpriteState};
 
 #[cfg(feature = "ffi")]

@@ -5,11 +5,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use buddy_core::{BuddyCore, Sprite};
-use tauri::menu::{Menu, MenuItem};
+use buddy_core::{BuddyCore, PetBrain, PetContext, PetPlan, PetRect, Sprite, clamp_to_area};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::{
-    AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 /// assets/design-tokens.json, shared with the Mac app.
@@ -22,6 +22,7 @@ const SPRITE: &str = "buddy-base";
 
 struct AppCore {
     core: Arc<BuddyCore>,
+    brain: PetBrain,
     /// Bumped on every move: only the last move of a drag is saved.
     moves: AtomicU64,
 }
@@ -50,27 +51,107 @@ fn sprite(state: State<'_, AppCore>, id: String) -> Result<Sprite, String> {
 }
 
 #[tauri::command]
-fn show_pet_menu(window: WebviewWindow) -> Result<(), String> {
+fn show_pet_menu(window: WebviewWindow, state: State<'_, AppCore>) -> Result<(), String> {
     let app = window.app_handle();
-    let quit = MenuItem::with_id(app, "quit", "Salir de Buddy", true, None::<&str>).map_err(|e| e.to_string())?;
-    let menu = Menu::with_items(app, &[&quit]).map_err(|e| e.to_string())?;
-    window.popup_menu(&menu).map_err(|e| e.to_string())
+    let e = |e: tauri::Error| e.to_string();
+    let walk = CheckMenuItem::with_id(app, "wander", "Pasear por la pantalla", true, wander(&state.core), None::<&str>)
+        .map_err(e)?;
+    let quit = MenuItem::with_id(app, "quit", "Salir de Buddy", true, None::<&str>).map_err(e)?;
+    let separator = PredefinedMenuItem::separator(app).map_err(e)?;
+    let menu = Menu::with_items(app, &[&walk, &separator, &quit]).map_err(e)?;
+    window.popup_menu(&menu).map_err(e)
+}
+
+fn wander(core: &BuddyCore) -> bool {
+    core.setting("pet.wander".into()).ok().flatten().as_deref() != Some("false")
+}
+
+/// The next idle move, from the core's PetBrain (the same rules as on the Mac).
+#[tauri::command]
+fn pet_next(window: WebviewWindow, state: State<'_, AppCore>, reduce_motion: bool) -> Result<PetPlan, String> {
+    let (window_rect, area) = pet_rects(&window).map_err(|e| e.to_string())?;
+    Ok(state.brain.next(PetContext {
+        x: window_rect.x,
+        min_x: area.x,
+        max_x: area.x + area.width - window_rect.width,
+        reduce_motion,
+        wander: wander(&state.core),
+        idle_seconds: idle_seconds(),
+    }))
+}
+
+/// Moves Buddy `dx` logical pixels sideways, never past the work area.
+#[tauri::command]
+fn pet_step(window: WebviewWindow, dx: f64) -> Result<(), String> {
+    let (mut rect, area) = pet_rects(&window).map_err(|e| e.to_string())?;
+    rect.x += dx;
+    let r = clamp_to_area(rect, area);
+    window.set_position(LogicalPosition::new(r.x, r.y)).map_err(|e| e.to_string())
+}
+
+/// After a drag: back fully inside the work area (corners included).
+#[tauri::command]
+fn pet_settle(window: WebviewWindow) -> Result<(), String> {
+    let (rect, area) = pet_rects(&window).map_err(|e| e.to_string())?;
+    let r = clamp_to_area(rect, area);
+    if r != rect {
+        window.set_position(LogicalPosition::new(r.x, r.y)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The pet window and its monitor's work area, in logical pixels.
+fn pet_rects(window: &WebviewWindow) -> tauri::Result<(PetRect, PetRect)> {
+    let scale = window.scale_factor()?;
+    let pos = window.outer_position()?.to_logical::<f64>(scale);
+    let size = window.outer_size()?.to_logical::<f64>(scale);
+    let rect = PetRect { x: pos.x, y: pos.y, width: size.width, height: size.height };
+    let area = match window.current_monitor()?.or(window.primary_monitor()?) {
+        Some(m) => {
+            let a = m.work_area();
+            let p = a.position.to_logical::<f64>(m.scale_factor());
+            let s = a.size.to_logical::<f64>(m.scale_factor());
+            PetRect { x: p.x, y: p.y, width: s.width, height: s.height }
+        }
+        None => rect,
+    };
+    Ok((rect, area))
+}
+
+#[cfg(windows)]
+fn idle_seconds() -> f64 {
+    use windows::Win32::System::SystemInformation::GetTickCount;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        unsafe { GetTickCount() }.wrapping_sub(info.dwTime) as f64 / 1000.0
+    } else {
+        0.0
+    }
+}
+
+#[cfg(not(windows))]
+fn idle_seconds() -> f64 {
+    0.0
 }
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
-        .invoke_handler(tauri::generate_handler![hello, sprite, show_pet_menu])
+        .invoke_handler(tauri::generate_handler![hello, sprite, show_pet_menu, pet_next, pet_step, pet_settle])
         .on_menu_event(|app, event| {
             if event.id() == "quit" {
                 app.exit(0);
+            } else if event.id() == "wander" {
+                let core = &app.state::<AppCore>().core;
+                let _ = core.set_setting("pet.wander".into(), (!wander(core)).to_string());
             }
         })
         .setup(|app| {
             // An empty folder lets the core use %LOCALAPPDATA%\Buddy.
             let core = Arc::new(BuddyCore::open("")?);
             let side = core.sprite(SPRITE.into())?.size as f64 * pet_tokens().scale;
-            app.manage(AppCore { core, moves: AtomicU64::new(0) });
+            app.manage(AppCore { core, brain: PetBrain::default(), moves: AtomicU64::new(0) });
 
             let pet = app.get_webview_window(PET).expect("la ventana «pet» está en tauri.conf.json");
             pet.set_size(LogicalSize::new(side, side))?;

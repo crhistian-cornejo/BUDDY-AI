@@ -32,6 +32,10 @@ final class PixelImageTests: XCTestCase {
         XCTAssertEqual(idle.name, "idle")
         XCTAssertEqual(idle.frames.count, 2)
         XCTAssertNotNil(PixelImage.make(pixels: idle.frames[0], size: Int(sprite.size)))
+        let names = Set(sprite.states.map(\.name))
+        for state in ["blink", "look", "wave", "walk-left", "walk-right", "drag", "think", "work", "ask", "error", "done", "sleep"] {
+            XCTAssertTrue(names.contains(state), "missing \(state)")
+        }
     }
 
     func testDesignTokensShipInTheApp() {

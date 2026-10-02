@@ -25,21 +25,3 @@ export function argbToRgba(pixels: readonly number[]): Uint8ClampedArray<ArrayBu
   });
   return out;
 }
-
-export interface Motion {
-  breathEveryMin: number;
-  breathEveryMax: number;
-  breathDuration: number;
-  maxFps: number;
-}
-
-/**
- * The frame sequence of one breath: `duration` seconds at the state's fps (capped), ending back on frame 0.
- * Idle is a still frame between breaths, so nothing runs while Buddy rests.
- */
-export function breathFrames(frameCount: number, fps: number, motion: Motion): number[] {
-  if (frameCount < 2 || fps <= 0) return [];
-  const rate = Math.min(fps, motion.maxFps);
-  const steps = Math.max(1, Math.floor(motion.breathDuration * rate));
-  return [...Array.from({ length: steps }, (_, i) => (i + 1) % frameCount), 0];
-}
