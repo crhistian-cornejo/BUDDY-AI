@@ -21,6 +21,7 @@ pub struct ChatEngine {
     bus: Arc<EventBus>,
     providers: Vec<Arc<dyn Provider>>,
     running: Mutex<HashMap<String, Cancel>>,
+    usage: Option<Arc<crate::usage::Usage>>,
 }
 
 /// What one agent's turn produced.
@@ -35,7 +36,13 @@ struct Answer {
 
 impl ChatEngine {
     pub fn new(data_dir: PathBuf, store: Arc<Mutex<Store>>, bus: Arc<EventBus>, providers: Vec<Arc<dyn Provider>>) -> Self {
-        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()) }
+        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()), usage: None }
+    }
+
+    /// Plan figures reported during turns go here.
+    pub fn with_usage(mut self, usage: Arc<crate::usage::Usage>) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     pub fn agents(&self) -> Vec<Agent> {
@@ -303,6 +310,14 @@ impl ChatEngine {
                     if !sources.iter().any(|s: &SourceLink| s.url == url) {
                         self.emit(Event::ChatSource { chat_id: chat_id.into(), title: title.clone(), url: url.clone() });
                         sources.push(SourceLink { title, url });
+                    }
+                }
+                TurnEvent::Usage(info) => {
+                    if let Some(usage) = &self.usage {
+                        match provider.id() {
+                            ProviderId::Codex => usage.record_codex(&info),
+                            _ => usage.record_claude(&info),
+                        }
                     }
                 }
                 TurnEvent::Done => {}

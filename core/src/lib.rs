@@ -31,6 +31,7 @@ pub use store::{ChatMessage, ChatSummary, SourceLink};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{FaceRect, Sprite, SpriteState};
 pub use tools::{FocusStatus, Shortcut};
+pub use usage::{ProviderUsage, UsageWindow};
 pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
 
 #[cfg(feature = "ffi")]
@@ -77,6 +78,7 @@ pub struct BuddyCore {
     bus: Arc<EventBus>,
     chat: Arc<ChatEngine>,
     focus: tools::Focus,
+    usage: Arc<usage::Usage>,
     sessions: Arc<SessionHub>,
 }
 
@@ -104,9 +106,10 @@ impl BuddyCore {
     ) -> Result<Self, CoreError> {
         let store = Arc::new(Mutex::new(store));
         let bus = Arc::new(EventBus::default());
-        let chat = Arc::new(ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers));
+        let usage = Arc::new(usage::Usage::new(store.clone(), bus.clone()));
+        let chat = Arc::new(ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers).with_usage(usage.clone()));
         let sessions = Arc::new(SessionHub::new(data_dir.clone(), bus.clone()));
-        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default() })
+        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -229,6 +232,16 @@ impl BuddyCore {
     /// Claude Code / Codex sessions Buddy heard from, most recent first.
     pub fn sessions(&self) -> Vec<SessionInfo> {
         self.sessions.sessions()
+    }
+
+    /// What is used of each plan (Claude, Codex), as last seen.
+    pub fn usage(&self) -> Vec<ProviderUsage> {
+        self.usage.snapshot()
+    }
+
+    /// Asks for fresh plan figures if the last ones are old (call when the user looks at them).
+    pub fn refresh_usage(&self) {
+        self.usage.refresh();
     }
 
     /// Starts a focus block of `minutes` (replacing a running one).

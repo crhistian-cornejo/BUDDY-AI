@@ -30,6 +30,10 @@ pub enum Event {
     FocusChanged { running: bool, ends_at: i64 },
     /// A focus block of `minutes` ended.
     FocusFinished { minutes: u32 },
+    /// The plan figures changed (`usage()` has the new ones).
+    UsageChanged,
+    /// A plan window crossed 95 % used: `left_pct` is what remains.
+    UsageLow { provider: String, label: String, left_pct: u32 },
     /// A Claude Code / Codex session changed state (from its hooks): `working`, `waiting` (it needs the user),
     /// `done` (the turn finished), `error` (the turn failed) or `ended` (the session closed; it is forgotten).
     SessionUpdate { session_id: String, agent: String, project: String, state: String },

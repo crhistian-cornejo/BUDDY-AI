@@ -11,6 +11,7 @@ enum NotchLayout {
     static let tileHeight: CGFloat = 116
     static let playerHeight: CGFloat = 92
     static let dropHeight: CGFloat = 112
+    static let usageHeight: CGFloat = 34
 
     /// Lines the command box shows (wrapped at ~50 characters, at most 6).
     static func commandLines(_ text: String) -> Int {
@@ -34,7 +35,8 @@ enum NotchLayout {
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + extra)
         case .open:
             let player = model.nowPlaying == nil ? 0 : playerHeight + 16
-            return CGSize(width: max(openWidth, notch.width + 48), height: notch.height + 16 + player + tileHeight + 20)
+            let usage = model.usage.isEmpty ? 0 : usageHeight + 12
+            return CGSize(width: max(openWidth, notch.width + 48), height: notch.height + 16 + player + tileHeight + usage + 20)
         case .drop:
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + 16 + dropHeight + 20)
         }
@@ -47,12 +49,11 @@ extension NotchModel {
         sessions.first { $0.state == "waiting" } ?? sessions.first { $0.state == "working" }
     }
 
-    /// What sits beside the notch at rest, by priority: an agent that needs you or works, Buddy answering, the focus
+    /// What sits beside the notch at rest, by priority: Buddy answering, the focus
     /// countdown, the music playing.
     enum Ear: Equatable { case none, session(Session), buddy, focus(FocusStatus), music(EarTrack) }
 
     var ear: Ear {
-        if let session = activeSession { return .session(session) }
         if buddyBusy { return .buddy }
         if let focus, focus.running { return .focus(focus) }
         if let track = earTrack, track.playing { return .music(track) }
@@ -132,6 +133,10 @@ struct NotchView: View {
                                   onRemove: actions.removeShortcut)
                 }
                 .frame(height: NotchLayout.tileHeight, alignment: .top)
+                if !model.usage.isEmpty {
+                    UsageStrip(usage: model.usage)
+                        .padding(.top, -4)
+                }
             }
             .padding(.top, 16)
         case .drop:
@@ -432,6 +437,62 @@ private struct SeekBar: View {
         .frame(height: 14)
         .animation(.easeOut(duration: 0.12), value: hovering)
         .tip("Toca o arrastra para avanzar")
+    }
+}
+
+// MARK: - Usage
+
+/// What is used of each plan: one group per provider, a small bar per window.
+private struct UsageStrip: View {
+    let usage: [ProviderUsage]
+
+    var body: some View {
+        HStack(spacing: 16) {
+            ForEach(usage, id: \.provider) { plan in
+                HStack(spacing: 8) {
+                    ProviderMark(provider: plan.provider, size: 12)
+                    ForEach(plan.windows.prefix(3), id: \.label) { window in
+                        UsageBar(window: window)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: NotchLayout.usageHeight)
+    }
+}
+
+private struct UsageBar: View {
+    let window: UsageWindow
+
+    private var color: Color { window.usedPct >= 90 ? .red : window.usedPct >= 70 ? .orange : .white }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text(window.label).foregroundStyle(.secondary)
+                Text("\(Int(window.usedPct.rounded())) %").monospacedDigit()
+            }
+            .font(.system(size: 10, weight: .semibold))
+            ZStack(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.15))
+                Capsule().fill(color).frame(width: 64 * min(max(window.usedPct / 100, 0), 1))
+            }
+            .frame(width: 64, height: 3)
+        }
+        .tip(Self.help(window))
+    }
+
+    static func help(_ w: UsageWindow) -> String {
+        var text = "\(Int(w.usedPct.rounded())) % usado (\(w.label))"
+        if let resets = w.resetsAt {
+            let date = Date(timeIntervalSince1970: TimeInterval(resets))
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "es")
+            f.setLocalizedDateFormatFromTemplate(Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE d HH:mm")
+            text += " · se reinicia \(f.string(from: date))"
+        }
+        return text
     }
 }
 

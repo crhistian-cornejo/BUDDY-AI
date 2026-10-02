@@ -264,6 +264,7 @@ impl StreamParser {
                 }
                 events
             }
+            Some("rate_limit_event") => vec![TurnEvent::Usage(obj["rate_limit_info"].clone())],
             Some("result") => {
                 if obj["is_error"] == true {
                     let message = obj["result"].as_str().unwrap_or("Claude no pudo completar la respuesta.");

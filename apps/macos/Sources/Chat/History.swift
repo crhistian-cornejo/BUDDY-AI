@@ -93,7 +93,7 @@ struct HistorySearchView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2, pinnedViews: .sectionHeaders) {
+                        LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(HistoryDay.groups(results), id: \.day) { group in
                                 Section {
                                     ForEach(group.chats, id: \.id) { summary in

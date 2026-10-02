@@ -27,8 +27,12 @@
      - **Atajos:** hasta 8 apps, carpetas, archivos o webs; «+» abre el selector del sistema.
    - **«Suelta tus archivos»:** al arrastrar archivos al notch, se pueden dar a Buddy, compartir con la hoja del sistema (AirDrop, Mail…) o copiar su ruta.
    - **Entrada del ratón:** la ventana solo la recibe dentro de la forma; fuera, los clics pasan a lo que hay debajo.
-4. **`core/tools`:** el temporizador de enfoque (un hilo que duerme hasta el final, sin «tic») y los atajos fijados, para las dos apps.
-5. **Windows (Tauri), `bar.html`.**
+4. **`core/usage`:** cuánto queda de cada plan (5 h, semana, mes).
+   - Sale de lo que Claude y Codex ya dicen en cada turno.
+   - Al abrir el notch se piden cifras frescas: Codex cada 5 min como mucho, sin modelo; Claude cada 30 min como mucho, con un turno de una palabra en Haiku.
+   - Al cruzar el 95 % de una ventana, el notch avisa «Te queda N %».
+5. **`core/tools`:** el temporizador de enfoque (un hilo que duerme hasta el final, sin «tic») y los atajos fijados, para las dos apps.
+6. **Windows (Tauri), `bar.html`.**
    - La misma isla negra arriba al centro: píldora en reposo, tarjeta con un aviso y, al pasar el ratón, las mismas herramientas.
    - **Soltar archivos:** dárselos a Buddy, mostrarlos en el Explorador o copiar la ruta.
    - **Música:** «now playing» del sistema (Windows.Media.Control, portado de MIKA), solo mientras está abierta.

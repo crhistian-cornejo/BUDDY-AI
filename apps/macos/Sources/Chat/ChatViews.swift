@@ -291,11 +291,13 @@ struct ActivityLine: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: activity.symbol)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.tint)
-                .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
-                .frame(width: 16)
+            if !activity.symbol.isEmpty {
+                Image(systemName: activity.symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.tint)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
+                    .frame(width: 16)
+            }
             AnswerStatusView(text: activity.text)
         }
         .transition(.opacity)

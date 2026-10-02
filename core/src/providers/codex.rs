@@ -186,6 +186,7 @@ pub fn turn_events(method: &str, params: &Value, turn_id: &str) -> Vec<TurnEvent
                 _ => vec![TurnEvent::Done],
             }
         }
+        "account/rateLimits/updated" => vec![TurnEvent::Usage(params.clone())],
         "error" if params["willRetry"] != true => {
             let message = params["error"]["message"].as_str().unwrap_or("Codex tuvo un error.");
             vec![TurnEvent::Failed(Failure::new(message))]

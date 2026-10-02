@@ -119,6 +119,8 @@ pub enum TurnEvent {
     Delta(String),
     Tool { name: String, summary: String },
     Source { title: String, url: String },
+    /// Plan figures the provider reported during the turn (Claude's `rate_limit_info`, Codex's rate limits).
+    Usage(serde_json::Value),
     Done,
     Failed(Failure),
 }

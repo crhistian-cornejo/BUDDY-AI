@@ -340,6 +340,49 @@ button {
   color: #fafafa;
 }
 
+#usage {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 34px;
+}
+
+.plan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.window {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.window .meter {
+  width: 64px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.window .meter i {
+  display: block;
+  height: 100%;
+  background: #fafafa;
+}
+
+.window .meter i.warn {
+  background: #f59e0b;
+}
+
+.window .meter i.high {
+  background: #ef4444;
+}
+
 #drop {
   padding: 16px 0 20px;
 }

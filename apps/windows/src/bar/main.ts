@@ -15,6 +15,8 @@ interface Session { id: string; agent: string; project: string; state: string }
 interface NowPlaying { app: string; title: string; artist: string; status: string; positionMs: number | null; durationMs: number | null; thumbnail: string | null }
 interface FocusStatus { running: boolean; startedAt: number; endsAt: number; minutes: number }
 interface Shortcut { id: string; name: string; target: string; kind: string }
+interface UsageWindow { label: string; usedPct: number; resetsAt: number | null }
+interface ProviderUsage { provider: string; name: string; windows: UsageWindow[] }
 type CoreEvent =
   | { type: "approvalRequest"; requestId: string; sessionId: string; agent: string; project: string; title: string; summary: string; detail: string; canAllow: boolean }
   | { type: "approvalClosed"; requestId: string }
@@ -22,6 +24,8 @@ type CoreEvent =
   | { type: "focusChanged"; running: boolean; endsAt: number }
   | { type: "focusFinished"; minutes: number }
   | { type: "mascotState"; state: string }
+  | { type: "usageChanged" }
+  | { type: "usageLow"; provider: string; label: string; leftPct: number }
   | { type: string };
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -53,6 +57,7 @@ let tick = 0;
 let hooksConnected = false;
 /** Buddy is answering in the chat (shown beside the bar while the chat is closed). */
 let buddyBusy = false;
+let usage: ProviderUsage[] = [];
 const pendingApproval = new Map<string, string>();
 
 const agentName = (agent: string) => (agent === "codex" ? "Codex" : agent === "buddy" ? "Buddy" : "Claude Code");
@@ -158,6 +163,22 @@ function drawOverview() {
   drawAgents();
   drawFocus();
   drawShortcuts();
+  drawUsage();
+}
+
+/** What is used of each plan: one group per provider, a small bar per window. */
+function drawUsage() {
+  const el = $("usage");
+  el.hidden = !usage.length;
+  el.replaceChildren(...usage.map((plan) => h("div", { class: "plan" }, providerMark(plan.provider, 12),
+    ...plan.windows.slice(0, 3).map((w) => {
+      const pct = Math.round(w.usedPct);
+      const reset = w.resetsAt ? ` · se reinicia ${new Date(w.resetsAt * 1000).toLocaleString("es", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "";
+      const level = pct >= 90 ? "high" : pct >= 70 ? "warn" : "";
+      return h("div", { class: "window", title: `${pct} % usado (${w.label})${reset}` },
+        h("span", {}, h("span", { class: "muted", text: `${w.label} ` }), `${pct} %`),
+        h("div", { class: "meter" }, h("i", { class: level, style: `width:${Math.min(Math.max(pct, 0), 100)}%` })));
+    }))));
 }
 
 function drawMusic() {
@@ -316,6 +337,15 @@ function onCore(e: CoreEvent) {
       closeApproval(id);
       break;
     }
+    case "usageChanged":
+      void invoke<ProviderUsage[]>("usage").then((u) => { usage = u; if (mode() === "open") render(); });
+      break;
+    case "usageLow": {
+      const u = e as Extract<CoreEvent, { type: "usageLow" }>;
+      const name = u.provider === "codex" ? "Codex" : "Claude";
+      show({ kind: "waiting", agent: u.provider, title: `Te queda ${u.leftPct} % de ${name}`, detail: `Ventana: ${u.label}. Buddy usará el otro proveedor si se acaba.` });
+      break;
+    }
     case "mascotState": {
       const state = (e as Extract<CoreEvent, { type: "mascotState" }>).state;
       const busy = state === "think" || state === "work";
@@ -367,7 +397,10 @@ async function refreshHooks() {
 island.addEventListener("mouseenter", () => {
   hovering = true;
   window.clearTimeout(dismissTimer);
-  if (!notice) void refreshHooks();
+  if (!notice) {
+    void refreshHooks();
+    void invoke("refresh_usage");
+  }
   render();
 });
 island.addEventListener("mouseleave", () => {
@@ -399,7 +432,9 @@ void Promise.all([
   invoke<{ sessionId: string; agent: string; project: string; state: string }[]>("sessions").catch(() => []),
   invoke<FocusStatus>("focus_status").catch(() => null),
   invoke<Shortcut[]>("shortcuts").catch(() => []),
-]).then(([list, f, s]) => {
+  invoke<ProviderUsage[]>("usage").catch(() => []),
+]).then(([list, f, s, u]) => {
+  usage = u;
   sessions = list.map((x) => ({ id: x.sessionId, agent: x.agent, project: x.project, state: x.state }));
   focus = f?.running ? f : null;
   shortcuts = s;

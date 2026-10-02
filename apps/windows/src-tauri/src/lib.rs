@@ -187,6 +187,8 @@ pub fn run() {
             reveal_path,
             give_files,
             pick_files,
+            usage,
+            refresh_usage,
             messages,
             agents,
             open_url
@@ -462,6 +464,16 @@ async fn connect_hooks(app: AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+fn usage(state: State<'_, AppCore>) -> Vec<buddy_core::ProviderUsage> {
+    state.core.usage()
+}
+
+#[tauri::command]
+fn refresh_usage(state: State<'_, AppCore>) {
+    state.core.refresh_usage();
 }
 
 #[tauri::command]

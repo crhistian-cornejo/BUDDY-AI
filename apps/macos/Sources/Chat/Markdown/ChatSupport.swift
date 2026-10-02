@@ -47,10 +47,11 @@ struct LiveMessage: Identifiable, Equatable, Sendable {
 
 /// A live line under the author: thinking, searching, reading, handing off.
 struct ChatActivity: Equatable, Sendable {
+    /// Empty: no symbol, only the shimmering text (thinking).
     var symbol: String
     var text: String
 
-    static let thinking = ChatActivity(symbol: "ellipsis.bubble", text: "Pensando…")
+    static let thinking = ChatActivity(symbol: "", text: "Pensando…")
 
     static func tool(_ name: String, _ summary: String) -> ChatActivity {
         switch name {

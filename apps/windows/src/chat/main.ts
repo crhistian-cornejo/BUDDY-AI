@@ -64,7 +64,8 @@ $("close").append(icon(TABLER.x));
 
 
 interface Activity { icon: string; text: string }
-const THINKING: Activity = { icon: TABLER.dots, text: "Pensando…" };
+/** No icon: only the shimmering text. */
+const THINKING: Activity = { icon: "", text: "Pensando…" };
 
 function activityFor(tool: string, summary: string): Activity {
   if (tool === "WebSearch") return { icon: TABLER.search, text: summary ? `Buscando: ${summary}` : "Buscando en la web…" };
@@ -110,7 +111,7 @@ function actionsFor(getText: () => string): HTMLElement {
 
 function setActivity(el: HTMLElement, activity: Activity | null) {
   el.hidden = !activity;
-  if (activity) el.replaceChildren(icon(activity.icon, 16), h("span", { text: activity.text }));
+  if (activity) el.replaceChildren(...(activity.icon ? [icon(activity.icon, 16)] : []), h("span", { class: "answer-status", text: activity.text }));
 }
 
 function failure(text: string) {

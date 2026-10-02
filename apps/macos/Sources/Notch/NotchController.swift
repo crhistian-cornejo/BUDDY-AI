@@ -23,7 +23,7 @@ final class NotchController {
     var onGiveFiles: (([URL]) -> Void)?
 
     /// The most the island ever needs; the window keeps this size.
-    static let canvas = CGSize(width: 640, height: 320)
+    static let canvas = CGSize(width: 640, height: 380)
 
     init(core: BuddyCore) {
         self.core = core
@@ -55,6 +55,7 @@ final class NotchController {
         model.focus = core.focusStatus().running ? core.focusStatus() : nil
         watchPlayers()
         model.shortcuts = (try? core.shortcuts()) ?? []
+        model.usage = core.usage()
         observe()
         let handler: (NSEvent) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.pointerMoved() } }
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged], handler: handler) as Any)
@@ -88,6 +89,12 @@ final class NotchController {
         case let .approvalClosed(requestId):
             approvalSessions[requestId] = nil
             model.closeApproval(requestId)
+        case .usageChanged:
+            model.usage = core.usage()
+        case let .usageLow(provider, label, leftPct):
+            let name = provider == "codex" ? "Codex" : "Claude"
+            model.show(.init(kind: .waiting, agent: provider, title: "Te queda \(leftPct) % de \(name)",
+                             detail: "Ventana: \(label). Buddy usará el otro proveedor si se acaba."))
         case let .mascotState(state):
             model.buddyBusy = state == "think" || state == "work"
         case let .focusChanged(running, _):
@@ -156,6 +163,7 @@ final class NotchController {
                 guard let self else { return }
                 self.hoverWork = nil
                 self.refreshHooks()
+                self.core.refreshUsage()
                 self.model.setHovering(true)
             }
             hoverWork = work
@@ -292,6 +300,7 @@ final class NotchController {
             _ = model.dropped
             _ = model.dragging
             _ = model.buddyBusy
+            _ = model.usage
             _ = model.earTrack
         } onChange: { [weak self] in
             Task { @MainActor in
