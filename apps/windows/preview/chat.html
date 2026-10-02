@@ -1,0 +1,54 @@
+<!doctype html>
+<!-- Development only (not built): the Windows chat page with a fake Tauri bridge, to check its look in a browser. -->
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/chat/chat.css" />
+    <style>html, body { background: #888 !important; } #root { width: 400px; margin: 40px; }</style>
+    <script>
+      const handlers = {};
+      let next = 1;
+      const emit = (payload) => Object.values(handlers).forEach((h) => h({ event: "core-event", id: 0, payload }));
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "chat" }, currentWebview: { windowLabel: "chat", label: "chat" } },
+        transformCallback: (cb) => { const id = next++; handlers[id] = cb; return id; },
+        unregisterCallback: () => {},
+        invoke: async (cmd, args) => {
+          if (cmd === "send_message") {
+            const c = "c1", s = (t, d) => setTimeout(() => emit(d), t);
+            s(400, { type: "chatStarted", chatId: c, agent: "buddy", agentName: "Buddy", provider: "claude" });
+            s(1200, { type: "chatStarted", chatId: c, agent: "parley", agentName: "PARLEY", provider: "claude" });
+            s(2000, { type: "chatTool", chatId: c, name: "WebSearch", summary: "Real Madrid próximo partido" });
+            s(3200, { type: "chatSource", chatId: c, title: "Marca", url: "https://www.marca.com/futbol/real-madrid.html" });
+            s(3300, { type: "chatDelta", chatId: c, text: "**Real Madrid** llega en buena forma:\n\n| Partido | Resultado |\n|---|---|\n| vs Getafe | 2-0 |\n| vs Betis | 1-1 |\n\nConfianza: *media*." });
+            s(4000, { type: "chatDone", chatId: c, messageId: 2 });
+            return c;
+          }
+          if (cmd === "chats") return [{ id: "c1", title: "¿Cómo llega el Madrid?", updatedAt: 0, preview: "" }];
+          if (cmd === "agents") return [{ id: "buddy", name: "Buddy" }, { id: "parley", name: "PARLEY" }];
+          return null;
+        },
+      };
+    </script>
+  </head>
+  <body class="chat">
+    <div id="root">
+      <section id="panel" class="card" hidden>
+        <header>
+          <h1 id="title">Buddy</h1>
+          <button id="new" class="ghost" type="button" title="Nuevo chat"></button>
+          <button id="history" class="ghost" type="button" title="Chats recientes"></button>
+          <button id="close" class="ghost" type="button" title="Cerrar (Esc)"></button>
+        </header>
+        <nav id="recent" hidden></nav>
+        <div id="messages" role="log"></div>
+      </section>
+      <form id="composer" class="card" autocomplete="off">
+        <textarea id="input" rows="1" placeholder="Pregúntale a Buddy"></textarea>
+        <button type="submit" id="send" class="primary" title="Enviar (Enter)"></button>
+      </form>
+    </div>
+    <script type="module" src="/src/chat/main.ts"></script>
+  </body>
+</html>

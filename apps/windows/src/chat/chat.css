@@ -1,6 +1,10 @@
 /* The chat window on Windows: flat cards on the system theme (no drop shadow inside the window), Segoe UI Variable,
    a 4-px spacing grid and 16-px Tabler icons in 28-px ghost buttons. */
 
+[hidden] {
+  display: none !important;
+}
+
 body.chat {
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   font-size: var(--font-size-body);
