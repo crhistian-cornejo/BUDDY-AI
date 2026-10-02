@@ -48,6 +48,7 @@ final class ChatWindows {
         NSApp.activate()
         composer?.makeKeyAndOrderFront(nil)
         onOpenChange?(true)
+        chat.prewarm()
         observeChat()
         updateChatPanel()
         layout()

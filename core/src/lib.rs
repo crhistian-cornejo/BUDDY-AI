@@ -164,6 +164,11 @@ impl BuddyCore {
         self.chat.send(chat_id, text, attachments)
     }
 
+    /// Call when the composer opens: Buddy's provider gets ready so the first words come sooner.
+    pub fn prewarm(&self) {
+        self.chat.prewarm();
+    }
+
     /// Stops the answer being written in that chat.
     pub fn cancel_chat(&self, chat_id: String) {
         self.chat.cancel(&chat_id);

@@ -29,6 +29,11 @@ final class ChatController {
         return line.count > 48 ? String(line.prefix(48)) + "…" : line
     }
 
+    /// The composer opened: Buddy gets ready so the first words come sooner.
+    func prewarm() {
+        core.prewarm()
+    }
+
     func attach(_ urls: [URL]) {
         for url in urls where !attachments.contains(url) { attachments.append(url) }
     }

@@ -593,6 +593,8 @@ fn toggle_chat(app: AppHandle) -> Result<(), String> {
             .map_err(|e| e.to_string())?,
     };
     state.chat_open.store(true, Ordering::SeqCst);
+    // Buddy gets ready while the user types, so the first words come sooner.
+    state.core.prewarm();
     place_chat(&app).map_err(|e| e.to_string())?;
     window.show().and_then(|_| window.set_focus()).map_err(|e| e.to_string())
 }

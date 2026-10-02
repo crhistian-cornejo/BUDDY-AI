@@ -145,6 +145,8 @@ pub trait Provider: Send + Sync {
     fn id(&self) -> ProviderId;
     /// Whether its CLI is installed (no network, no model).
     fn installed(&self) -> bool;
+    /// Gets ready for a turn like `request` (start-up done while the user types). Optional.
+    fn prewarm(&self, _request: &TurnRequest) {}
     /// Runs one turn to the end, calling `emit` as events arrive. Always ends with `Done` or `Failed`.
     fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent));
 }

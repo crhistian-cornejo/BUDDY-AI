@@ -7,12 +7,23 @@ fn main() {
     let _ = std::fs::remove_dir_all(&dir);
     let core = BuddyCore::open(&dir).expect("core");
     let rx = core.events();
+    if std::env::var("BUDDY_PREWARM").is_ok() {
+        core.prewarm();
+        std::thread::sleep(std::time::Duration::from_secs(4));
+    }
     let start = std::time::Instant::now();
+    let mut first = None;
     let chat = core.send_message(None, question, std::env::var("BUDDY_ATTACH").map(|a| vec![a]).unwrap_or_default()).expect("send");
     while let Ok(event) = rx.recv() {
         let end = matches!(&event, Event::MascotState { state } if ["done", "error", "idle"].contains(&state.as_str()));
         match &event {
-            Event::ChatDelta { .. } => print!("."),
+            Event::ChatDelta { .. } => {
+                if first.is_none() {
+                    first = Some(start.elapsed());
+                    println!("\nprimer texto a los {:?}", start.elapsed());
+                }
+                print!(".")
+            }
             other => println!("\n{:>6} ms {other:?}", start.elapsed().as_millis()),
         }
         if end {

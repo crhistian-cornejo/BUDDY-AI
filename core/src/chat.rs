@@ -139,6 +139,25 @@ impl ChatEngine {
         Ok(())
     }
 
+    /// Gets Buddy's provider ready for a new chat while the user types (Claude: a warm process), off the caller.
+    pub fn prewarm(self: &Arc<Self>) {
+        let engine = self.clone();
+        std::thread::spawn(move || {
+            let agents = engine.agents();
+            let Some(buddy) = agents.iter().find(|a| a.id == ORCHESTRATOR) else { return };
+            let request = TurnRequest {
+                system: format!("{}{}", buddy.prompt, orchestrator::roster_prompt(&agents)),
+                workspace: orchestrator::workspace(&engine.data_dir, &buddy.id),
+                model: buddy.model.clone(),
+                effort: buddy.effort.clone(),
+                ..Default::default()
+            };
+            if let Some(p) = engine.providers.iter().find(|p| p.id() == buddy.provider && p.installed()) {
+                p.prewarm(&request);
+            }
+        });
+    }
+
     pub fn cancel(&self, chat_id: &str) {
         if let Some(cancel) = self.running.lock().unwrap().remove(chat_id) {
             cancel.cancel();

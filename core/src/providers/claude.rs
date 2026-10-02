@@ -4,8 +4,10 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -17,11 +19,46 @@ const TOOLS: &str = "WebSearch,WebFetch";
 
 pub struct Claude {
     exe: Option<PathBuf>,
+    /// Warm `claude` processes (stream-json in and out): one per conversation, plus a spare made ready while the
+    /// user types. Each answers its next turn without the CLI's start-up time.
+    pool: Arc<Mutex<Vec<Live>>>,
+    reaper: Arc<AtomicBool>,
+}
+
+/// Keeping more than this many warm processes kills the least recently used.
+const MAX_LIVE: usize = 4;
+/// A warm process unused for this long is closed.
+const IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// One running `claude -p --input-format stream-json`, waiting for its next message.
+struct Live {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: Receiver<String>,
+    stderr: Arc<Mutex<String>>,
+    /// Everything that fixes its behaviour (arguments minus the conversation to resume, folder).
+    signature: String,
+    /// The conversation it holds (None: a fresh spare).
+    session: Option<String>,
+    used: Instant,
+}
+
+impl Live {
+    fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl Claude {
     pub fn new() -> Self {
-        Self { exe: process::locate("claude") }
+        Self { exe: process::locate("claude"), pool: Arc::default(), reaper: Arc::default() }
     }
 
     /// `--safe-mode` ignores the user's hooks, plugins and CLAUDE.md (Buddy's own prompt rules); no MCP servers.
@@ -93,86 +130,170 @@ impl Provider for Claude {
         self.exe.is_some()
     }
 
+    fn prewarm(&self, request: &TurnRequest) {
+        let Some(exe) = &self.exe else { return };
+        let fresh = TurnRequest { resume: None, ..request.clone() };
+        let signature = signature(&fresh);
+        if self.pool.lock().unwrap().iter().any(|l| l.session.is_none() && l.signature == signature) {
+            return;
+        }
+        if let Ok(live) = spawn_live(exe, &fresh) {
+            self.put(live);
+        }
+    }
+
     fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
         let Some(exe) = &self.exe else {
             emit(TurnEvent::Failed(Failure { kind: FailureKind::Missing, message: "claude no está instalado".into() }));
             return;
         };
-        let _ = std::fs::create_dir_all(&request.workspace);
-        let mut cmd = process::command(exe);
-        cmd.args(Self::arguments(request)).current_dir(&request.workspace);
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => return emit(TurnEvent::Failed(Failure::new(format!("No se pudo iniciar Claude: {e}")))),
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let prompt = request.prompt.clone();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(prompt.as_bytes());
-            });
-        }
-        let stdout = child.stdout.take().expect("stdout is piped");
-        let stderr = child.stderr.take().expect("stderr is piped");
-        let err_text = Arc::new(Mutex::new(String::new()));
-        let err_reader = {
-            let err_text = err_text.clone();
-            std::thread::spawn(move || {
-                let mut buf = String::new();
-                let _ = stderr.take(32_768).read_to_string(&mut buf);
-                *err_text.lock().unwrap() = buf;
-            })
-        };
-        let child = Arc::new(Mutex::new(child));
-        let finished_flag = Cancel::default();
-        let watcher = watch_cancel(child.clone(), cancel.clone(), finished_flag.clone());
-
-        let mut parser = StreamParser::default();
-        let mut finished = false;
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            for event in parser.feed(&line) {
-                finished |= matches!(event, TurnEvent::Done | TurnEvent::Failed(_));
-                emit(event);
+        let message = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [{ "type": "text", "text": request.prompt }] },
+        })
+        .to_string();
+        // A warm process for this conversation (or a spare), else a new one; a dead one is replaced once.
+        let mut live = None;
+        for attempt in 0..2 {
+            let mut candidate = match (attempt, self.take(request)) {
+                (0, Some(l)) => l,
+                _ => match spawn_live(exe, request) {
+                    Ok(l) => l,
+                    Err(e) => return emit(TurnEvent::Failed(Failure::new(e))),
+                },
+            };
+            if writeln!(candidate.stdin, "{message}").and_then(|_| candidate.stdin.flush()).is_ok() {
+                live = Some(candidate);
+                break;
             }
         }
-        let _ = child.lock().unwrap().wait();
-        finished_flag.cancel(); // ends the watcher (never the user's cancel: that one means "stopped by the user")
-        let _ = watcher.join();
-        let _ = err_reader.join();
-        if !finished {
-            let detail = err_text.lock().unwrap().trim().to_string();
-            if detail.is_empty() {
-                emit(TurnEvent::Done);
-            } else {
-                emit(TurnEvent::Failed(Failure::new(detail)));
+        let Some(mut live) = live else {
+            return emit(TurnEvent::Failed(Failure::new("No se pudo hablar con Claude.")));
+        };
+
+        let mut parser = StreamParser::default();
+        let mut outcome = None;
+        loop {
+            if cancel.is_cancelled() {
+                // Stopped by the user: the process (and what it was writing) goes away.
+                return emit(TurnEvent::Done);
+            }
+            match live.lines.recv_timeout(Duration::from_millis(100)) {
+                Ok(line) => {
+                    for event in parser.feed(&line) {
+                        if let TurnEvent::Session(id) = &event {
+                            live.session = Some(id.clone());
+                        }
+                        let end = matches!(event, TurnEvent::Done | TurnEvent::Failed(_));
+                        if end {
+                            outcome = Some(matches!(event, TurnEvent::Done));
+                        }
+                        emit(event);
+                    }
+                    if outcome.is_some() {
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        match outcome {
+            Some(true) => {
+                live.used = Instant::now();
+                self.put(live);
+            }
+            Some(false) => {}
+            None => {
+                // The process ended without a result: say what it printed, if anything.
+                let _ = live.child.wait();
+                let detail = live.stderr.lock().unwrap().trim().to_string();
+                emit(if detail.is_empty() { TurnEvent::Done } else { TurnEvent::Failed(Failure::new(detail)) });
             }
         }
     }
 }
 
-/// Interrupts the child once the turn is cancelled; polls only while a turn runs and stops when `finished` is set.
-pub(crate) fn watch_cancel(
-    child: Arc<Mutex<std::process::Child>>,
-    cancel: Cancel,
-    finished: Cancel,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        loop {
-            if finished.is_cancelled() {
-                return;
-            }
-            if cancel.is_cancelled() {
-                let mut c = child.lock().unwrap();
-                if matches!(c.try_wait(), Ok(None)) {
-                    process::interrupt(&mut c);
-                }
-                return;
-            }
-            if !matches!(child.lock().unwrap().try_wait(), Ok(None)) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
+impl Claude {
+    /// The warm process for this request: its conversation's, or a spare when it starts a new one.
+    fn take(&self, request: &TurnRequest) -> Option<Live> {
+        let signature = signature(request);
+        let wanted = request.resume.clone().filter(|r| !r.is_empty());
+        let mut pool = self.pool.lock().unwrap();
+        pool.retain_mut(Live::alive);
+        let index = pool.iter().position(|l| l.signature == signature && l.session == wanted)?;
+        Some(pool.remove(index))
+    }
+
+    fn put(&self, live: Live) {
+        let mut pool = self.pool.lock().unwrap();
+        pool.push(live);
+        if pool.len() > MAX_LIVE {
+            pool.sort_by_key(|l| std::cmp::Reverse(l.used));
+            pool.truncate(MAX_LIVE);
         }
+        drop(pool);
+        self.ensure_reaper();
+    }
+
+    /// Closes idle processes; runs only while there are some.
+    fn ensure_reaper(&self) {
+        if self.reaper.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (pool, running) = (self.pool.clone(), self.reaper.clone());
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+                let mut p = pool.lock().unwrap();
+                p.retain_mut(|l| l.used.elapsed() < IDLE && l.alive());
+                if p.is_empty() {
+                    running.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+        });
+    }
+}
+
+/// What makes two requests answerable by the same process: everything but the conversation to resume.
+fn signature(request: &TurnRequest) -> String {
+    let fresh = TurnRequest { resume: None, prompt: String::new(), ..request.clone() };
+    format!("{}\u{1f}{}", Claude::arguments(&fresh).join("\u{1f}"), request.workspace.display())
+}
+
+/// Starts `claude` reading messages as stream-json, with readers for its output.
+fn spawn_live(exe: &std::path::Path, request: &TurnRequest) -> Result<Live, String> {
+    let _ = std::fs::create_dir_all(&request.workspace);
+    let mut cmd = process::command(exe);
+    cmd.args(Claude::arguments(request)).args(["--input-format", "stream-json"]).current_dir(&request.workspace);
+    let mut child = cmd.spawn().map_err(|e| format!("No se pudo iniciar Claude: {e}"))?;
+    let stdin = child.stdin.take().ok_or("sin stdin")?;
+    let stdout = child.stdout.take().ok_or("sin stdout")?;
+    let stderr = child.stderr.take().ok_or("sin stderr")?;
+    let (tx, lines) = channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let err_text = Arc::new(Mutex::new(String::new()));
+    let sink = err_text.clone();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stderr.take(32_768).read_to_string(&mut buf);
+        *sink.lock().unwrap() = buf;
+    });
+    Ok(Live {
+        child,
+        stdin,
+        lines,
+        stderr: err_text,
+        signature: signature(request),
+        session: request.resume.clone().filter(|r| !r.is_empty()),
+        used: Instant::now(),
     })
 }
 
