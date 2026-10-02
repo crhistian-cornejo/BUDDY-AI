@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chat: ChatController?
     private var chatWindows: ChatWindows?
     private var notch: NotchController?
+    private var briefingTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let tokens = DesignTokens.load()
@@ -48,6 +49,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 chat?.handle(event)
                 notch?.handle(event)
                 if case let .mascotState(state) = event { pet?.showMascotState(state) }
+                // A new «mensajito»: Buddy says the first line; the notch keeps the list.
+                if case let .briefingReady(count, headline) = event {
+                    pet?.say(Self.short(headline) + (count > 1 ? " (+\(count - 1))" : ""), seconds: 8)
+                    NotificationCenter.default.post(name: .buddyBriefingReady, object: nil)
+                }
             })
             notch.start()
             // Claude Code and Codex hooks: the relay ships in the bundle; the core copies it to a stable place.
@@ -60,6 +66,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.pet = pet
             self.chat = chat
             self.chatWindows = windows
+            // Today's runs (8, 13, 19 h): once a little after launch, then on the hour. The core skips what already ran.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { core.briefingTick() }
+            let timer = Timer(timeInterval: 3600, repeats: true) { _ in core.briefingTick() }
+            timer.tolerance = 300
+            RunLoop.main.add(timer, forMode: .common)
+            briefingTimer = timer
             #if DEBUG
             // BUDDY_DEBUG_PROMPT="…": opens the composer and sends it, to try the whole flow from a terminal.
             if ProcessInfo.processInfo.environment["BUDDY_DEBUG_SETTINGS"] != nil {
@@ -84,5 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.runModal()
             NSApp.terminate(nil)
         }
+    }
+
+    /// One line for Buddy's bubble (it does not wrap).
+    private static func short(_ text: String, limit: Int = 72) -> String {
+        text.count <= limit ? text : String(text.prefix(limit - 1)).trimmingCharacters(in: .whitespaces) + "…"
     }
 }

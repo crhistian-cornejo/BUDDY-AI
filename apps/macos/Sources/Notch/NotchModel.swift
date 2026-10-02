@@ -49,6 +49,8 @@ final class NotchModel {
     var dragging = false
     /// What is used of each plan.
     var usage: [ProviderUsage] = []
+    /// Today's «mensajitos», newest first.
+    var briefing: [BriefingItem] = []
     /// Buddy is answering in the chat (the ears show it while the chat is closed).
     var buddyBusy = false
     /// What a player says is playing, from its own change notifications (no polling): for the ears.

@@ -12,6 +12,13 @@ enum NotchLayout {
     static let playerHeight: CGFloat = 92
     static let dropHeight: CGFloat = 112
     static let usageRow: CGFloat = 14
+    static let briefingRow: CGFloat = 18
+    static let briefingMax = 3
+    /// The «Hoy» list: one line per mensajito, at most three.
+    static func briefingHeight(_ count: Int) -> CGFloat {
+        let rows = CGFloat(min(count, briefingMax))
+        return rows * briefingRow + (rows - 1) * 6
+    }
     /// The usage strip: each plan is a column, its windows (5 h, week…) rows under one another.
     @MainActor
     static func usageHeight(_ usage: [ProviderUsage]) -> CGFloat {
@@ -42,7 +49,9 @@ enum NotchLayout {
         case .open:
             let player = model.nowPlaying == nil ? 0 : playerHeight + 16
             let usage = model.usage.isEmpty ? 0 : usageHeight(model.usage) + 12
-            return CGSize(width: max(openWidth, notch.width + 48), height: notch.height + 16 + player + tileHeight + usage + 20)
+            let news = model.briefing.isEmpty ? 0 : briefingHeight(model.briefing.count) + 12
+            return CGSize(width: max(openWidth, notch.width + 48),
+                          height: notch.height + 16 + player + tileHeight + news + usage + 20)
         case .drop:
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + 16 + dropHeight + 20)
         }
@@ -79,6 +88,7 @@ struct NotchActions {
     var openShortcut: (Shortcut) -> Void
     var addShortcut: () -> Void
     var removeShortcut: (Shortcut) -> Void
+    var openLink: (String) -> Void
     var giveToBuddy: () -> Void
     var share: () -> Void
     var copyPaths: () -> Void
@@ -141,6 +151,10 @@ struct NotchView: View {
                                   onRemove: actions.removeShortcut)
                 }
                 .frame(height: NotchLayout.tileHeight, alignment: .top)
+                if !model.briefing.isEmpty {
+                    BriefingList(items: model.briefing, onOpen: actions.openLink)
+                        .padding(.top, -4)
+                }
                 if !model.usage.isEmpty {
                     UsageStrip(usage: model.usage)
                         .padding(.top, -4)
@@ -476,6 +490,46 @@ private struct UsageStrip: View {
             }
         }
         .frame(height: NotchLayout.usageHeight(usage), alignment: .top)
+    }
+}
+
+/// Today's «mensajitos»: the topic, then the line; a click opens its source.
+private struct BriefingList: View {
+    let items: [BriefingItem]
+    var onOpen: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(items.prefix(NotchLayout.briefingMax).enumerated()), id: \.offset) { _, item in
+                Button {
+                    if let url = item.url { onOpen(url) }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(item.topic)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(width: 72, alignment: .leading)
+                        Text(item.text)
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        if item.url != nil {
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(height: NotchLayout.briefingRow)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(item.url == nil)
+                .tip(item.text)
+            }
+        }
+        .frame(height: NotchLayout.briefingHeight(items.count), alignment: .top)
     }
 }
 

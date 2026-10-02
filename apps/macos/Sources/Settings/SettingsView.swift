@@ -43,6 +43,8 @@ struct SettingsView: View {
                     .tabItem { Label("Uso", systemImage: "chart.bar") }
                 AgentSettings(core: core)
                     .tabItem { Label("Agentes", systemImage: "person.2") }
+                BriefingSettings(core: core)
+                    .tabItem { Label("Mensajitos", systemImage: "newspaper") }
             }
             .frame(width: 560, height: 420)
         } else {
@@ -289,6 +291,82 @@ private struct UsageSettings: View {
     static func k(_ n: Int64) -> String {
         n >= 1_000_000 ? String(format: "%.1f M", Double(n) / 1_000_000) : n >= 1000 ? String(format: "%.1f k", Double(n) / 1000) : "\(n)"
     }
+}
+
+/// The «mensajitos»: on or off, what to look for, and a run now.
+private struct BriefingSettings: View {
+    let core: BuddyCore
+    @State private var topics = ""
+    @State private var items: [BriefingItem] = []
+    @State private var asked = false
+
+    var body: some View {
+        Form {
+            Section {
+                CoreToggle(core: core, key: "briefing.enabled", title: "Mensajitos del día",
+                           detail: "A las 8, 13 y 19 h Buddy busca lo nuevo con el modelo más barato (3 búsquedas como mucho). Si no hay nada nuevo, no dice nada.")
+            }
+            Section("Qué buscar") {
+                TextField("Temas", text: $topics, axis: .vertical)
+                    .lineLimit(3...6)
+                    .labelsHidden()
+                    .onSubmit(save)
+                HStack {
+                    Text("Escribe temas separados por punto y coma. Vacío vuelve a los de siempre.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Guardar", action: save)
+                }
+            }
+            Section("Hoy") {
+                if items.isEmpty {
+                    Text(asked ? "Buscando… aparecerán aquí y en el notch." : "Todavía nada hoy.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    LabeledContent {
+                        if let link = item.url, let url = URL(string: link), url.scheme?.hasPrefix("http") == true {
+                            Link(destination: url) { Image(systemName: "arrow.up.right.square") }
+                                .help("Abrir la fuente")
+                        }
+                    } label: {
+                        Text(item.text)
+                        Text(item.topic)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Buscar ahora") {
+                        save()
+                        asked = true
+                        core.briefingNow()
+                        // With nothing new the core stays quiet: stop saying «Buscando…» after a while.
+                        Task { try? await Task.sleep(for: .seconds(120)); asked = false }
+                    }
+                    .help("Una búsqueda ahora, aunque no sea la hora")
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            topics = core.briefingTopics()
+            items = core.briefing()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .buddyBriefingReady)) { _ in
+            items = core.briefing()
+            asked = false
+        }
+    }
+
+    private func save() {
+        try? core.setBriefingTopics(topics: topics)
+        topics = core.briefingTopics()
+    }
+}
+
+extension Notification.Name {
+    /// Posted when the core announces new «mensajitos» (Settings refreshes its list).
+    static let buddyBriefingReady = Notification.Name("buddy.briefingReady")
 }
 
 private struct AgentSettings: View {

@@ -265,6 +265,22 @@ impl BuddyCore {
         self.briefing.tick(hour, &today);
     }
 
+    /// What the briefing looks for (the defaults until the user writes their own).
+    pub fn briefing_topics(&self) -> String {
+        self.with_store(|s| s.setting(briefing::TOPICS_KEY))
+            .ok()
+            .flatten()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| briefing::DEFAULT_TOPICS.into())
+    }
+
+    /// Saves the topics; an empty text goes back to the defaults.
+    pub fn set_briefing_topics(&self, topics: String) -> Result<(), CoreError> {
+        let topics = topics.trim();
+        let value = if topics.is_empty() || topics == briefing::DEFAULT_TOPICS { "" } else { topics };
+        self.with_store(|s| s.set_setting(briefing::TOPICS_KEY, value))
+    }
+
     /// One briefing run now, whatever the time (from Settings); off the caller's thread.
     pub fn briefing_now(&self) {
         let b = self.briefing.clone();
@@ -365,5 +381,16 @@ mod tests {
         assert_eq!(sprite.size, 48);
         assert!(core.sprite("nadie".into()).is_err());
         assert!(core.hello().starts_with("¡Hola! Soy Buddy"));
+    }
+
+    #[test]
+    fn briefing_topics_fall_back_to_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = BuddyCore::open(dir.path()).unwrap();
+        assert_eq!(core.briefing_topics(), briefing::DEFAULT_TOPICS);
+        core.set_briefing_topics("  fórmula 1  ".into()).unwrap();
+        assert_eq!(core.briefing_topics(), "fórmula 1");
+        core.set_briefing_topics(" ".into()).unwrap();
+        assert_eq!(core.briefing_topics(), briefing::DEFAULT_TOPICS);
     }
 }

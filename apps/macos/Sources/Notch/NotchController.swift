@@ -23,7 +23,7 @@ final class NotchController {
     var onGiveFiles: (([URL]) -> Void)?
 
     /// The most the island ever needs; the window keeps this size.
-    static let canvas = CGSize(width: 640, height: 380)
+    static let canvas = CGSize(width: 640, height: 460)
 
     init(core: BuddyCore) {
         self.core = core
@@ -56,6 +56,7 @@ final class NotchController {
         watchPlayers()
         model.shortcuts = (try? core.shortcuts()) ?? []
         model.usage = core.usage()
+        model.briefing = core.briefing()
         observe()
         let handler: (NSEvent) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.pointerMoved() } }
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged], handler: handler) as Any)
@@ -92,6 +93,8 @@ final class NotchController {
             model.closeApproval(requestId)
         case .usageChanged:
             model.usage = core.usage()
+        case .briefingReady:
+            model.briefing = core.briefing()
         case let .usageLow(provider, label, leftPct):
             let name = provider == "codex" ? "Codex" : "Claude"
             model.show(.init(kind: .waiting, agent: provider, title: "Te queda \(leftPct) % de \(name)",
@@ -207,6 +210,11 @@ final class NotchController {
                       addShortcut: { [weak self] in self?.addShortcut() },
                       removeShortcut: { [weak self] item in
                           self?.model.shortcuts = (try? self?.core.removeShortcut(id: item.id)) ?? self?.model.shortcuts ?? []
+                      },
+                      openLink: { link in
+                          // Only web links from the briefing; anything else is ignored.
+                          guard let url = URL(string: link), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
+                          NSWorkspace.shared.open(url)
                       },
                       giveToBuddy: { [weak self] in
                           guard let self else { return }

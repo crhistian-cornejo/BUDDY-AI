@@ -170,6 +170,20 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         walk.target = self
         walk.state = wander ? .on : .off
         menu.addItem(walk)
+        let news = core.briefing()
+        if !news.isEmpty {
+            let item = NSMenuItem(title: "Novedades de hoy", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for line in news.prefix(8) {
+                let entry = NSMenuItem(title: line.text, action: line.url == nil ? nil : #selector(openNews(_:)), keyEquivalent: "")
+                entry.target = self
+                entry.representedObject = line.url
+                entry.toolTip = line.topic
+                sub.addItem(entry)
+            }
+            item.submenu = sub
+            menu.addItem(item)
+        }
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -185,6 +199,13 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    /// A mensajito's source: web links only.
+    @objc private func openNews(_ sender: NSMenuItem) {
+        guard let link = sender.representedObject as? String, let url = URL(string: link),
+              ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
+        NSWorkspace.shared.open(url)
+    }
 
     /// The system's Settings window (an LSUIElement app has no menu for it).
     @objc private func openSettings() {
