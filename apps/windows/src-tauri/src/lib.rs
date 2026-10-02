@@ -35,6 +35,8 @@ struct AppCore {
     chat_open: AtomicBool,
     /// The chat window's content height (it grows with the answer).
     chat_height: std::sync::Mutex<f64>,
+    /// What the next bubble says (the hello when empty).
+    say: std::sync::Mutex<Option<String>>,
 }
 
 struct PetTokens {
@@ -52,7 +54,7 @@ fn pet_tokens() -> PetTokens {
 
 #[tauri::command]
 fn hello(state: State<'_, AppCore>) -> String {
-    state.core.hello()
+    state.say.lock().ok().and_then(|mut s| s.take()).unwrap_or_else(|| state.core.hello())
 }
 
 #[tauri::command]
@@ -191,7 +193,8 @@ pub fn run() {
             refresh_usage,
             messages,
             agents,
-            open_url
+            open_url,
+            briefing
         ])
         .on_menu_event(|app, event| {
             if event.id() == "quit" {
@@ -211,6 +214,7 @@ pub fn run() {
                 moves: AtomicU64::new(0),
                 chat_open: AtomicBool::new(false),
                 chat_height: std::sync::Mutex::new(60.0),
+                say: std::sync::Mutex::new(None),
             });
             forward_events(app.handle(), &core);
 
@@ -221,6 +225,7 @@ pub fn run() {
             open_bubble(app.handle())?;
             open_bar(app.handle())?;
             start_sessions(app.handle());
+            start_briefing(&core);
             #[cfg(debug_assertions)]
             debug_prompt(app.handle());
             Ok(())
@@ -318,6 +323,48 @@ fn open_bubble(app: &AppHandle) -> tauri::Result<()> {
     bubble.set_ignore_cursor_events(true)?;
     place_bubble(app, &bubble)?;
     bubble.show()
+}
+
+/// Shows `text` in Buddy's bubble (replacing the one on screen).
+fn say(app: &AppHandle, text: String) {
+    if let Ok(mut next) = app.state::<AppCore>().say.lock() {
+        *next = Some(text);
+    }
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(old) = app2.get_webview_window(BUBBLE) {
+            let _ = old.destroy();
+        }
+        let _ = open_bubble(&app2);
+    });
+}
+
+/// One line for the bubble (it does not wrap).
+fn short(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(limit - 1).collect::<String>().trim_end())
+}
+
+/// Today's runs of the «mensajitos» (8, 13, 19 h): once a little after launch, then hourly; the core skips what ran.
+fn start_briefing(core: &Arc<BuddyCore>) {
+    let core = core.clone();
+    std::thread::Builder::new()
+        .name("buddy-briefing".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_secs(20));
+            loop {
+                core.briefing_tick();
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+        })
+        .expect("briefing thread");
+}
+
+#[tauri::command]
+fn briefing(state: State<'_, AppCore>) -> Vec<buddy_core::BriefingItem> {
+    state.core.briefing()
 }
 
 /// Centered above Buddy, or below when there is no room above.
@@ -565,6 +612,11 @@ fn forward_events(app: &AppHandle, core: &BuddyCore) {
         .name("buddy-events".into())
         .spawn(move || {
             while let Ok(event) = rx.recv() {
+                // A new «mensajito»: Buddy says the first line; the bar keeps the list.
+                if let buddy_core::Event::BriefingReady { count, headline } = &event {
+                    let more = if *count > 1 { format!(" (+{})", count - 1) } else { String::new() };
+                    say(&app, format!("{}{more}", short(headline, 72)));
+                }
                 let _ = app.emit("core-event", &event);
             }
         })

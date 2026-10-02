@@ -16,6 +16,7 @@ interface NowPlaying { app: string; title: string; artist: string; status: strin
 interface FocusStatus { running: boolean; startedAt: number; endsAt: number; minutes: number }
 interface Shortcut { id: string; name: string; target: string; kind: string }
 interface UsageWindow { label: string; usedPct: number; resetsAt: number | null }
+interface BriefingItem { topic: string; text: string; url: string | null; at: number }
 interface ProviderUsage { provider: string; name: string; windows: UsageWindow[] }
 type CoreEvent =
   | { type: "approvalRequest"; requestId: string; sessionId: string; agent: string; project: string; title: string; summary: string; detail: string; canAllow: boolean }
@@ -58,6 +59,8 @@ let hooksConnected = false;
 /** Buddy is answering in the chat (shown beside the bar while the chat is closed). */
 let buddyBusy = false;
 let usage: ProviderUsage[] = [];
+/** Today's «mensajitos», newest first. */
+let news: BriefingItem[] = [];
 const pendingApproval = new Map<string, string>();
 
 const agentName = (agent: string) => (agent === "codex" ? "Codex" : agent === "buddy" ? "Buddy" : "Claude Code");
@@ -163,7 +166,24 @@ function drawOverview() {
   drawAgents();
   drawFocus();
   drawShortcuts();
+  drawNews();
   drawUsage();
+}
+
+/** Today's «mensajitos»: the topic, then the line; a click opens its source. */
+function drawNews() {
+  const el = $("news");
+  el.hidden = !news.length;
+  el.replaceChildren(...news.slice(0, 3).map((item) => {
+    const row = h("button", { class: "news-row", title: item.text, disabled: !item.url },
+      h("span", { class: "muted topic", text: item.topic }),
+      h("span", { class: "text", text: item.text }));
+    if (item.url) {
+      row.append(h("span", { class: "go" }, icon(TABLER.arrowUpRight, 11)));
+      row.addEventListener("click", () => void invoke("open_url", { url: item.url }));
+    }
+    return row;
+  }));
 }
 
 /** What is used of each plan: one column per provider, a row per window under one another. */
@@ -342,6 +362,9 @@ function onCore(e: CoreEvent) {
     case "usageChanged":
       void invoke<ProviderUsage[]>("usage").then((u) => { usage = u; if (mode() === "open") render(); });
       break;
+    case "briefingReady":
+      void invoke<BriefingItem[]>("briefing").then((b) => { news = b; if (mode() === "open") render(); });
+      break;
     case "usageLow": {
       const u = e as Extract<CoreEvent, { type: "usageLow" }>;
       const name = u.provider === "codex" ? "Codex" : "Claude";
@@ -435,8 +458,10 @@ void Promise.all([
   invoke<FocusStatus>("focus_status").catch(() => null),
   invoke<Shortcut[]>("shortcuts").catch(() => []),
   invoke<ProviderUsage[]>("usage").catch(() => []),
-]).then(([list, f, s, u]) => {
+  invoke<BriefingItem[]>("briefing").catch(() => []),
+]).then(([list, f, s, u, b]) => {
   usage = u;
+  news = b;
   sessions = list.map((x) => ({ id: x.sessionId, agent: x.agent, project: x.project, state: x.state }));
   focus = f?.running ? f : null;
   shortcuts = s;

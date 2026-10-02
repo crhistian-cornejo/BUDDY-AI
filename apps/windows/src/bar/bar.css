@@ -343,6 +343,60 @@ button {
   color: #fafafa;
 }
 
+#news {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -4px;
+}
+
+.news-row {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.news-row[disabled] {
+  cursor: default;
+}
+
+.news-row .topic {
+  flex: none;
+  width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.news-row .text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.news-row .go {
+  display: inline-grid;
+  color: #71717a;
+}
+
+.news-row:not([disabled]):hover .text {
+  color: var(--mint);
+}
+
+.news-row:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 #usage {
   display: flex;
   align-items: flex-start;

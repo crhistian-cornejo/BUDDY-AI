@@ -37,6 +37,10 @@ body.bubble {
   font-size: var(--font-size-body);
   font-weight: 500;
   white-space: nowrap;
+  max-width: calc(100vw - 12px);
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
   opacity: 0;
   transition: opacity 0.2s ease-out;
 }

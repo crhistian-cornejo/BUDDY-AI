@@ -20,6 +20,12 @@
             focus_status: { running: true, startedAt: now - 600, endsAt: now + 900, minutes: 25 },
             shortcuts: [{ id: "a", name: "Descargas", target: "C:/Users/x/Downloads", kind: "folder" }, { id: "b", name: "github.com", target: "https://github.com", kind: "web" }],
             hooks_status: [{ installed: true }],
+            usage: [{ provider: "claude", name: "Claude", windows: [{ label: "5 h", usedPct: 56, resetsAt: null }, { label: "Semana", usedPct: 6, resetsAt: null }] }, { provider: "codex", name: "Codex", windows: [{ label: "Semana", usedPct: 0, resetsAt: null }] }],
+            briefing: [
+              { topic: "Apple", text: "Apple prepara hasta 7 productos para octubre: iPad mini OLED, iMac y MacBook Pro con M6.", url: "https://example.com/a", at: now },
+              { topic: "fútbol", text: "El Real Madrid gana 2-1 en Montilivi con gol de Mbappé en el 88'.", url: "https://example.com/b", at: now },
+              { topic: "tecnología", text: "Claude Code añade agentes en segundo plano para tareas largas.", url: null, at: now },
+            ],
             media_now_playing: { app: "Spotify", title: "i'm way too self aware", artist: "oskar med k", status: "playing", positionMs: 23000, durationMs: 149000, thumbnail: null },
           })[cmd] ?? null;
         },
@@ -37,6 +43,8 @@
           <div class="tile" id="focus"></div>
           <div class="tile" id="shortcuts"></div>
         </div>
+        <div id="news" hidden></div>
+        <div id="usage" hidden></div>
       </section>
       <section id="drop" hidden></section>
     </div>

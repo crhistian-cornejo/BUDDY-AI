@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   window.setTimeout(() => {
     bubble.classList.remove("shown");
     window.setTimeout(() => void getCurrentWindow().close(), tokens.motion.fadeOut * 1000 + 50);
-  }, tokens.motion.helloSeconds * 1000);
+  }, Math.max(tokens.motion.helloSeconds, bubble.textContent.length / 10) * 1000);
 }
 
 void main();
