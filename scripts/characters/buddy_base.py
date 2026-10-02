@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Buddy's base character ("Mochi"): a chibi in a mint mochi hood with a sprout, 48x48.
+"""Buddy's base character: a chibi in a mint mochi hood with a sprout, 48x48.
 
 Writes core/characters/buddy-base.json (the source the core loads). With --preview DIR it also writes a PNG sheet
 and one animated GIF per state. The JSON is what ships; this script is how it is drawn: every state is a list of

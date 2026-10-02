@@ -9,13 +9,23 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 /// Phase 0 carries only what exists today. Later phases add `TextDelta`, `ToolStatus`, `SessionFinished`,
 /// `NeedsApproval`, `UsageLow`, `PickNew`, `BriefingReady`… (see docs/ARCHITECTURE.md).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum Event {
     /// A setting was saved (the key only; values may be private).
     SettingChanged { key: String },
     /// The mascot should show another state (`idle`, `think`, `work`…), by the priority rules of the core.
     MascotState { state: String },
+    /// An agent starts answering in a chat (Buddy first; a specialist after a hand-off).
+    ChatStarted { chat_id: String, agent: String, agent_name: String, provider: String },
+    /// Text of the answer, as it arrives.
+    ChatDelta { chat_id: String, text: String },
+    /// The agent is using a tool (searching, reading a page).
+    ChatTool { chat_id: String, name: String, summary: String },
+    ChatSource { chat_id: String, title: String, url: String },
+    /// The answer is complete and saved.
+    ChatDone { chat_id: String, message_id: i64 },
+    ChatFailed { chat_id: String, message: String },
 }
 
 #[derive(Default)]

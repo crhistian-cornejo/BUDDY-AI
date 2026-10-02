@@ -3,7 +3,7 @@
 ## Principios
 
 - **Estilo Claude Code (Clawd) / mascotas de Codex:** pixel art chibi, pequeño, con mucha personalidad. El nivel de detalle de referencia son las mascotas de Codex (Fireball, Rocky): capucha o cabeza-disfraz, ventana de cara color piel, ojitos negros con brillo, rubor, cuerpo pequeño y sombreado con textura.
-- **Buddy es «Mochi»** (elegido por el dueño el 2026-10-02): un chibi con capucha de mochi menta y un brote de dos hojas, cara crema, barriguita crema y patitas. Nada de robots.
+- **Buddy** (elegido por el dueño el 2026-10-02) es un chibi con capucha de mochi menta y un brote de dos hojas, cara crema, barriguita crema y patitas. Nada de robots.
 - **Dibujado en código, no en imágenes.**
   - Cada personaje es una cuadrícula de píxeles definida como datos: filas de caracteres, donde cada carácter es un color de la paleta.
   - Se pinta con Canvas en SwiftUI (Mac) y Canvas 2D (Windows) **desde la misma definición**, así se ve igual en los dos.
@@ -22,14 +22,14 @@
 
 - **Cuadrícula base:** 48 × 48 píxeles por fotograma (el formato admite otros tamaños; el núcleo los valida).
 - **Tamaños en pantalla:** pequeño 72 pt (×1,5, nítido en Retina), normal 96 pt (×2), grande 144 pt (×3). Están en `assets/design-tokens.json`.
-- **Paleta:** como mucho 16 colores por personaje. Mochi usa 14: contorno verde oscuro, 4 tonos de menta, 2 de piel, ojos, brillo, rubor, boca y 3 de hoja.
+- **Paleta:** como mucho 16 colores por personaje. Buddy usa 16: contorno verde oscuro, 4 tonos de menta, 2 de piel, ojos, brillo, rubor, boca y 3 de hoja.
 - **Cómo se dibuja:** `scripts/characters/buddy_base.py` genera `core/characters/buddy-base.json` (lo que se distribuye) y vistas previas en PNG. Los estados nuevos se añaden ahí.
 
 ## Los personajes («trajes»)
 
 | Traje | Cuándo | Idea |
 | --- | --- | --- |
-| Buddy (base, «Mochi») | Por defecto, o cuando orquesta | Chibi con capucha de mochi menta y brote de hojas |
+| Buddy (base) | Por defecto, o cuando orquesta | Chibi con capucha de mochi menta y brote de hojas |
 | Claude | Responde Claude | Tonos cálidos, con un destello de ocho puntas en pixel art en el pecho |
 | Codex | Responde Codex | Tonos azules de terminal, con `>_` en la pantalla de la cara |
 | Gemini | Responde Gemini | Degradado azul y violeta, con una estrella de cuatro puntas pixel |

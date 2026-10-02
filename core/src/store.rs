@@ -17,7 +17,77 @@ const MIGRATIONS: &[&str] = &[
         value      TEXT NOT NULL,
         updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );",
+    // v2: chats with Buddy and its specialists, and each provider's conversation id to continue it.
+    "CREATE TABLE chats (
+        id         TEXT PRIMARY KEY,
+        title      TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE messages (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id    TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+        role       TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        agent      TEXT NOT NULL,
+        provider   TEXT,
+        text       TEXT NOT NULL,
+        sources    TEXT NOT NULL DEFAULT '[]',
+        failed     INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX messages_by_chat ON messages(chat_id, id);
+    CREATE TABLE provider_sessions (
+        chat_id    TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+        agent      TEXT NOT NULL,
+        provider   TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        PRIMARY KEY (chat_id, agent, provider)
+    );",
 ];
+
+/// A web page an answer used.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct SourceLink {
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct ChatSummary {
+    pub id: String,
+    pub title: String,
+    pub updated_at: i64,
+    /// The start of the last message.
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct ChatMessage {
+    pub id: i64,
+    pub role: String,
+    pub agent: String,
+    pub provider: Option<String>,
+    pub text: String,
+    pub sources: Vec<SourceLink>,
+    pub failed: bool,
+    pub created_at: i64,
+}
+
+/// What a new message carries.
+pub struct NewMessage<'a> {
+    pub chat_id: &'a str,
+    pub role: &'a str,
+    pub agent: &'a str,
+    pub provider: Option<&'a str>,
+    pub text: &'a str,
+    pub sources: &'a [SourceLink],
+    pub failed: bool,
+}
 
 pub struct Store {
     conn: Connection,
@@ -78,6 +148,82 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Creates the chat if it does not exist yet.
+    pub fn ensure_chat(&self, id: &str, title: &str) -> Result<(), CoreError> {
+        self.conn.execute("INSERT OR IGNORE INTO chats (id, title) VALUES (?1, ?2)", params![id, title])?;
+        Ok(())
+    }
+
+    pub fn add_message(&self, m: NewMessage<'_>) -> Result<i64, CoreError> {
+        let sources = serde_json::to_string(m.sources).unwrap_or_else(|_| "[]".into());
+        self.conn.execute(
+            "INSERT INTO messages (chat_id, role, agent, provider, text, sources, failed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![m.chat_id, m.role, m.agent, m.provider, m.text, sources, m.failed],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        self.conn.execute("UPDATE chats SET updated_at = unixepoch() WHERE id = ?1", params![m.chat_id])?;
+        Ok(id)
+    }
+
+    pub fn chats(&self, limit: u32) -> Result<Vec<ChatSummary>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.title, c.updated_at,
+                    COALESCE((SELECT substr(text, 1, 120) FROM messages m WHERE m.chat_id = c.id ORDER BY m.id DESC LIMIT 1), '')
+             FROM chats c ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok(ChatSummary { id: r.get(0)?, title: r.get(1)?, updated_at: r.get(2)?, preview: r.get(3)? })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn messages(&self, chat_id: &str) -> Result<Vec<ChatMessage>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, role, agent, provider, text, sources, failed, created_at FROM messages WHERE chat_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![chat_id], |r| {
+            let sources: String = r.get(5)?;
+            Ok(ChatMessage {
+                id: r.get(0)?,
+                role: r.get(1)?,
+                agent: r.get(2)?,
+                provider: r.get(3)?,
+                text: r.get(4)?,
+                sources: serde_json::from_str(&sources).unwrap_or_default(),
+                failed: r.get(6)?,
+                created_at: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn delete_chat(&self, chat_id: &str) -> Result<(), CoreError> {
+        self.conn.execute("DELETE FROM chats WHERE id = ?1", params![chat_id])?;
+        Ok(())
+    }
+
+    pub fn session(&self, chat_id: &str, agent: &str, provider: &str) -> Result<Option<String>, CoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT session_id FROM provider_sessions WHERE chat_id = ?1 AND agent = ?2 AND provider = ?3",
+                params![chat_id, agent, provider],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_session(&self, chat_id: &str, agent: &str, provider: &str, session: &str) -> Result<(), CoreError> {
+        self.conn.execute(
+            "INSERT INTO provider_sessions (chat_id, agent, provider, session_id) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(chat_id, agent, provider) DO UPDATE SET session_id = excluded.session_id",
+            params![chat_id, agent, provider, session],
+        )?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +261,30 @@ mod tests {
         store.set_setting("k", "2").unwrap();
         assert_eq!(store.setting("k").unwrap().as_deref(), Some("2"));
         assert_eq!(store.setting("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn chats_keep_messages_sources_and_sessions() {
+        let store = Store::open_in_memory().unwrap();
+        store.ensure_chat("c1", "Clima").unwrap();
+        store.ensure_chat("c1", "otro título").unwrap();
+        let src = [SourceLink { title: "SENAMHI".into(), url: "https://senamhi.gob.pe".into() }];
+        let msg = |role, text, sources: &'static [SourceLink]| NewMessage {
+            chat_id: "c1", role, agent: "buddy", provider: Some("claude"), text, sources, failed: false,
+        };
+        store.add_message(msg("user", "¿Llueve?", &[])).unwrap();
+        let src: &'static [SourceLink] = Box::leak(Box::new(src));
+        store.add_message(msg("assistant", "No.", src)).unwrap();
+        let chats = store.chats(10).unwrap();
+        assert_eq!((chats[0].title.as_str(), chats[0].preview.as_str()), ("Clima", "No."));
+        let messages = store.messages("c1").unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].sources[0].url, "https://senamhi.gob.pe");
+        store.set_session("c1", "buddy", "claude", "s1").unwrap();
+        store.set_session("c1", "buddy", "claude", "s2").unwrap();
+        assert_eq!(store.session("c1", "buddy", "claude").unwrap().as_deref(), Some("s2"));
+        store.delete_chat("c1").unwrap();
+        assert!(store.messages("c1").unwrap().is_empty());
+        assert_eq!(store.session("c1", "buddy", "claude").unwrap(), None);
     }
 }

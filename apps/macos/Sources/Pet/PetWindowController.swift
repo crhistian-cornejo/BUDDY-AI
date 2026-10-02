@@ -21,6 +21,8 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     /// A click on Buddy (not a drag).
     var onClick: (() -> Void)?
+    /// While the chat is open Buddy stays put (no walks): the chat hangs from it.
+    var holdStill = false
 
     private var scale: Double { tokens.pet.scaleNormal }
     private var side: CGFloat { CGFloat(Double(model.size) * scale) }
@@ -81,7 +83,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
         return PetContext(x: panel.frame.minX, minX: visible.minX, maxX: visible.maxX - panel.frame.width,
                           reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-                          wander: wander, idleSeconds: idle)
+                          wander: wander && !holdStill, idleSeconds: idle)
     }
 
     /// Steps the window sideways once per frame (pixel-art stepping), never past the screen's edges.
@@ -103,6 +105,19 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         activity = state
         guard let state, model.has(state) else { model.show("idle"); return }
         activityTask = Task { [weak self] in await self?.model.loop(state) }
+    }
+
+    /// A mascot state from the core: agent states loop until the next one; done and error play once.
+    func showMascotState(_ state: String) {
+        switch state {
+        case "think", "work", "ask", "listen":
+            setActivity(state)
+        case "done", "error":
+            setActivity(nil)
+            react(state)
+        default:
+            setActivity(nil)
+        }
     }
 
     /// Plays a one-off reaction (done, wave…) and returns to whatever was showing.

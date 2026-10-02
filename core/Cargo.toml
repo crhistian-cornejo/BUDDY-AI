@@ -22,5 +22,8 @@ thiserror.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 uniffi = { workspace = true, optional = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

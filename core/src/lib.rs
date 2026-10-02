@@ -4,6 +4,7 @@
 //! Apps only draw what the core hands them: sprites, settings and the event stream.
 
 pub mod briefing;
+pub mod chat;
 pub mod events;
 pub mod log;
 pub mod orchestrator;
@@ -21,7 +22,11 @@ pub mod voice;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub use chat::ChatEngine;
 pub use events::{Event, EventBus};
+pub use orchestrator::Agent;
+pub use providers::{ProviderId, ProviderStatus};
+pub use store::{ChatMessage, ChatSummary, SourceLink};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{Sprite, SpriteState};
 
@@ -62,8 +67,9 @@ pub trait EventListener: Send + Sync {
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct BuddyCore {
     data_dir: PathBuf,
-    store: Mutex<store::Store>,
-    bus: EventBus,
+    store: Arc<Mutex<store::Store>>,
+    bus: Arc<EventBus>,
+    chat: Arc<ChatEngine>,
 }
 
 impl BuddyCore {
@@ -77,7 +83,21 @@ impl BuddyCore {
         log::init(&data_dir);
         let store = store::Store::open(&data_dir.join("buddy.sqlite"))?;
         log::line(format!("núcleo abierto (esquema v{})", store.schema_version()?));
-        Ok(Self { data_dir, store: Mutex::new(store), bus: EventBus::default() })
+        let providers: Vec<Arc<dyn providers::Provider>> =
+            vec![Arc::new(providers::claude::Claude::new()), Arc::new(providers::codex::Codex::new())];
+        Self::with_providers(data_dir, store, providers)
+    }
+
+    /// The core with the given providers (tests use scripted ones).
+    pub fn with_providers(
+        data_dir: PathBuf,
+        store: store::Store,
+        providers: Vec<Arc<dyn providers::Provider>>,
+    ) -> Result<Self, CoreError> {
+        let store = Arc::new(Mutex::new(store));
+        let bus = Arc::new(EventBus::default());
+        let chat = Arc::new(ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers));
+        Ok(Self { data_dir, store, bus, chat })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -124,6 +144,39 @@ impl BuddyCore {
         self.with_store(|s| s.set_setting(&key, &value))?;
         self.bus.publish(Event::SettingChanged { key });
         Ok(())
+    }
+
+    /// Sends a message to Buddy; the answer arrives as events. Returns the chat id (a new one when `chat_id` is None).
+    pub fn send_message(&self, chat_id: Option<String>, text: String) -> Result<String, CoreError> {
+        self.chat.send(chat_id, text)
+    }
+
+    /// Stops the answer being written in that chat.
+    pub fn cancel_chat(&self, chat_id: String) {
+        self.chat.cancel(&chat_id);
+    }
+
+    pub fn chats(&self, limit: u32) -> Result<Vec<ChatSummary>, CoreError> {
+        self.with_store(|s| s.chats(limit))
+    }
+
+    pub fn messages(&self, chat_id: String) -> Result<Vec<ChatMessage>, CoreError> {
+        self.with_store(|s| s.messages(&chat_id))
+    }
+
+    pub fn delete_chat(&self, chat_id: String) -> Result<(), CoreError> {
+        self.chat.cancel(&chat_id);
+        self.with_store(|s| s.delete_chat(&chat_id))
+    }
+
+    /// Which provider CLIs are installed.
+    pub fn providers(&self) -> Vec<ProviderStatus> {
+        self.chat.statuses()
+    }
+
+    /// Buddy and its specialists, as defined in the data folder.
+    pub fn agents(&self) -> Vec<Agent> {
+        self.chat.agents()
     }
 
     /// Forwards every event to `listener` from a dedicated thread, until the core is dropped.

@@ -31,7 +31,7 @@ Buddy nace de [MIKA](../Mac_Windows/MIKA): reutiliza sus piezas probadas y deja 
 
 ## Estado
 
-Fase 0 (esqueleto) hecha: núcleo Rust con pruebas, app de Mac (SwiftUI + UniFFI) y app de Windows (Tauri 2) que pintan a Buddy («Mochi») desde el mismo núcleo, y CI. Siguiente: fase 1 (mascota + chat).
+Fase 0 (esqueleto) hecha: núcleo Rust con pruebas, app de Mac (SwiftUI + UniFFI) y app de Windows (Tauri 2) que pintan a Buddy desde el mismo núcleo, y CI. Siguiente: fase 1 (mascota + chat).
 
 ## Compilar
 

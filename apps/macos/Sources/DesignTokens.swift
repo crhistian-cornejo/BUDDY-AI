@@ -4,10 +4,13 @@ import AppKit
 struct DesignTokens: Decodable, Sendable {
     struct Colors: Decodable, Sendable {
         var surface: String
+        var surfaceRaised: String
         var stroke: String
         var text: String
         var textMuted: String
         var accent: String
+        var success: String
+        var danger: String
     }
 
     struct Radius: Decodable, Sendable {
