@@ -138,6 +138,40 @@ button {
   margin-bottom: 4px;
 }
 
+.avatar {
+  width: 18px;
+  height: 18px;
+  image-rendering: pixelated;
+}
+
+.provider {
+  display: inline-grid;
+  color: var(--color-text);
+}
+
+.msg-actions {
+  display: flex;
+  gap: 2px;
+  margin: 4px 0 0 -6px;
+}
+
+.ghost.small {
+  width: 24px;
+  height: 24px;
+}
+
+.msg-assistant:not(:last-child) .msg-actions {
+  opacity: 0;
+}
+
+.msg-assistant:not(:last-child):hover .msg-actions {
+  opacity: 1;
+}
+
+.msg-assistant:not(:last-child) .redo {
+  display: none;
+}
+
 .activity {
   display: flex;
   align-items: center;

@@ -65,6 +65,7 @@ struct ComposerView: View {
 struct ChatView: View {
     @Bindable var chat: ChatController
     var onClose: () -> Void
+    var onHistory: () -> Void
     var onHeight: (CGFloat) -> Void
 
     var body: some View {
@@ -75,7 +76,11 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(chat.messages) { message in
-                            MessageRow(message: message).id(message.id)
+                            MessageRow(message: message,
+                                       isLastAnswer: message.id == chat.messages.last(where: { $0.role == "assistant" })?.id,
+                                       canRegenerate: !chat.streaming,
+                                       onRegenerate: chat.regenerate)
+                                .id(message.id)
                         }
                     }
                     .padding(16)
@@ -103,27 +108,10 @@ struct ChatView: View {
                 .truncationMode(.tail)
                 .padding(.leading, 4)
             Spacer(minLength: 8)
-            HeaderButton(symbol: "square.and.pencil", help: "Nuevo chat", action: chat.newChat)
-            Menu {
-                if chat.recent.isEmpty {
-                    Text("Sin chats todavía")
-                } else {
-                    ForEach(chat.recent, id: \.id) { (summary: ChatSummary) in
-                        Button(summary.title) { chat.open(summary.id) }
-                    }
-                }
-            } label: {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: ChatMetrics.symbol, weight: .medium))
-                    .frame(width: ChatMetrics.button, height: ChatMetrics.button)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.button)
-            .buttonStyle(.borderless)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .foregroundStyle(.secondary)
-            .help("Chats recientes")
+            HeaderButton(symbol: "square.and.pencil", help: "Nuevo chat (⌘N)", action: chat.newChat)
+                .keyboardShortcut("n", modifiers: .command)
+            HeaderButton(symbol: "clock.arrow.circlepath", help: "Buscar en el historial (⌘F)", action: onHistory)
+                .keyboardShortcut("f", modifiers: .command)
             HeaderButton(symbol: "xmark", help: "Cerrar (esc)", action: onClose)
         }
         .padding(.horizontal, 8)
@@ -152,6 +140,10 @@ private struct HeaderButton: View {
 
 private struct MessageRow: View {
     let message: LiveMessage
+    let isLastAnswer: Bool
+    let canRegenerate: Bool
+    let onRegenerate: () -> Void
+    @State private var hovering = false
 
     var body: some View {
         if message.role == "user" {
@@ -166,12 +158,7 @@ private struct MessageRow: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                if let author = message.author {
-                    Label(author, systemImage: message.author?.hasPrefix("Buddy") == true ? "sparkle" : "person.crop.circle.badge.checkmark")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .labelStyle(.titleAndIcon)
-                }
+                AuthorLine(name: message.author ?? "Buddy", provider: message.provider)
                 if let activity = message.activity {
                     ActivityLine(activity: activity)
                 }
@@ -182,15 +169,76 @@ private struct MessageRow: View {
                 } else if !message.content.isEmpty || !message.sources.isEmpty {
                     AssistantBubble(message: message)
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contextMenu {
-                Button("Copiar respuesta") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(message.content, forType: .string)
+                if !message.isStreaming && !message.content.isEmpty {
+                    MessageActions(text: message.content, canRegenerate: isLastAnswer && canRegenerate,
+                                   onRegenerate: onRegenerate)
+                        .opacity(isLastAnswer || hovering ? 1 : 0)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
         }
+    }
+}
+
+/// Buddy's face, the agent's name and the mark of the service that wrote it.
+private struct AuthorLine: View {
+    let name: String
+    let provider: String?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            AvatarView(size: 18)
+                .help(name == "Buddy" ? "Buddy" : "\(name), del equipo de Buddy")
+            Text(name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ProviderMark(provider: provider)
+        }
+    }
+}
+
+/// Copy and write again, under an answer, like the usual chat apps.
+private struct MessageActions: View {
+    let text: String
+    let canRegenerate: Bool
+    let onRegenerate: () -> Void
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ActionButton(symbol: copied ? "checkmark" : "doc.on.doc", help: copied ? "Copiado" : "Copiar respuesta") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                copied = true
+                Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+            }
+            if canRegenerate {
+                ActionButton(symbol: "arrow.clockwise", help: "Rehacer la respuesta", action: onRegenerate)
+            }
+        }
+        .padding(.leading, -6)
+    }
+}
+
+private struct ActionButton: View {
+    let symbol: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 

@@ -148,6 +148,46 @@ impl Store {
     }
 }
 
+/// A one-line preview without Markdown marks or Buddy's hand-off line.
+pub fn plain_preview(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let mut line = line.trim();
+        if line.starts_with("[[pasar:") {
+            line = line.find("]]").map_or("", |i| line[i + 2..].trim());
+        }
+        let line = line.trim_start_matches(['#', '>', '-', '*', ' ']);
+        if line.is_empty() || line.starts_with("```") || line.starts_with('|') {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.extend(line.chars().filter(|c| !matches!(c, '*' | '`' | '_')));
+        if out.chars().count() >= 120 {
+            break;
+        }
+    }
+    out.chars().take(120).collect()
+}
+
+/// Lower case without accents (Spanish and the usual Latin letters), for matching what the user types.
+pub fn fold(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            'ç' => 'c',
+            c => c,
+        })
+        .collect()
+}
+
 impl Store {
     /// Creates the chat if it does not exist yet.
     pub fn ensure_chat(&self, id: &str, title: &str) -> Result<(), CoreError> {
@@ -169,11 +209,11 @@ impl Store {
     pub fn chats(&self, limit: u32) -> Result<Vec<ChatSummary>, CoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT c.id, c.title, c.updated_at,
-                    COALESCE((SELECT substr(text, 1, 120) FROM messages m WHERE m.chat_id = c.id ORDER BY m.id DESC LIMIT 1), '')
+                    COALESCE((SELECT substr(text, 1, 600) FROM messages m WHERE m.chat_id = c.id ORDER BY m.id DESC LIMIT 1), '')
              FROM chats c ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| {
-            Ok(ChatSummary { id: r.get(0)?, title: r.get(1)?, updated_at: r.get(2)?, preview: r.get(3)? })
+            Ok(ChatSummary { id: r.get(0)?, title: r.get(1)?, updated_at: r.get(2)?, preview: plain_preview(&r.get::<_, String>(3)?) })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -196,6 +236,43 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Removes the message `from_id` and every later one of the chat (to write an answer again).
+    pub fn delete_messages_from(&self, chat_id: &str, from_id: i64) -> Result<(), CoreError> {
+        self.conn.execute("DELETE FROM messages WHERE chat_id = ?1 AND id >= ?2", params![chat_id, from_id])?;
+        Ok(())
+    }
+
+    /// Chats whose title or messages contain every word of `query` (any order, ignoring case and accents), newest
+    /// first. An empty query lists the latest ones.
+    pub fn search_chats(&self, query: &str, limit: u32) -> Result<Vec<ChatSummary>, CoreError> {
+        let words: Vec<String> = fold(query).split_whitespace().map(str::to_string).collect();
+        if words.is_empty() {
+            return self.chats(limit);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.title, c.updated_at,
+                    COALESCE((SELECT substr(text, 1, 600) FROM messages m WHERE m.chat_id = c.id ORDER BY m.id DESC LIMIT 1), ''),
+                    COALESCE((SELECT group_concat(substr(text, 1, 4000), ' ') FROM messages m WHERE m.chat_id = c.id), '')
+             FROM chats c ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 2000",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let preview = plain_preview(&r.get::<_, String>(3)?);
+            Ok((ChatSummary { id: r.get(0)?, title: r.get(1)?, updated_at: r.get(2)?, preview }, r.get::<_, String>(4)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (summary, text) = row?;
+            let haystack = fold(&format!("{} {}", summary.title, text));
+            if words.iter().all(|w| haystack.contains(w.as_str())) {
+                out.push(summary);
+                if out.len() >= limit as usize {
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn delete_chat(&self, chat_id: &str) -> Result<(), CoreError> {
@@ -286,5 +363,29 @@ mod tests {
         store.delete_chat("c1").unwrap();
         assert!(store.messages("c1").unwrap().is_empty());
         assert_eq!(store.session("c1", "buddy", "claude").unwrap(), None);
+    }
+
+    #[test]
+    fn search_ignores_case_accents_and_order() {
+        let store = Store::open_in_memory().unwrap();
+        for (id, title, text) in [("a", "Clásico", "¿Quién gana el Madrid?"), ("b", "Clima", "Lluvia en Lima")] {
+            store.ensure_chat(id, title).unwrap();
+            store.add_message(NewMessage { chat_id: id, role: "user", agent: "buddy", provider: None, text, sources: &[], failed: false }).unwrap();
+        }
+        let ids = |q: &str| store.search_chats(q, 10).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(ids("CLASICO"), ["a"]);
+        assert_eq!(ids("madrid quien"), ["a"]);
+        assert_eq!(ids("lima"), ["b"]);
+        assert!(ids("tenis").is_empty());
+        assert_eq!(ids("  ").len(), 2);
+        store.delete_messages_from("a", 1).unwrap();
+        assert!(store.messages("a").unwrap().is_empty());
+    }
+
+    #[test]
+    fn previews_are_plain_text() {
+        assert_eq!(plain_preview("## Hola\n\n1. **Usa `let`** por defecto"), "Hola 1. Usa let por defecto");
+        assert_eq!(plain_preview("[[pasar:parley]] Analiza"), "Analiza");
+        assert_eq!(plain_preview("| a | b |\n|---|---|\nTexto"), "Texto");
     }
 }

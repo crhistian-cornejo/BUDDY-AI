@@ -107,7 +107,8 @@ impl Provider for Claude {
             })
         };
         let child = Arc::new(Mutex::new(child));
-        let watcher = watch_cancel(child.clone(), cancel.clone());
+        let finished_flag = Cancel::default();
+        let watcher = watch_cancel(child.clone(), cancel.clone(), finished_flag.clone());
 
         let mut parser = StreamParser::default();
         let mut finished = false;
@@ -119,7 +120,7 @@ impl Provider for Claude {
             }
         }
         let _ = child.lock().unwrap().wait();
-        cancel.cancel(); // ends the watcher
+        finished_flag.cancel(); // ends the watcher (never the user's cancel: that one means "stopped by the user")
         let _ = watcher.join();
         let _ = err_reader.join();
         if !finished {
@@ -133,10 +134,17 @@ impl Provider for Claude {
     }
 }
 
-/// Interrupts the child once the turn is cancelled; polls only while a turn runs.
-pub(crate) fn watch_cancel(child: Arc<Mutex<std::process::Child>>, cancel: Cancel) -> std::thread::JoinHandle<()> {
+/// Interrupts the child once the turn is cancelled; polls only while a turn runs and stops when `finished` is set.
+pub(crate) fn watch_cancel(
+    child: Arc<Mutex<std::process::Child>>,
+    cancel: Cancel,
+    finished: Cancel,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         loop {
+            if finished.is_cancelled() {
+                return;
+            }
             if cancel.is_cancelled() {
                 let mut c = child.lock().unwrap();
                 if matches!(c.try_wait(), Ok(None)) {

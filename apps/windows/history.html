@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Historial de Buddy</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/chat/chat.css" />
+    <link rel="stylesheet" href="/src/history/history.css" />
+  </head>
+  <body class="chat">
+    <main id="search" class="card">
+      <label class="field">
+        <span id="glass" aria-hidden="true"></span>
+        <input id="query" type="search" placeholder="Buscar en tus chats" aria-label="Buscar en tus chats" autocomplete="off" />
+      </label>
+      <div id="results" role="listbox" aria-label="Chats"></div>
+    </main>
+    <script type="module" src="/src/history/main.ts"></script>
+  </body>
+</html>

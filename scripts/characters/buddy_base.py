@@ -337,16 +337,18 @@ STATES = {
 
 def main():
     states = {name: {"fps": fps, "frames": [draw(p) for p in poses]} for name, (fps, poses) in STATES.items()}
-    data = {"id": "buddy-base", "name": "Buddy", "size": N, "palette": PAL, "states": states}
+    # The square the apps crop as Buddy's avatar (hood, face and sprout), in idle frame 0.
+    face = {"x": 7, "y": 1, "size": 34}
+    data = {"id": "buddy-base", "name": "Buddy", "size": N, "face": face, "palette": PAL, "states": states}
     root = Path(__file__).resolve().parents[2]
     out = root / "core/characters/buddy-base.json"
     out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
     print(f"→ {out}")
     if "--preview" in sys.argv:
-        preview(states, Path(sys.argv[sys.argv.index("--preview") + 1]))
+        preview(states, face, Path(sys.argv[sys.argv.index("--preview") + 1]))
 
 
-def preview(states, folder):
+def preview(states, face, folder):
     from PIL import Image, ImageDraw
 
     def render(frame, scale, bg=(250, 250, 250)):
@@ -372,6 +374,8 @@ def preview(states, folder):
         frames[0].save(folder / f"{name}.gif", save_all=True, append_images=frames[1:],
                        duration=int(1000 / s["fps"]), loop=0)
     sheet.save(folder / "sheet.png")
+    f = render(states["idle"]["frames"][0], 8)
+    f.crop((face["x"] * 8, face["y"] * 8, (face["x"] + face["size"]) * 8, (face["y"] + face["size"]) * 8)).save(folder / "face.png")
 
 
 if __name__ == "__main__":

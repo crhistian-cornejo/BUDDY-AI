@@ -28,7 +28,7 @@ pub use orchestrator::Agent;
 pub use providers::{ProviderId, ProviderStatus};
 pub use store::{ChatMessage, ChatSummary, SourceLink};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
-pub use pixel::{Sprite, SpriteState};
+pub use pixel::{FaceRect, Sprite, SpriteState};
 
 #[cfg(feature = "ffi")]
 uniffi::setup_scaffolding!();
@@ -158,6 +158,16 @@ impl BuddyCore {
 
     pub fn chats(&self, limit: u32) -> Result<Vec<ChatSummary>, CoreError> {
         self.with_store(|s| s.chats(limit))
+    }
+
+    /// Chats matching every word of `query` in their title or messages (case and accents ignored).
+    pub fn search_chats(&self, query: String, limit: u32) -> Result<Vec<ChatSummary>, CoreError> {
+        self.with_store(|s| s.search_chats(&query, limit))
+    }
+
+    /// Writes the last answer of the chat again.
+    pub fn regenerate(&self, chat_id: String) -> Result<(), CoreError> {
+        self.chat.regenerate(&chat_id)
     }
 
     pub fn messages(&self, chat_id: String) -> Result<Vec<ChatMessage>, CoreError> {

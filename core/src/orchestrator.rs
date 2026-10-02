@@ -62,9 +62,20 @@ pub fn load(data_dir: &Path) -> Vec<Agent> {
     let root = data_dir.join("agents");
     for (id, text) in BUILT_INS {
         let file = root.join(id).join("agent.md");
-        if !file.exists() {
+        // `.builtin` keeps the text that was seeded: while agent.md still equals it (the user never edited it), a
+        // newer built-in replaces both; an edited agent.md is never touched.
+        let seeded = root.join(id).join(".builtin");
+        let current = std::fs::read_to_string(&file).ok();
+        let unedited = match (&current, std::fs::read_to_string(&seeded).ok()) {
+            (Some(c), Some(seed)) => *c == seed,
+            // Copies seeded before `.builtin` existed: unedited when the new built-in only adds to them.
+            (Some(c), None) => text.starts_with(c.trim_end()),
+            _ => false,
+        };
+        if current.is_none() || (unedited && current.as_deref() != Some(*text)) {
             let _ = std::fs::create_dir_all(file.parent().unwrap());
             let _ = std::fs::write(&file, text);
+            let _ = std::fs::write(&seeded, text);
         }
     }
     let mut agents: Vec<Agent> = std::fs::read_dir(&root)
@@ -174,6 +185,10 @@ mod tests {
         assert_eq!(parley.provider, ProviderId::Claude);
         assert!(parley.prompt.starts_with("Eres PARLEY"));
         assert!(dir.path().join("agents/parley/agent.md").exists());
+        // A newer built-in reaches an unedited copy.
+        std::fs::write(dir.path().join("agents/parley/agent.md"), "viejo").unwrap();
+        std::fs::write(dir.path().join("agents/parley/.builtin"), "viejo").unwrap();
+        assert!(load(dir.path()).iter().any(|a| a.id == "parley" && a.prompt.starts_with("Eres PARLEY")));
         // An edit by the user survives the next load.
         std::fs::write(dir.path().join("agents/parley/agent.md"), "---\nid: parley\nname: Mi PARLEY\nprovider: codex\n---\nHola").unwrap();
         let parley = load(dir.path()).into_iter().find(|a| a.id == "parley").unwrap();

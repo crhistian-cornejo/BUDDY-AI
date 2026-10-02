@@ -18,6 +18,7 @@ const TOKENS: &str = include_str!("../../../../assets/design-tokens.json");
 const PET: &str = "pet";
 const BUBBLE: &str = "bubble";
 const CHAT: &str = "chat";
+const HISTORY: &str = "history";
 const CHAT_WIDTH: f64 = 400.0;
 const BUBBLE_SIZE: (f64, f64) = (340.0, 52.0);
 const SPRITE: &str = "buddy-base";
@@ -158,6 +159,11 @@ pub fn run() {
             send_message,
             cancel_chat,
             chats,
+            search_chats,
+            delete_chat,
+            regenerate,
+            open_history,
+            history_pick,
             messages,
             agents,
             open_url
@@ -404,6 +410,61 @@ fn cancel_chat(state: State<'_, AppCore>, chat_id: String) {
 #[tauri::command]
 fn chats(state: State<'_, AppCore>, limit: u32) -> Result<Vec<ChatSummary>, String> {
     state.core.chats(limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_chats(state: State<'_, AppCore>, query: String, limit: u32) -> Result<Vec<ChatSummary>, String> {
+    state.core.search_chats(query, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_chat(state: State<'_, AppCore>, chat_id: String) -> Result<(), String> {
+    state.core.delete_chat(chat_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn regenerate(state: State<'_, AppCore>, chat_id: String) -> Result<(), String> {
+    state.core.regenerate(chat_id).map_err(|e| e.to_string())
+}
+
+/// The history search, centred on the screen where Buddy is.
+#[tauri::command]
+fn open_history(app: AppHandle) -> Result<(), String> {
+    let e = |e: tauri::Error| e.to_string();
+    let window = match app.get_webview_window(HISTORY) {
+        Some(w) => w,
+        None => WebviewWindowBuilder::new(&app, HISTORY, WebviewUrl::App("history.html".into()))
+            .title("Historial de Buddy")
+            .inner_size(560.0, 420.0)
+            .resizable(false)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .build()
+            .map_err(e)?,
+    };
+    if let Some(pet) = app.get_webview_window(PET) {
+        let (_, area) = pet_rects(&pet).map_err(e)?;
+        let x = area.x + (area.width - 560.0) / 2.0;
+        let y = area.y + (area.height - 420.0) / 2.0 - area.height * 0.08;
+        window.set_position(LogicalPosition::new(x, y)).map_err(e)?;
+    }
+    window.show().and_then(|_| window.set_focus()).map_err(e)
+}
+
+/// A chat picked in the history: it opens in the chat next to Buddy.
+#[tauri::command]
+fn history_pick(app: AppHandle, chat_id: String) -> Result<(), String> {
+    if let Some(history) = app.get_webview_window(HISTORY) {
+        let _ = history.hide();
+    }
+    if !app.state::<AppCore>().chat_open.load(Ordering::SeqCst) {
+        toggle_chat(app.clone())?;
+    }
+    app.emit_to(CHAT, "open-chat", chat_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

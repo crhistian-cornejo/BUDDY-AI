@@ -35,8 +35,9 @@ struct LiveMessage: Identifiable, Equatable, Sendable {
     var sources: [ChatSource] = []
     /// What the agent is doing right now ("Buscando: clima Lima"). Never saved.
     var status: String?
-    /// Who answered: "Buddy · Claude", "PARLEY · Claude".
+    /// Who answered ("Buddy", "PARLEY") and with which provider ("claude", "codex").
     var author: String?
+    var provider: String?
     /// What the agent is doing right now, with its symbol. Never saved.
     var activity: ChatActivity?
     var failed = false

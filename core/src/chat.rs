@@ -62,21 +62,40 @@ impl ChatEngine {
                 failed: false,
             })?;
         }
+        self.spawn_turn(&chat_id, text, previous.last().map(|m| (m.agent.clone(), m.text.clone())))?;
+        Ok(chat_id)
+    }
+
+    /// Answers the last question of the chat again: its answer is removed and a new one is written.
+    pub fn regenerate(self: &Arc<Self>, chat_id: &str) -> Result<(), CoreError> {
+        self.cancel(chat_id);
+        let messages = self.lock().messages(chat_id)?;
+        let Some(index) = messages.iter().rposition(|m| m.role == "user") else {
+            return Err(CoreError::Store("no hay ninguna pregunta que rehacer".into()));
+        };
+        if let Some(answer) = messages.get(index + 1) {
+            self.lock().delete_messages_from(chat_id, answer.id)?;
+        }
+        let previous = index.checked_sub(1).and_then(|i| messages.get(i)).map(|m| (m.agent.clone(), m.text.clone()));
+        self.spawn_turn(chat_id, messages[index].text.clone(), previous)
+    }
+
+    fn spawn_turn(self: &Arc<Self>, chat_id: &str, text: String, last: Option<(String, String)>) -> Result<(), CoreError> {
         let cancel = Cancel::default();
-        self.running.lock().unwrap().insert(chat_id.clone(), cancel.clone());
+        self.running.lock().unwrap().insert(chat_id.to_string(), cancel.clone());
         let engine = self.clone();
-        let id = chat_id.clone();
+        let id = chat_id.to_string();
         std::thread::Builder::new()
             .name("buddy-turn".into())
             .spawn(move || {
-                engine.turn(&id, &text, previous.last().map(|m| (m.agent.clone(), m.text.clone())), &cancel);
+                engine.turn(&id, &text, last, &cancel);
                 let mut running = engine.running.lock().unwrap();
                 if running.get(&id).is_some_and(|c| c.same(&cancel)) {
                     running.remove(&id);
                 }
             })
             .map_err(|e| CoreError::Io(e.to_string()))?;
-        Ok(chat_id)
+        Ok(())
     }
 
     pub fn cancel(&self, chat_id: &str) {
@@ -142,6 +161,12 @@ impl ChatEngine {
             }
         };
 
+        // A hand-off line that did not run (the user stopped the turn) is never saved as an answer.
+        if agent.id == ORCHESTRATOR && answer.text.trim_start().starts_with("[[pasar:") && orchestrator::parse_handoff(&answer.text, &known).is_some() {
+            self.emit(Event::ChatDone { chat_id: chat_id.into(), message_id: 0 });
+            self.mascot("idle");
+            return;
+        }
         let failed = answer.failure.is_some();
         let text = match (&answer.failure, answer.text.trim().is_empty()) {
             (Some(failure), true) => failure.clone(),
@@ -425,6 +450,23 @@ mod tests {
         let (engine, rx, _dir) = engine(vec![claude]);
         engine.send(None, "x".into()).unwrap();
         assert_eq!(deltas(&until_end(&rx)), "[[pasar:nadie]] hola");
+    }
+
+    #[test]
+    fn regenerate_replaces_the_last_answer() {
+        let claude = Fake::new(ProviderId::Claude, vec![
+            vec![TurnEvent::Delta("Primera".into()), TurnEvent::Done],
+            vec![TurnEvent::Delta("Segunda".into()), TurnEvent::Done],
+        ]);
+        let (engine, rx, _dir) = engine(vec![claude.clone()]);
+        let chat = engine.send(None, "hola".into()).unwrap();
+        until_end(&rx);
+        engine.regenerate(&chat).unwrap();
+        assert_eq!(deltas(&until_end(&rx)), "Segunda");
+        let messages = engine.lock().messages(&chat).unwrap();
+        let texts: Vec<&str> = messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["hola", "Segunda"]);
+        assert_eq!(claude.prompts.lock().unwrap()[1].0, "hola");
     }
 
     #[test]

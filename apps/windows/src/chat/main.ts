@@ -7,11 +7,12 @@ import { applyTokens } from "../tokens";
 import { AnswerView } from "./answer";
 import { h, svg } from "./dom";
 import { TABLER } from "./tabler";
+import { buddyFace } from "./avatar";
+import { PROVIDER_MARKS } from "./provider-marks";
 import { makeSource, type ChatSource } from "./markdown";
 
 applyTokens();
 
-interface ChatSummary { id: string; title: string; updatedAt: number; preview: string }
 interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean }
 interface Agent { id: string; name: string }
 type CoreEvent =
@@ -26,22 +27,19 @@ type CoreEvent =
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const panel = $("panel");
 const list = $("messages");
-const recent = $("recent");
 const input = $<HTMLTextAreaElement>("input");
 const send = $<HTMLButtonElement>("send");
 
 let chatId: string | null = null;
 let streaming = false;
 /** The answer being written. */
-let live: { view: AnswerView; author: HTMLElement; activity: HTMLElement; text: string; sources: ChatSource[] } | null = null;
+let live: { view: AnswerView; author: HTMLElement; activity: HTMLElement; actions: HTMLElement; text: string; sources: ChatSource[] } | null = null;
 
 const icon = (path: string, size = 16) => svg(path, size, { fill: "none", stroke: "currentColor", "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round" });
 $("new").append(icon(TABLER.edit));
 $("history").append(icon(TABLER.history));
 $("close").append(icon(TABLER.x));
 
-const PROVIDERS: Record<string, string> = { claude: "Claude", codex: "Codex", antigravity: "Gemini" };
-const author = (name: string, provider?: string | null) => (provider ? `${name} · ${PROVIDERS[provider] ?? provider}` : name);
 
 interface Activity { icon: string; text: string }
 const THINKING: Activity = { icon: TABLER.dots, text: "Pensando…" };
@@ -57,8 +55,30 @@ function addUser(text: string) {
   list.append(h("div", { class: "msg-user", text }));
 }
 
-function setAuthor(el: HTMLElement, name: string) {
-  el.replaceChildren(icon(name.startsWith("Buddy") ? TABLER.sparkles : TABLER.gitBranch, 14), name);
+/** Buddy's face, the agent's name and the mark of the service that wrote the answer, with tooltips. */
+function setAuthor(el: HTMLElement, name: string, provider?: string | null) {
+  const face = h("img", { class: "avatar", alt: "", title: name === "Buddy" ? "Buddy" : `${name}, del equipo de Buddy` });
+  void buddyFace().then((url) => { if (url) face.setAttribute("src", url); });
+  const mark = provider ? PROVIDER_MARKS[provider] : undefined;
+  const markEl = mark
+    ? h("span", { class: "provider", title: mark.label, "aria-label": mark.label, style: mark.color ? `color:${mark.color}` : "" },
+        svg(mark.path, 12, { fill: "currentColor" }))
+    : null;
+  el.replaceChildren(face, h("span", { text: name }), ...(markEl ? [markEl] : []));
+}
+
+/** Copy (and, on the last answer, write again) under an answer. */
+function actionsFor(getText: () => string): HTMLElement {
+  const copy = h("button", { class: "ghost small", type: "button", title: "Copiar respuesta", "aria-label": "Copiar respuesta" }, icon(TABLER.copy, 14));
+  copy.addEventListener("click", () => {
+    void navigator.clipboard.writeText(getText());
+    copy.replaceChildren(icon(TABLER.check, 14));
+    copy.title = "Copiado";
+    setTimeout(() => { copy.replaceChildren(icon(TABLER.copy, 14)); copy.title = "Copiar respuesta"; }, 1500);
+  });
+  const redo = h("button", { class: "ghost small redo", type: "button", title: "Rehacer la respuesta", "aria-label": "Rehacer la respuesta" }, icon(TABLER.refresh, 14));
+  redo.addEventListener("click", () => void regenerate());
+  return h("div", { class: "msg-actions" }, copy, redo);
 }
 
 function setActivity(el: HTMLElement, activity: Activity | null) {
@@ -70,20 +90,24 @@ function failure(text: string) {
   return h("div", { class: "msg-failed" }, icon(TABLER.alertTriangle, 16), h("span", { text }));
 }
 
-function addAnswer(name: string, text = "", sources: ChatSource[] = [], failed = false) {
+function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false) {
   const authorEl = h("div", { class: "msg-author" });
-  setAuthor(authorEl, name);
+  setAuthor(authorEl, name, provider);
   const activityEl = h("div", { class: "activity", role: "status" });
   activityEl.hidden = true;
   const wrap = h("div", { class: "msg-assistant" }, authorEl, activityEl);
   const view = new AnswerView();
+  const state = { text };
+  const actions = actionsFor(() => state.text);
   if (failed) wrap.append(failure(text));
   else {
     view.update(text, { sources });
     wrap.append(view.el);
   }
+  actions.hidden = failed || !text;
+  wrap.append(actions);
   list.append(wrap);
-  return { view, author: authorEl, activity: activityEl };
+  return { view, author: authorEl, activity: activityEl, actions, state };
 }
 
 function render() {
@@ -106,9 +130,7 @@ async function submit() {
   input.value = "";
   autosize();
   addUser(text);
-  const { view, author: a, activity } = addAnswer("Buddy");
-  live = { view, author: a, activity, text: "", sources: [] };
-  setActivity(activity, THINKING);
+  startLive();
   streaming = true;
   render();
   try {
@@ -118,9 +140,34 @@ async function submit() {
   }
 }
 
+/** A new answer being written (after a question, or to write the last one again). */
+function startLive() {
+  const { view, author: a, activity, actions, state } = addAnswer("Buddy", null);
+  live = { view, author: a, activity, actions, text: "", sources: [] };
+  liveState = state;
+  setActivity(activity, THINKING);
+}
+
+let liveState: { text: string } = { text: "" };
+
+async function regenerate() {
+  if (streaming || !chatId) return;
+  list.querySelectorAll(".msg-assistant").forEach((el, i, all) => { if (i === all.length - 1) el.remove(); });
+  startLive();
+  streaming = true;
+  render();
+  try {
+    await invoke("regenerate", { chatId });
+  } catch (e) {
+    finish(`No se pudo rehacer: ${e}`);
+  }
+}
+
 function finish(failureText: string | null) {
   if (live) {
     setActivity(live.activity, null);
+    liveState.text = live.text;
+    live.actions.hidden = !live.text;
     if (failureText && !live.text) {
       live.view.el.replaceWith(failure(failureText));
     } else {
@@ -137,7 +184,7 @@ function onCore(event: CoreEvent) {
   switch (event.type) {
     case "chatStarted": {
       const e = event as Extract<CoreEvent, { type: "chatStarted" }>;
-      setAuthor(live.author, author(e.agentName, e.provider));
+      setAuthor(live.author, e.agentName, e.provider);
       if (!live.text) {
         setActivity(live.activity, e.agent === "buddy" ? THINKING : { icon: TABLER.gitBranch, text: `Buddy le pasa la tarea a ${e.agentName}…` });
       }
@@ -170,7 +217,6 @@ function onCore(event: CoreEvent) {
 }
 
 async function openChat(id: string) {
-  recent.hidden = true;
   if (streaming && chatId) await invoke("cancel_chat", { chatId });
   const [messages, agents] = await Promise.all([
     invoke<SavedMessage[]>("messages", { chatId: id }),
@@ -185,22 +231,10 @@ async function openChat(id: string) {
     if (m.role === "user") addUser(m.text);
     else {
       const sources = m.sources.map((s) => makeSource(s.title, s.url)).filter((s): s is ChatSource => !!s);
-      addAnswer(author(names.get(m.agent) ?? m.agent, m.provider), m.text, sources, m.failed);
+      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed);
     }
   }
   render();
-}
-
-async function toggleRecent() {
-  if (!recent.hidden) {
-    recent.hidden = true;
-    return;
-  }
-  const chats = await invoke<ChatSummary[]>("chats", { limit: 12 });
-  recent.textContent = "";
-  if (!chats.length) recent.append(h("div", { class: "empty", text: "Sin chats todavía" }));
-  for (const c of chats) recent.append(h("button", { type: "button", text: c.title, title: c.preview, onclick: () => void openChat(c.id) }));
-  recent.hidden = false;
 }
 
 function newChat() {
@@ -235,10 +269,12 @@ input.addEventListener("input", () => {
   render();
 });
 $("new").addEventListener("click", newChat);
-$("history").addEventListener("click", () => void toggleRecent());
+$("history").addEventListener("click", () => void invoke("open_history"));
 $("close").addEventListener("click", close);
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") close();
+  else if (e.ctrlKey && e.key.toLowerCase() === "f") { e.preventDefault(); void invoke("open_history"); }
+  else if (e.ctrlKey && e.key.toLowerCase() === "n") { e.preventDefault(); newChat(); }
 });
 
 // The window follows its content's height (bottom-anchored next to Buddy).
@@ -253,5 +289,6 @@ void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 });
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));
+void listen<string>("open-chat", ({ payload }) => void openChat(payload));
 render();
 input.focus();

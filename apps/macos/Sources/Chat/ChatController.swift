@@ -41,6 +41,24 @@ final class ChatController {
         }
     }
 
+    /// Writes the last answer again.
+    func regenerate() {
+        guard let chatID, !streaming, let last = messages.lastIndex(where: { $0.role == "assistant" }) else { return }
+        messages[last] = LiveMessage(role: "assistant", content: "", isStreaming: true, author: "Buddy", activity: .thinking)
+        streaming = true
+        do { try core.regenerate(chatId: chatID) } catch { finish(failure: "No se pudo rehacer: \(error)") }
+    }
+
+    func search(_ query: String) -> [ChatSummary] {
+        (try? core.searchChats(query: query, limit: 60)) ?? []
+    }
+
+    func delete(_ id: String) {
+        try? core.deleteChat(chatId: id)
+        if id == chatID { newChat() }
+        refreshRecent()
+    }
+
     func stop() {
         guard let chatID else { return }
         core.cancelChat(chatId: chatID)
@@ -65,7 +83,8 @@ final class ChatController {
         messages = ((try? core.messages(chatId: id)) ?? []).map { m in
             LiveMessage(role: m.role, content: m.text,
                         sources: m.sources.compactMap { ChatSource.make(title: $0.title, url: $0.url) },
-                        author: m.role == "assistant" ? Self.author(agents[m.agent] ?? m.agent, m.provider) : nil,
+                        author: m.role == "assistant" ? (agents[m.agent] ?? m.agent) : nil,
+                        provider: m.provider,
                         failed: m.failed)
         }
     }
@@ -75,7 +94,8 @@ final class ChatController {
         switch event {
         case let .chatStarted(chatId, agent, agentName, provider) where chatId == chatID:
             update { m in
-                m.author = Self.author(agentName, provider)
+                m.author = agentName
+                m.provider = provider
                 if m.content.isEmpty {
                     m.activity = agent == "buddy" ? .thinking : .handoff(to: agentName)
                 }
@@ -111,11 +131,6 @@ final class ChatController {
         change(&messages[i])
     }
 
-    static func author(_ name: String, _ provider: String?) -> String {
-        guard let provider, !provider.isEmpty else { return name }
-        let p = ["claude": "Claude", "codex": "Codex", "antigravity": "Gemini"][provider] ?? provider
-        return "\(name) · \(p)"
-    }
 }
 
 /// Core events arrive on the core's thread; this hops them to the main actor.

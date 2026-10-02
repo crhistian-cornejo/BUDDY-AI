@@ -2,10 +2,11 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "The pet can be dragged; the bubble and the chat close themselves; core events reach every window. Links open only through the open_url command (http/https checked in Rust).",
-  "windows": ["pet", "bubble", "chat"],
+  "windows": ["pet", "bubble", "chat", "history"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "core:window:allow-hide"
   ]
 }

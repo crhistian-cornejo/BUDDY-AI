@@ -21,6 +21,9 @@ pub struct Character {
     pub id: String,
     pub name: String,
     pub size: usize,
+    /// The square the apps crop as the character's avatar (in idle frame 0).
+    #[serde(default)]
+    pub face: Option<FaceRect>,
     /// Key → `#RRGGBB`, or null for transparent.
     pub palette: BTreeMap<String, Option<String>>,
     pub states: BTreeMap<String, CharacterState>,
@@ -32,6 +35,14 @@ pub struct CharacterState {
     pub frames: Vec<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct FaceRect {
+    pub x: u32,
+    pub y: u32,
+    pub size: u32,
+}
+
 /// A character ready to paint: every frame is `size × size` pixels, row by row, as `0xAARRGGBB` (0 = transparent).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
@@ -39,6 +50,8 @@ pub struct Sprite {
     pub id: String,
     pub name: String,
     pub size: u32,
+    /// The avatar square, when the character has one.
+    pub face: Option<FaceRect>,
     pub states: Vec<SpriteState>,
 }
 
@@ -72,6 +85,11 @@ impl Character {
                 Some(hex) if parse_hex(hex).is_none() => return fail(format!("color «{hex}» no es #RRGGBB")),
                 Some(_) => colors += 1,
                 None => {}
+            }
+        }
+        if let Some(f) = self.face {
+            if f.size == 0 || (f.x + f.size) as usize > self.size || (f.y + f.size) as usize > self.size {
+                return fail("la cara se sale del personaje".into());
             }
         }
         if colors > MAX_COLORS {
@@ -126,7 +144,7 @@ impl Character {
             })
             .collect();
         states.sort_by_key(|s| s.name != "idle");
-        Sprite { id: self.id.clone(), name: self.name.clone(), size: self.size as u32, states }
+        Sprite { id: self.id.clone(), name: self.name.clone(), size: self.size as u32, face: self.face, states }
     }
 }
 
@@ -222,6 +240,14 @@ mod tests {
             palette.join(",")
         );
         assert!(Character::parse(&json).is_err());
+    }
+
+    #[test]
+    fn the_face_must_fit() {
+        let with = |face: &str| tiny(r#"[["kr",".k"]]"#).replace(r#""size":2,"#, &format!(r#""size":2,"face":{face},"#));
+        assert!(Character::parse(&with(r#"{"x":0,"y":0,"size":2}"#)).is_ok());
+        assert!(Character::parse(&with(r#"{"x":1,"y":0,"size":2}"#)).is_err());
+        assert_eq!(builtin_sprite("buddy-base").unwrap().face, Some(FaceRect { x: 7, y: 1, size: 34 }));
     }
 
     #[test]

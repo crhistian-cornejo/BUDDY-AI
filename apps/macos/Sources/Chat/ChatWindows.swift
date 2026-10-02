@@ -11,6 +11,7 @@ final class ChatWindows {
     private var panel: KeyPanel?
     private var contentHeight: CGFloat = 0
     private var clickMonitor: Any?
+    private let history = HistoryWindow()
     private var moveObserver: NSObjectProtocol?
 
     static let gap: CGFloat = 8
@@ -55,6 +56,17 @@ final class ChatWindows {
         }
     }
 
+    /// The history search in the middle of the screen; picking a chat opens it here.
+    func showHistory() {
+        let pet = pet()
+        let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: pet.midX, y: pet.midY)) }
+        history.show(chat: chat, on: screen) { [weak self] id in
+            guard let self else { return }
+            self.chat.open(id)
+            self.open()
+        }
+    }
+
     func close() {
         if composer != nil { onOpenChange?(false) }
         composer?.orderOut(nil)
@@ -70,7 +82,7 @@ final class ChatWindows {
     /// A click outside Buddy's windows closes the chat, unless an answer is being written.
     private func closeIfClickedOutside() {
         let p = NSEvent.mouseLocation
-        let inside = [composer?.frame, panel?.frame, pet()].compactMap { $0 }.contains { $0.contains(p) }
+        let inside = [composer?.frame, panel?.frame, pet(), history.frame].compactMap { $0 }.contains { $0.contains(p) }
         if !inside && !chat.streaming { close() }
     }
 
@@ -95,6 +107,7 @@ final class ChatWindows {
             let host = NSHostingView(rootView: ChatView(
                 chat: chat,
                 onClose: { [weak self] in self?.close() },
+                onHistory: { [weak self] in self?.showHistory() },
                 onHeight: { [weak self] h in self?.contentHeight = h; self?.layout() }))
             // The window decides the size (it grows with the content up to a cap); SwiftUI fills it from the top.
             host.sizingOptions = []
