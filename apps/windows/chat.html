@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Buddy</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/chat/chat.css" />
+  </head>
+  <body class="chat">
+    <div id="root">
+      <section id="panel" class="card" hidden>
+        <header>
+          <h1 id="title">Buddy</h1>
+          <button id="new" class="ghost" type="button" title="Nuevo chat" aria-label="Nuevo chat"></button>
+          <button id="history" class="ghost" type="button" title="Chats recientes" aria-label="Chats recientes"></button>
+          <button id="close" class="ghost" type="button" title="Cerrar (Esc)" aria-label="Cerrar"></button>
+        </header>
+        <nav id="recent" hidden></nav>
+        <div id="messages" role="log" aria-live="polite"></div>
+      </section>
+      <form id="composer" class="card" autocomplete="off">
+        <textarea id="input" rows="1" placeholder="Pregúntale a Buddy" aria-label="Mensaje para Buddy"></textarea>
+        <button type="submit" id="send" class="primary" title="Enviar (Enter)" aria-label="Enviar"></button>
+      </form>
+    </div>
+    <script type="module" src="/src/chat/main.ts"></script>
+  </body>
+</html>

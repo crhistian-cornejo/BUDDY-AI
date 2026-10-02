@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let sprite = try core.sprite(id: "buddy-base")
             let pet = PetWindowController(core: core, sprite: sprite, tokens: tokens)
             let chat = ChatController(core: core)
-            let windows = ChatWindows(chat: chat, tokens: tokens, pet: { [weak pet] in pet?.frame ?? .zero })
+            let windows = ChatWindows(chat: chat, pet: { [weak pet] in pet?.frame ?? .zero })
             pet.onClick = { [weak windows] in windows?.toggle() }
             windows.onOpenChange = { [weak pet] open in pet?.holdStill = open }
             // Chat events draw the chat; mascot events animate Buddy.

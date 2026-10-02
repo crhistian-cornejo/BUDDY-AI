@@ -1,0 +1,156 @@
+/* Ported from MIKA (MIT, © MIKA contributors, revision d050bc5): apps/windows/src/views/answer.css */
+/* How an assistant answer looks: markdown, equations (MathML), status line and source icons.
+   Twin of Sources/Island/ChatMarkdownView.swift on macOS. */
+
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding-right: 8px;
+  font: 400 12.5px var(--font);
+  color: var(--color-text);
+  user-select: text;
+}
+
+.md { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.md[hidden] { display: none; }
+
+.md-p { margin: 0; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.md strong { color: var(--color-text); font-weight: 700; }
+.md em { font-style: italic; }
+.md del { text-decoration: line-through; }
+
+.md-h { color: var(--color-text); font-weight: 600; margin-top: 2px; }
+.md-h1 { font-size: 15px; }
+.md-h2 { font-size: 14px; }
+.md-h3 { font-size: 13px; }
+.md-h4 { font-size: 12.5px; color: var(--color-text-muted); }
+.md-h { margin-top: 4px; }
+.md > .md-h:first-child { margin-top: 0; }
+
+.md-ul, .md-ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; line-height: 1.45; }
+.md-ul li::marker, .md-ol li::marker { color: var(--dim-3); }
+.md-li-children { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+
+.md-code {
+  font: 11.5px var(--mono);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.md-codeblock {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.md-codehead { display: flex; align-items: center; justify-content: space-between; padding: 3px 6px 3px 9px; background: color-mix(in srgb, var(--color-text) 5%, transparent); }
+.md-lang { font-size: 9.5px; font-weight: 500; color: var(--dim-3); text-transform: lowercase; }
+.md-copy {
+  font: 500 9.5px var(--ui, system-ui); color: var(--dim-2, var(--color-text-muted)); background: none; border: 0; border-radius: 4px;
+  padding: 1px 6px; cursor: pointer; opacity: 0; transition: opacity 0.12s, background 0.12s;
+}
+.md-codeblock:hover .md-copy, .md-copy:focus-visible { opacity: 1; }
+.md-copy:hover { background: color-mix(in srgb, var(--color-text) 10%, transparent); color: var(--color-text); }
+.md-codeblock pre { margin: 0; padding: 7px 9px 8px; overflow-x: auto; scrollbar-width: thin; font: 11px/1.5 var(--mono); color: var(--color-text); tab-size: 2; }
+.md-codeblock .md-code { background: none; padding: 0; }
+.tk-kw { color: #c586c0; } .tk-str { color: #ce9178; } .tk-com { color: #6a9955; font-style: italic; } .tk-num { color: #b5cea8; }
+.tk-type { color: #4ec9b0; } .tk-fn { color: #dcdcaa; } .tk-prop { color: #9cdcfe; } .tk-tag { color: #569cd6; }
+.tk-add { color: var(--color-success); background: rgba(127, 209, 139, 0.1); } .tk-del { color: #f28b82; background: rgba(242, 139, 130, 0.1); } .tk-hunk { color: var(--color-accent); }
+
+.md-link { color: var(--color-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--color-accent) 45%, transparent); text-underline-offset: 2px; }
+.md-link-open { cursor: pointer; }
+.md-link-icon { display: inline-flex; vertical-align: -2px; margin-right: 4px; }
+.md-link-icon svg { display: block; }
+.md-link-open:hover { text-decoration-color: var(--color-accent); }
+.md-link-host { color: var(--dim-3); font-size: 0.85em; }
+.md-image { color: var(--dim-2, var(--color-text-muted)); font-style: italic; }
+.md-task { margin-right: 6px; color: var(--dim-2, var(--color-text-muted)); }
+.md-task.done { color: var(--color-success); }
+.md-li-task { list-style: none; margin-left: -16px; }
+.md-ul .md-ul { list-style: circle; }
+.md-ul .md-ul .md-ul { list-style: square; }
+
+.md-quote { margin: 0; padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--color-text) 22%, transparent); opacity: 0.85; display: flex; flex-direction: column; gap: 5px; }
+.md-rule { border: 0; height: 1px; margin: 3px 0; background: color-mix(in srgb, var(--color-text) 12%, transparent); }
+
+.md-table { overflow-x: auto; scrollbar-width: thin; }
+.md-table table { border-collapse: separate; border-spacing: 0; font-size: 11.5px; border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent); border-radius: 8px; overflow: hidden; }
+.md-table th, .md-table td { padding: 4px 12px; white-space: nowrap; }
+.md-table th { color: var(--color-text); font-weight: 600; background: color-mix(in srgb, var(--color-text) 7%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--color-text) 15%, transparent); }
+.md-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--color-text) 3.5%, transparent); }
+
+/* equations: the browser lays out fractions, roots, sums and matrices itself */
+.md-mathblock { display: flex; justify-content: center; overflow-x: auto; padding: 4px 0; scrollbar-width: thin; }
+math.md-math { color: var(--color-text); font-size: 1.12em; font-family: "Cambria Math", "STIX Two Math", math, serif; }
+math.md-math.block { font-size: 1.3em; }
+math.md-math mtable { row-gap: 0.25em; column-gap: 0.9em; }
+math.md-math .md-matrix.left mtd { text-align: left; }
+math.md-math .md-matrix.first-right mtd:first-child { text-align: right; }
+math.md-math .md-matrix.first-right mtd:not(:first-child) { text-align: left; }
+
+/* what the agent is doing: "Buscando: alianza lima hoy…" */
+/* what the agent is doing, the way the Claude and ChatGPT apps show it: grey text with a light band sweeping across */
+.answer-status, .work-status {
+  align-self: flex-start;
+  max-width: 100%;
+  font: 500 12px var(--font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: transparent;
+  background: linear-gradient(90deg, var(--color-text-muted) 0%, var(--color-text-muted) 35%, var(--color-text) 50%, var(--color-text-muted) 65%, var(--color-text-muted) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: work-shimmer 1.9s linear infinite;
+}
+.answer-status[hidden] { display: none; }
+@keyframes work-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+
+/* the pages the answer used: a stack of site icons, the newest on top with its name beside it; it spreads out on hover */
+.src-row { display: flex; align-items: center; gap: 7px; min-height: 22px; }
+.src-row em { font: 500 10.5px var(--font); font-style: normal; color: var(--dim-3); cursor: default; }
+/* Its own stacking context: the chips' z-index orders them among themselves and never lifts them over a menu. */
+.src-stack { display: flex; align-items: center; isolation: isolate; }
+.src-chip {
+  position: relative;
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  transition: margin-left 0.18s cubic-bezier(0.3, 1.2, 0.4, 1), transform 0.15s;
+}
+.src-chip + .src-chip { margin-left: -9px; }
+.src-stack:hover .src-chip + .src-chip, .src-stack:focus-within .src-chip + .src-chip { margin-left: 3px; }
+.src-chip:hover, .src-chip:focus-visible { transform: translateY(-1px) scale(1.08); z-index: 20 !important; }
+.src-chip i {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #fff;
+  font: 700 10px var(--font);
+  font-style: normal;
+  box-shadow: 0 0 0 2px var(--color-surface);
+}
+.src-chip i.has-icon { background: #f5f6f8 !important; }
+.src-chip i.has-logo { background: transparent; }
+.src-chip i svg { display: block; width: 20px; height: 20px; pointer-events: none; }
+.src-chip i img { width: 14px; height: 14px; object-fit: contain; pointer-events: none; }
+.src-last { font: 400 10.5px var(--font); color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.src-row:hover .src-last { color: var(--color-text); }
+
+@media (prefers-reduced-motion: reduce) { .answer-status, .work-status { animation: none; color: var(--color-text-muted); background: none; } .src-chip { transition: none; } }
+
+@media (prefers-color-scheme: light) {
+  .tk-kw { color: #af00db; } .tk-str { color: #a31515; } .tk-com { color: #008000; } .tk-num { color: #098658; }
+  .tk-type { color: #267f99; } .tk-fn { color: #795e26; } .tk-prop { color: #001080; } .tk-tag { color: #0000ff; }
+  .tk-add { color: #22863a; } .tk-del { color: #b31d28; } .tk-hunk { color: #0550ae; }
+}

@@ -20,27 +20,3 @@ struct PetView: View {
         .accessibilityLabel("Buddy")
     }
 }
-
-/// A short line from Buddy above (or below) the mascot.
-struct BubbleView: View {
-    let text: String
-    let tokens: DesignTokens
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: tokens.font.sizeBody, weight: .medium))
-            .foregroundStyle(Color(nsColor: NSColor(hex: tokens.color.text)))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: tokens.radius.bubble, style: .continuous)
-                    .fill(Color(nsColor: NSColor(hex: tokens.color.surface)))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: tokens.radius.bubble, style: .continuous)
-                            .strokeBorder(Color(nsColor: NSColor(hex: tokens.color.stroke)), lineWidth: 1)
-                    )
-            )
-            .fixedSize()
-            .padding(6)
-    }
-}

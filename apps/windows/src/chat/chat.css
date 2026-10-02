@@ -1,0 +1,206 @@
+/* The chat window on Windows: flat cards on the system theme (no drop shadow inside the window), Segoe UI Variable,
+   a 4-px spacing grid and 16-px Tabler icons in 28-px ghost buttons. */
+
+body.chat {
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: var(--font-size-body);
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-stroke);
+  border-radius: var(--radius-card);
+}
+
+#panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 520px;
+  overflow: hidden;
+}
+
+#panel header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--color-stroke);
+}
+
+#title {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.ghost {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.ghost:hover {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+
+.ghost:focus-visible,
+.primary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+#recent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  max-height: 200px;
+  overflow: auto;
+  border-bottom: 1px solid var(--color-stroke);
+}
+
+#recent button {
+  text-align: left;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#recent button:hover {
+  background: var(--color-surface-raised);
+}
+
+#recent .empty {
+  color: var(--color-text-muted);
+  padding: 6px 8px;
+}
+
+#messages {
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.msg-user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--color-surface-raised);
+  border-radius: var(--radius-bubble);
+  padding: 8px 12px;
+  white-space: pre-wrap;
+}
+
+.msg-author {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-muted);
+}
+
+.activity svg {
+  color: var(--color-accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.msg-failed {
+  display: flex;
+  gap: 8px;
+  color: var(--color-danger);
+}
+
+#composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 8px 8px 16px;
+  border-radius: 22px;
+}
+
+#input {
+  flex: 1;
+  resize: none;
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--color-text);
+  font: inherit;
+  max-height: 120px;
+  padding: 4px 0;
+}
+
+#input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.primary {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-text);
+  color: var(--color-surface);
+}
+
+.primary:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity svg {
+    animation: none;
+  }
+}

@@ -189,10 +189,12 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     func say(_ text: String, seconds: TimeInterval? = nil) {
         bubbleWork?.cancel()
         bubble?.orderOut(nil)
-        let host = NSHostingView(rootView: BubbleView(text: text, tokens: tokens))
-        let panel = Self.makePanel(size: host.fittingSize)
+        let host = NSHostingView(rootView: BubbleView(text: text))
+        let size = host.fittingSize
+        let panel = Self.makePanel(size: size)
         panel.ignoresMouseEvents = true
-        panel.contentView = host
+        panel.hasShadow = true
+        panel.contentView = GlassBackground.wrap(host, cornerRadius: size.height / 2)
         bubble = panel
         placeBubble()
         panel.alphaValue = 0
@@ -232,8 +234,8 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         let pet = panel.frame
         let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? pet
         let size = bubble.frame.size
-        var origin = CGPoint(x: pet.midX - size.width / 2, y: pet.maxY - 4)
-        if origin.y + size.height > visible.maxY { origin.y = pet.minY - size.height + 4 }
+        var origin = CGPoint(x: pet.midX - size.width / 2, y: pet.maxY + 4)
+        if origin.y + size.height > visible.maxY { origin.y = pet.minY - size.height - 4 }
         origin.x = min(max(origin.x, visible.minX), visible.maxX - size.width)
         bubble.setFrameOrigin(origin)
     }

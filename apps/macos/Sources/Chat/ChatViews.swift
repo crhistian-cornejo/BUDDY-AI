@@ -1,165 +1,189 @@
 import AppKit
 import SwiftUI
 
-/// The compact composer next to Buddy: «+», the field, «Nuevo chat», the microphone and send (or stop).
+/// Sizes shared by the chat views (an 4-pt grid, SF Symbols at one size).
+enum ChatMetrics {
+    static let symbol: CGFloat = 13
+    static let button: CGFloat = 28
+    static let composerHeight: CGFloat = 44
+    static let composerWidth: CGFloat = 340
+    static let chatWidth: CGFloat = 420
+    static let headerHeight: CGFloat = 44
+    static let cornerRadius: CGFloat = 18
+}
+
+/// The compact composer next to Buddy: the field and send (stop while an answer is written). It sits on the
+/// system's glass, so it follows light and dark mode by itself.
 struct ComposerView: View {
     @Bindable var chat: ChatController
-    let tokens: DesignTokens
     var onClose: () -> Void
     @FocusState private var focused: Bool
 
+    private var empty: Bool { chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     var body: some View {
-        HStack(spacing: 6) {
-            icon("plus", help: "Adjuntar (pronto)") {}
-                .disabled(true)
-            TextField("Pregúntale a Buddy…", text: $chat.draft, axis: .vertical)
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Pregúntale a Buddy", text: $chat.draft, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(.system(size: tokens.font.sizeBody))
-                .foregroundStyle(Color(hex: tokens.color.text))
-                .lineLimit(1...5)
+                .font(.body)
+                .lineLimit(1...6)
                 .focused($focused)
                 .onSubmit { chat.send() }
-            icon("square.and.pencil", help: "Iniciar nuevo chat") { chat.newChat() }
-            icon("mic", help: "Micrófono (pronto)") {}
-                .disabled(true)
-            if chat.streaming {
-                round("stop.fill", help: "Detener") { chat.stop() }
-            } else {
-                round("arrow.up", help: "Enviar") { chat.send() }
-                    .disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .padding(.vertical, 5)
+            Group {
+                if chat.streaming {
+                    Button(action: chat.stop) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .frame(width: 16, height: 16)
+                    }
+                    .help("Detener la respuesta")
+                } else {
+                    Button(action: chat.send) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 12, weight: .bold))
+                            .frame(width: 16, height: 16)
+                    }
+                    .disabled(empty)
+                    .help("Enviar (↩)")
+                }
             }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, 16)
+        .padding(.trailing, 8)
         .padding(.vertical, 8)
-        .background(Panel(tokens: tokens, radius: tokens.radius.card))
+        .frame(width: ChatMetrics.composerWidth)
         .onAppear { focused = true }
         .onExitCommand(perform: onClose)
     }
-
-    private func icon(_ name: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color(hex: tokens.color.textMuted))
-                .frame(width: 26, height: 26)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    private func round(_ name: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color.black)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Color(hex: tokens.color.text)))
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        .keyboardShortcut(.return, modifiers: .command)
-    }
 }
 
-/// The chat that grows above the composer once there is an answer.
+/// The chat above the composer once there is an answer: a header with the usual actions and the messages.
 struct ChatView: View {
     @Bindable var chat: ChatController
-    let tokens: DesignTokens
     var onClose: () -> Void
     var onHeight: (CGFloat) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Color(hex: tokens.color.stroke))
+            Divider()
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(chat.messages) { message in
-                            row(message).id(message.id)
+                            MessageRow(message: message).id(message.id)
                         }
                     }
-                    .padding(14)
+                    .padding(16)
                     .background(GeometryReader { g in Color.clear.preference(key: HeightKey.self, value: g.size.height) })
                 }
+                .scrollIndicators(.automatic)
                 .onChange(of: chat.messages.last?.content) { _, _ in
                     if let last = chat.messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
         }
-        .background(Panel(tokens: tokens, radius: tokens.radius.card))
-        .onPreferenceChange(HeightKey.self) { h in onHeight(h + 44) }
+        .frame(width: ChatMetrics.chatWidth)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .onPreferenceChange(HeightKey.self) { h in onHeight(h + ChatMetrics.headerHeight + 1) }
         .onAppear { chat.refreshRecent() }
         .onChange(of: chat.streaming) { _, _ in chat.refreshRecent() }
         .onExitCommand(perform: onClose)
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Text("Buddy")
-                .font(.system(size: tokens.font.sizeTitle, weight: .semibold))
-                .foregroundStyle(Color(hex: tokens.color.text))
-            Spacer()
+        HStack(spacing: 4) {
+            Text(chat.title)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.leading, 4)
+            Spacer(minLength: 8)
+            HeaderButton(symbol: "square.and.pencil", help: "Nuevo chat", action: chat.newChat)
             Menu {
-                recentItems
+                if chat.recent.isEmpty {
+                    Text("Sin chats todavía")
+                } else {
+                    ForEach(chat.recent, id: \.id) { (summary: ChatSummary) in
+                        Button(summary.title) { chat.open(summary.id) }
+                    }
+                }
             } label: {
                 Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: ChatMetrics.symbol, weight: .medium))
+                    .frame(width: ChatMetrics.button, height: ChatMetrics.button)
+                    .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
             .menuIndicator(.hidden)
             .fixedSize()
+            .foregroundStyle(.secondary)
             .help("Chats recientes")
-            Button(action: onClose) { Image(systemName: "xmark") }
-                .buttonStyle(.plain)
-                .help("Cerrar (Esc)")
+            HeaderButton(symbol: "xmark", help: "Cerrar (esc)", action: onClose)
         }
-        .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(Color(hex: tokens.color.textMuted))
-        .padding(.horizontal, 14)
-        .frame(height: 43)
+        .padding(.horizontal, 8)
+        .frame(height: ChatMetrics.headerHeight)
     }
+}
 
-    @ViewBuilder
-    private var recentItems: some View {
-        if chat.recent.isEmpty {
-            Text("Sin chats todavía")
-        } else {
-            ForEach(chat.recent, id: \.id) { (summary: ChatSummary) in
-                Button(summary.title) { chat.open(summary.id) }
-            }
+/// An SF Symbol button of the header: one size, one hit area, a tooltip.
+private struct HeaderButton: View {
+    let symbol: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: ChatMetrics.symbol, weight: .medium))
+                .frame(width: ChatMetrics.button, height: ChatMetrics.button)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(help)
     }
+}
 
-    @ViewBuilder
-    private func row(_ message: LiveMessage) -> some View {
+private struct MessageRow: View {
+    let message: LiveMessage
+
+    var body: some View {
         if message.role == "user" {
             HStack {
-                Spacer(minLength: 40)
+                Spacer(minLength: 48)
                 Text(message.content)
-                    .font(.system(size: tokens.font.sizeBody))
-                    .foregroundStyle(Color(hex: tokens.color.text))
+                    .font(.body)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: tokens.radius.bubble, style: .continuous)
-                        .fill(Color(hex: tokens.color.surfaceRaised)))
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 if let author = message.author {
-                    Text(author)
-                        .font(.system(size: tokens.font.sizeSmall, weight: .semibold))
-                        .foregroundStyle(Color(hex: tokens.color.accent))
+                    Label(author, systemImage: message.author?.hasPrefix("Buddy") == true ? "sparkle" : "person.crop.circle.badge.checkmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.titleAndIcon)
+                }
+                if let activity = message.activity {
+                    ActivityLine(activity: activity)
                 }
                 if message.failed {
-                    Text(message.content)
-                        .font(.system(size: tokens.font.sizeBody))
-                        .foregroundStyle(Color(hex: tokens.color.danger))
-                } else {
+                    Label(message.content, systemImage: "exclamationmark.triangle.fill")
+                        .font(.body)
+                        .foregroundStyle(.red)
+                } else if !message.content.isEmpty || !message.sources.isEmpty {
                     AssistantBubble(message: message)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contextMenu {
                 Button("Copiar respuesta") {
                     NSPasteboard.general.clearContents()
@@ -170,21 +194,39 @@ struct ChatView: View {
     }
 }
 
+/// What the agent is doing, with a symbol that moves: thinking, searching the web, reading a page, handing the
+/// request to a specialist.
+struct ActivityLine: View {
+    let activity: ChatActivity
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: activity.symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.tint)
+                .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
+                .frame(width: 16)
+            AnswerStatusView(text: activity.text)
+        }
+        .transition(.opacity)
+    }
+}
+
 private struct HeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// The dark rounded panel both chat windows sit on.
-struct Panel: View {
-    let tokens: DesignTokens
-    let radius: Double
+/// A short line from Buddy next to the mascot (the hello).
+struct BubbleView: View {
+    let text: String
 
     var body: some View {
-        RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(Color(hex: tokens.color.surface))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Color(hex: tokens.color.stroke), lineWidth: 1))
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+        Text(text)
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .fixedSize()
     }
 }

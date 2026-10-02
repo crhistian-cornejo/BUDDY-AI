@@ -10,6 +10,8 @@ pub const WALK_SPEED: f64 = 32.0;
 /// Walks shorter than this are not worth it (Buddy turns around or does something else).
 const MIN_WALK: f64 = 24.0;
 const MAX_WALK: f64 = 180.0;
+/// Buddy only walks when the user has not touched keyboard or mouse for this long: never while they work.
+pub const WALK_WHEN_IDLE_SECONDS: f64 = 20.0;
 /// Without any input for this long the user is away: Buddy sleeps.
 pub const SLEEP_AFTER_SECONDS: f64 = 300.0;
 
@@ -106,7 +108,7 @@ impl PetBrain {
             return PetPlan { wait_ms: wait_ms + 4_000, ..plan("blink", 150) };
         }
         let roll = self.next_f64();
-        if ctx.wander && roll < 0.22 {
+        if ctx.wander && ctx.idle_seconds >= WALK_WHEN_IDLE_SECONDS && roll < 0.22 {
             if let Some(walk) = self.walk(&ctx) {
                 return PetPlan { wait_ms, ..walk };
             }
@@ -148,7 +150,7 @@ mod tests {
     use super::*;
 
     fn ctx(x: f64) -> PetContext {
-        PetContext { x, min_x: 0.0, max_x: 1000.0, reduce_motion: false, wander: true, idle_seconds: 0.0 }
+        PetContext { x, min_x: 0.0, max_x: 1000.0, reduce_motion: false, wander: true, idle_seconds: 60.0 }
     }
 
     fn walks(brain: &PetBrain, c: PetContext, n: usize) -> Vec<PetPlan> {
@@ -188,6 +190,12 @@ mod tests {
     }
 
     #[test]
+    fn never_walks_while_the_user_is_working() {
+        let brain = PetBrain::with_seed(13);
+        assert!(walks(&brain, PetContext { idle_seconds: 2.0, ..ctx(500.0) }, 300).is_empty());
+    }
+
+    #[test]
     fn reduce_motion_only_blinks_and_away_means_sleep() {
         let brain = PetBrain::with_seed(5);
         for _ in 0..100 {
@@ -201,7 +209,7 @@ mod tests {
         let character = crate::pixel::builtin("buddy-base").unwrap();
         let brain = PetBrain::with_seed(9);
         for i in 0..500 {
-            let c = PetContext { idle_seconds: if i % 50 == 0 { 900.0 } else { 0.0 }, ..ctx(500.0) };
+            let c = PetContext { idle_seconds: if i % 50 == 0 { 900.0 } else { 60.0 }, ..ctx(500.0) };
             let plan = brain.next(c);
             assert!(character.states.contains_key(&plan.state), "missing state {}", plan.state);
         }

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import tokens, { applyTokens } from "./tokens";
 import { type Sprite } from "./sprite";
@@ -65,7 +66,7 @@ canvas.addEventListener("mousedown", (down) => {
   };
   const up = () => {
     cleanup();
-    void player.play("wave", 1);
+    void invoke("toggle_chat");
   };
   const cleanup = () => {
     window.removeEventListener("mousemove", move);
@@ -78,6 +79,25 @@ canvas.addEventListener("mousedown", (down) => {
 window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   void invoke("show_pet_menu");
+});
+
+// Agent states from the core: think/work/ask loop until the next state; done and error play once.
+let activity: string | null = null;
+void listen<{ type: string; state?: string }>("core-event", ({ payload }) => {
+  if (payload.type !== "mascotState" || !player) return;
+  const state = payload.state ?? "idle";
+  if (["think", "work", "ask", "listen"].includes(state)) {
+    activity = state;
+    lifeToken++;
+    void player.loop(state);
+  } else {
+    const wasBusy = activity !== null;
+    activity = null;
+    player.stop();
+    player.show("idle");
+    const reaction = state === "done" || state === "error" ? player.play(state, 1) : Promise.resolve(true);
+    if (wasBusy) void reaction.then(() => life());
+  }
 });
 
 void main();

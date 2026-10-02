@@ -1,12 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// The composer and the chat panels next to Buddy: placed on the side of the pet with more room, the chat growing
-/// upwards with its content (never past the screen), following the pet when it walks or is dragged.
+/// The composer and the chat panels next to Buddy, on the system's glass with the system's window shadow. Placed on
+/// the side of the pet with more room, the chat growing upwards with its content (never past the screen).
 @MainActor
 final class ChatWindows {
     private let chat: ChatController
-    private let tokens: DesignTokens
     private let pet: () -> NSRect
     private var composer: KeyPanel?
     private var panel: KeyPanel?
@@ -14,17 +13,15 @@ final class ChatWindows {
     private var clickMonitor: Any?
     private var moveObserver: NSObjectProtocol?
 
-    static let composerSize = CGSize(width: 380, height: 52)
-    static let chatWidth: CGFloat = 430
+    static let gap: CGFloat = 8
     static let maxChatHeight: CGFloat = 520
 
     var isOpen: Bool { composer != nil }
     /// Told when the chat opens or closes (Buddy holds still meanwhile).
     var onOpenChange: ((Bool) -> Void)?
 
-    init(chat: ChatController, tokens: DesignTokens, pet: @escaping () -> NSRect) {
+    init(chat: ChatController, pet: @escaping () -> NSRect) {
         self.chat = chat
-        self.tokens = tokens
         self.pet = pet
     }
 
@@ -34,10 +31,15 @@ final class ChatWindows {
 
     func open() {
         if composer == nil {
-            let panel = KeyPanel.make(size: Self.composerSize)
-            panel.contentView = NSHostingView(rootView: ComposerView(chat: chat, tokens: tokens, onClose: { [weak self] in self?.close() })
-                .padding(4))
-            composer = panel
+            let view = ComposerView(chat: chat, onClose: { [weak self] in self?.close() })
+            let host = NSHostingView(rootView: view)
+            let size = CGSize(width: ChatMetrics.composerWidth, height: max(host.fittingSize.height, ChatMetrics.composerHeight))
+            composer = KeyPanel.make(size: size, content: host, cornerRadius: size.height / 2)
+            // The field grows with long text: the capsule follows.
+            host.sizingOptions = [.intrinsicContentSize]
+            NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: host, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.layout() }
+            }
         }
         NSApp.activate()
         composer?.makeKeyAndOrderFront(nil)
@@ -65,7 +67,7 @@ final class ChatWindows {
         moveObserver = nil
     }
 
-    /// A click elsewhere (outside Buddy's windows) closes the chat, unless an answer is being written.
+    /// A click outside Buddy's windows closes the chat, unless an answer is being written.
     private func closeIfClickedOutside() {
         let p = NSEvent.mouseLocation
         let inside = [composer?.frame, panel?.frame, pet()].compactMap { $0 }.contains { $0.contains(p) }
@@ -90,11 +92,14 @@ final class ChatWindows {
             return
         }
         if panel == nil {
-            let p = KeyPanel.make(size: CGSize(width: Self.chatWidth, height: 160))
-            p.contentView = NSHostingView(rootView: ChatView(
-                chat: chat, tokens: tokens,
+            let host = NSHostingView(rootView: ChatView(
+                chat: chat,
                 onClose: { [weak self] in self?.close() },
                 onHeight: { [weak self] h in self?.contentHeight = h; self?.layout() }))
+            // The window decides the size (it grows with the content up to a cap); SwiftUI fills it from the top.
+            host.sizingOptions = []
+            let p = KeyPanel.make(size: CGSize(width: ChatMetrics.chatWidth, height: 160), content: host,
+                                  cornerRadius: ChatMetrics.cornerRadius)
             panel = p
             p.orderFront(nil)
         }
@@ -105,41 +110,74 @@ final class ChatWindows {
         guard let composer else { return }
         let pet = pet()
         let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: pet.midX, y: pet.midY)) } ?? NSScreen.main
-        let area = screen?.visibleFrame ?? pet
-        let size = composer.frame.size
-        // The side of the pet with more room.
+        let area = (screen?.visibleFrame ?? pet).insetBy(dx: Self.gap, dy: Self.gap)
+        let height = max(composer.contentView?.fittingSize.height ?? 0, ChatMetrics.composerHeight)
+        let size = CGSize(width: ChatMetrics.composerWidth, height: height)
+        // The side of the pet with more room; bottom level with Buddy's feet.
         let left = pet.midX > area.midX
-        var x = left ? pet.minX - size.width - 6 : pet.maxX + 6
-        x = min(max(x, area.minX + 8), area.maxX - size.width - 8)
-        var y = pet.minY + 8
-        y = min(max(y, area.minY + 8), area.maxY - size.height - 8)
-        composer.setFrameOrigin(CGPoint(x: x, y: y))
+        var x = left ? pet.minX - size.width - Self.gap : pet.maxX + Self.gap
+        x = min(max(x, area.minX), area.maxX - size.width)
+        let y = min(max(pet.minY + 6, area.minY), area.maxY - size.height)
+        composer.setFrame(NSRect(origin: CGPoint(x: x, y: y), size: size), display: true)
+        composer.invalidateShadow()
 
         guard let panel else { return }
-        let width = Self.chatWidth
-        let px = left ? x + size.width - width : x
-        let room = area.maxY - (y + size.height + 6) - 8
-        let height = min(max(contentHeight, 120), Self.maxChatHeight, room)
-        panel.setFrame(NSRect(x: min(max(px, area.minX + 8), area.maxX - width - 8), y: y + size.height + 6,
-                              width: width, height: height), display: true)
+        let width = ChatMetrics.chatWidth
+        let px = min(max(left ? x + size.width - width : x, area.minX), area.maxX - width)
+        let bottom = y + size.height + Self.gap
+        let chatHeight = min(max(contentHeight, 120), Self.maxChatHeight, area.maxY - bottom)
+        panel.setFrame(NSRect(x: px, y: bottom, width: width, height: chatHeight), display: true)
+        panel.invalidateShadow()
     }
 }
 
-/// A borderless panel that can take the keyboard (to type) without a title bar.
+/// A borderless panel on the system's glass (Liquid Glass on macOS 26 and later, the popover material before) with
+/// rounded corners and the system window shadow. It can take the keyboard without a title bar.
 final class KeyPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 
-    static func make(size: CGSize) -> KeyPanel {
+    static func make(size: CGSize, content: NSView, cornerRadius: CGFloat) -> KeyPanel {
         let panel = KeyPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false
+        panel.hasShadow = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = false
+        panel.contentView = GlassBackground.wrap(content, cornerRadius: cornerRadius)
         return panel
+    }
+}
+
+enum GlassBackground {
+    /// `content` on the system glass, clipped to the corner radius.
+    @MainActor
+    static func wrap(_ content: NSView, cornerRadius: CGFloat) -> NSView {
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = cornerRadius
+            glass.contentView = content
+            return glass
+        }
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = cornerRadius
+        effect.layer?.cornerCurve = .continuous
+        effect.layer?.masksToBounds = true
+        content.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            content.topAnchor.constraint(equalTo: effect.topAnchor),
+            content.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+        ])
+        return effect
     }
 }

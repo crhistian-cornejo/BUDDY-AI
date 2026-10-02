@@ -20,12 +20,19 @@ final class ChatController {
 
     var hasContent: Bool { !messages.isEmpty }
 
+    /// The first question, as the chat's title.
+    var title: String {
+        guard let first = messages.first(where: { $0.role == "user" })?.content else { return "Buddy" }
+        let line = first.split(separator: "\n").first.map(String.init) ?? first
+        return line.count > 48 ? String(line.prefix(48)) + "…" : line
+    }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
         messages.append(LiveMessage(role: "user", content: text))
-        messages.append(LiveMessage(role: "assistant", content: "", isStreaming: true, status: "Pensando…"))
+        messages.append(LiveMessage(role: "assistant", content: "", isStreaming: true, author: "Buddy", activity: .thinking))
         streaming = true
         do {
             chatID = try core.sendMessage(chatId: chatID, text: text)
@@ -66,12 +73,17 @@ final class ChatController {
     /// A core event for the chat on screen (others are ignored here; the history has them).
     func handle(_ event: Event) {
         switch event {
-        case let .chatStarted(chatId, _, agentName, provider) where chatId == chatID:
-            update { $0.author = Self.author(agentName, provider); $0.status = $0.content.isEmpty ? "Pensando…" : $0.status }
+        case let .chatStarted(chatId, agent, agentName, provider) where chatId == chatID:
+            update { m in
+                m.author = Self.author(agentName, provider)
+                if m.content.isEmpty {
+                    m.activity = agent == "buddy" ? .thinking : .handoff(to: agentName)
+                }
+            }
         case let .chatDelta(chatId, text) where chatId == chatID:
-            update { $0.content += text; $0.status = nil }
+            update { $0.content += text; $0.activity = nil }
         case let .chatTool(chatId, name, summary) where chatId == chatID:
-            update { $0.status = Self.status(name, summary) }
+            update { $0.activity = .tool(name, summary) }
         case let .chatSource(chatId, title, url) where chatId == chatID:
             if let source = ChatSource.make(title: title, url: url) {
                 update { m in if !m.sources.contains(where: { $0.url == source.url }) { m.sources.append(source) } }
@@ -88,7 +100,7 @@ final class ChatController {
     private func finish(failure: String?) {
         update { m in
             m.isStreaming = false
-            m.status = nil
+            m.activity = nil
             if let failure, m.content.isEmpty { m.content = failure; m.failed = true }
         }
         streaming = false
@@ -103,15 +115,6 @@ final class ChatController {
         guard let provider, !provider.isEmpty else { return name }
         let p = ["claude": "Claude", "codex": "Codex", "antigravity": "Gemini"][provider] ?? provider
         return "\(name) · \(p)"
-    }
-
-    static func status(_ tool: String, _ summary: String) -> String {
-        switch tool {
-        case "WebSearch": return summary.isEmpty ? "Buscando en la web…" : "Buscando: \(summary)"
-        case "WebFetch": return "Leyendo \(WebHost.of(summary) ?? "una página")…"
-        case "Cambio": return summary
-        default: return "Trabajando…"
-        }
     }
 }
 

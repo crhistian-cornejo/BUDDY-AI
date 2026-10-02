@@ -8,30 +8,30 @@ import AppKit
 // inside the answer (the sources row is the only way out, and it only opens http/https).
 
 private enum Ink {
-    static let body = Color(hex: "#B0B5BE")
-    static let strong = Color(hex: "#F1F2F4")
-    static let faint = Color(hex: "#6B7079")
-    static let code = Color(hex: "#D5D9E0")
-    static let math = Color(hex: "#E3E6EB")
-    static let link = Color(hex: "#8AB4F8")
-    static let ok = Color(hex: "#7FD18B")
+    static let body = Color(nsColor: .labelColor).opacity(0.88)
+    static let strong = Color(nsColor: .labelColor)
+    static let faint = Color(nsColor: .secondaryLabelColor)
+    static let code = Color(nsColor: .labelColor)
+    static let math = Color(nsColor: .labelColor)
+    static let link = Color(nsColor: .linkColor)
+    static let ok = Color(nsColor: .systemGreen)
 }
 
 /// The colours of a code token. The same palette as the Windows app (answer.css, `.tk-*`).
 private enum CodeInk {
     static func color(_ kind: CodeTokenKind) -> Color {
         switch kind {
-        case .kw: return Color(hex: "#C586C0")
-        case .str: return Color(hex: "#CE9178")
-        case .com: return Color(hex: "#6A9955")
-        case .num: return Color(hex: "#B5CEA8")
-        case .type: return Color(hex: "#4EC9B0")
-        case .fn: return Color(hex: "#DCDCAA")
-        case .prop: return Color(hex: "#9CDCFE")
-        case .tag: return Color(hex: "#569CD6")
-        case .add: return Color(hex: "#7FD18B")
-        case .del: return Color(hex: "#F28B82")
-        case .hunk: return Color(hex: "#8AB4F8")
+        case .kw: return .dynamic(light: "#AF00DB", dark: "#C586C0")
+        case .str: return .dynamic(light: "#A31515", dark: "#CE9178")
+        case .com: return .dynamic(light: "#008000", dark: "#6A9955")
+        case .num: return .dynamic(light: "#098658", dark: "#B5CEA8")
+        case .type: return .dynamic(light: "#267F99", dark: "#4EC9B0")
+        case .fn: return .dynamic(light: "#795E26", dark: "#DCDCAA")
+        case .prop: return .dynamic(light: "#001080", dark: "#9CDCFE")
+        case .tag: return .dynamic(light: "#0000FF", dark: "#569CD6")
+        case .add: return .dynamic(light: "#22863A", dark: "#7FD18B")
+        case .del: return .dynamic(light: "#B31D28", dark: "#F28B82")
+        case .hunk: return .dynamic(light: "#0550AE", dark: "#8AB4F8")
         case .plain: return Ink.code
         }
     }
@@ -82,8 +82,8 @@ struct AnswerStatusView: View {
     let text: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private static var base: Color { Color(hex: "#6B7079") }
-    private static var light: Color { Color(hex: "#EEF0F3") }
+    private static var base: Color { Color(nsColor: .secondaryLabelColor) }
+    private static var light: Color { Color(nsColor: .labelColor) }
     private static let period = 1.9
 
     var body: some View {
@@ -92,7 +92,7 @@ struct AnswerStatusView: View {
             .lineLimit(1)
             .truncationMode(.tail)
         if reduceMotion {
-            label.foregroundColor(Color(hex: "#8E939C"))
+            label.foregroundColor(Color(nsColor: .secondaryLabelColor))
         } else {
             label
                 .foregroundColor(Self.base)
@@ -153,7 +153,7 @@ struct SourcesRow: View {
                 if let last = shown.last {
                     Text(verbatim: last.host)
                         .font(.system(size: 10.5))
-                        .foregroundColor(Color(hex: spread ? "#C4C8D0" : "#8E939C"))
+                        .foregroundColor(Color(nsColor: spread ? .labelColor : .secondaryLabelColor))
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: 160, alignment: .leading)
@@ -215,7 +215,7 @@ struct SourceChip: View {
                 }
             }
             .frame(width: 20, height: 20)
-            .overlay(Circle().stroke(Color.black.opacity(0.55), lineWidth: 1.5))   // keeps overlapping chips apart
+            .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))   // keeps overlapping chips apart
             .scaleEffect(hovered ? 1.08 : 1)
             .offset(y: hovered ? -1 : 0)
         }
@@ -327,12 +327,12 @@ struct MarkdownBlockView: View, Equatable {
             codeView(language: language, code: code)
         case .quote(let blocks):
             HStack(alignment: .top, spacing: 8) {
-                RoundedRectangle(cornerRadius: 1).fill(Color.white.opacity(0.22)).frame(width: 2)
+                RoundedRectangle(cornerRadius: 1).fill(Color.primary.opacity(0.22)).frame(width: 2)
                 MarkdownBlocks(blocks: blocks).opacity(0.85)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .rule:
-            Rectangle().fill(Color.white.opacity(0.12)).frame(height: 1).padding(.vertical, 3)
+            Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1).padding(.vertical, 3)
         case .table(let header, let alignments, let rows):
             tableView(header: header, alignments: alignments, rows: rows)
         case .math(let latex):
@@ -385,7 +385,7 @@ struct MarkdownBlockView: View, Equatable {
             InlineText(source: source, size: 11.5, weight: header ? .semibold : .regular, color: header ? Ink.strong : Ink.body)
                 .padding(.horizontal, 12).padding(.vertical, header ? 5 : 4)
                 .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment(column), vertical: .center))
-                .background(Color.white.opacity(shade))
+                .background(Color.primary.opacity(shade))
                 .gridColumnAlignment(alignment(column))
         }
         return ScrollView(.horizontal, showsIndicators: false) {
@@ -393,7 +393,7 @@ struct MarkdownBlockView: View, Equatable {
                 GridRow {
                     ForEach(Array(header.enumerated()), id: \.offset) { column, text in cell(text, column: column, header: true, shade: 0.08) }
                 }
-                Rectangle().fill(Color.white.opacity(0.15)).frame(height: 1).gridCellColumns(max(header.count, 1))
+                Rectangle().fill(Color.primary.opacity(0.15)).frame(height: 1).gridCellColumns(max(header.count, 1))
                 ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { column, text in
@@ -403,7 +403,7 @@ struct MarkdownBlockView: View, Equatable {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1))
         }
     }
 }
@@ -515,7 +515,7 @@ enum InlineMarkdown {
             if intent.contains(.code) {
                 out[range].font = .system(size: size * 0.92, design: .monospaced)
                 out[range].foregroundColor = Ink.code
-                out[range].backgroundColor = Color.white.opacity(0.1)
+                out[range].backgroundColor = Color.primary.opacity(0.1)
                 continue
             }
             let bold = intent.contains(.stronglyEmphasized), italic = intent.contains(.emphasized)
@@ -951,7 +951,7 @@ private struct CodeBlockView: View {
                             .font(.system(size: 9.5, weight: .medium))
                             .foregroundColor(copied ? Ink.ok : Ink.body)
                             .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.white.opacity(0.08)))
+                            .background(Capsule().fill(Color.primary.opacity(0.08)))
                     }
                     .buttonStyle(.plain)
                     .opacity(hovering || copied ? 1 : 0)
@@ -959,7 +959,7 @@ private struct CodeBlockView: View {
                 }
             }
             .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Color.white.opacity(0.05))
+            .background(Color.primary.opacity(0.05))
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(CodeInk.attributed(code, language: language))
                     .font(.system(size: 11, design: .monospaced))
@@ -970,7 +970,7 @@ private struct CodeBlockView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.07))
+        .background(Color.primary.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onHover { hovering = $0 }
     }

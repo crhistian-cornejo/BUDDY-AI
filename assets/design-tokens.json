@@ -1,19 +1,30 @@
 {
   "color": {
     "island": "#000000",
-    "surface": "#16181D",
-    "surfaceRaised": "#1F2229",
-    "stroke": "#2A2E37",
-    "text": "#F2F4F8",
-    "textMuted": "#9AA3B5",
-    "accent": "#5B7CFA",
+    "surface": "#1F1F1F",
+    "surfaceRaised": "#2A2A2D",
+    "stroke": "#3A3A3F",
+    "text": "#FAFAFA",
+    "textMuted": "#A1A1AA",
+    "accent": "#7C93FF",
     "accentWarm": "#FFB547",
     "success": "#3DDC97",
     "warning": "#FFB547",
-    "danger": "#FF5D6C"
+    "danger": "#F87171"
   },
-  "radius": { "control": 10, "bubble": 14, "card": 18, "island": 22 },
-  "font": { "family": "system", "sizeSmall": 11, "sizeBody": 13, "sizeTitle": 15, "weightTitle": 600 },
+  "radius": {
+    "control": 8,
+    "bubble": 14,
+    "card": 12,
+    "island": 22
+  },
+  "font": {
+    "family": "system",
+    "sizeSmall": 11,
+    "sizeBody": 13,
+    "sizeTitle": 15,
+    "weightTitle": 600
+  },
   "motion": {
     "springResponse": 0.38,
     "springDamping": 0.82,
@@ -24,5 +35,23 @@
     "maxFps": 30,
     "helloSeconds": 4
   },
-  "pet": { "scaleSmall": 1.5, "scaleNormal": 2, "scaleLarge": 3, "margin": 24 }
+  "pet": {
+    "scaleSmall": 1.5,
+    "scaleNormal": 2,
+    "scaleLarge": 3,
+    "margin": 24
+  },
+  "colorLight": {
+    "island": "#000000",
+    "surface": "#FFFFFF",
+    "surfaceRaised": "#F2F2F3",
+    "stroke": "#E4E4E7",
+    "text": "#09090B",
+    "textMuted": "#71717A",
+    "accent": "#3B5BDB",
+    "accentWarm": "#E8890C",
+    "success": "#16A34A",
+    "warning": "#D97706",
+    "danger": "#DC2626"
+  }
 }

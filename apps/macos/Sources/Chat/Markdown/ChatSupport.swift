@@ -37,7 +37,34 @@ struct LiveMessage: Identifiable, Equatable, Sendable {
     var status: String?
     /// Who answered: "Buddy · Claude", "PARLEY · Claude".
     var author: String?
+    /// What the agent is doing right now, with its symbol. Never saved.
+    var activity: ChatActivity?
     var failed = false
+}
+
+/// A live line under the author: thinking, searching, reading, handing off.
+struct ChatActivity: Equatable, Sendable {
+    var symbol: String
+    var text: String
+
+    static let thinking = ChatActivity(symbol: "ellipsis.bubble", text: "Pensando…")
+
+    static func tool(_ name: String, _ summary: String) -> ChatActivity {
+        switch name {
+        case "WebSearch":
+            return ChatActivity(symbol: "magnifyingglass", text: summary.isEmpty ? "Buscando en la web…" : "Buscando: \(summary)")
+        case "WebFetch":
+            return ChatActivity(symbol: "doc.text.magnifyingglass", text: "Leyendo \(WebHost.of(summary) ?? "una página")…")
+        case "Cambio":
+            return ChatActivity(symbol: "arrow.left.arrow.right", text: summary)
+        default:
+            return ChatActivity(symbol: "gearshape", text: "Trabajando…")
+        }
+    }
+
+    static func handoff(to agent: String) -> ChatActivity {
+        ChatActivity(symbol: "arrow.triangle.branch", text: "Buddy le pasa la tarea a \(agent)…")
+    }
 }
 
 enum WebHost {
@@ -64,6 +91,16 @@ extension Color {
         let val = UInt64(h, radix: 16) ?? 0
         self.init(red: Double((val >> 16) & 0xFF) / 255, green: Double((val >> 8) & 0xFF) / 255,
                   blue: Double(val & 0xFF) / 255)
+    }
+}
+
+extension Color {
+    /// A colour that follows the system appearance (light or dark).
+    static func dynamic(light: String, dark: String) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(Color(hex: isDark ? dark : light))
+        })
     }
 }
 
