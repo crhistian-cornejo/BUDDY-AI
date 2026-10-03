@@ -224,6 +224,11 @@ function drawOverview() {
 /** One mark and percentage per provider, with the window and reset in the tooltip. */
 function drawUsage() {
   const el = $("usage");
+  if (tools.tab === "files") {
+    el.hidden = true;
+    el.replaceChildren();
+    return;
+  }
   const plans = usage.flatMap((plan) => {
     const window = compactWindow(plan);
     if (!window) return [];

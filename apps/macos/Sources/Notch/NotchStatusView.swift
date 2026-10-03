@@ -10,7 +10,7 @@ struct NotchStatusView: View {
             HStack(spacing: 6) {
                 Image(systemName: status.symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(color)
                 Text(status.title).font(.system(size: 10, weight: .medium)).lineLimit(1).truncationMode(.tail)
-            }.frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .trailing)
+            }.padding(.trailing, 6).frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .trailing)
             Color.clear.frame(width: notch.width)
             Group {
                 if let level = status.level {
@@ -29,7 +29,7 @@ struct NotchStatusView: View {
                 } else {
                     Text(status.text).font(.system(size: 10, weight: .semibold)).foregroundStyle(color).lineLimit(1)
                 }
-            }.frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .leading)
+            }.padding(.leading, 6).frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .leading)
         }.padding(.horizontal, NotchLayout.compactInset).contentShape(Rectangle()).tip(status.help).accessibilityElement(children: .ignore).accessibilityLabel(status.help)
     }
 }

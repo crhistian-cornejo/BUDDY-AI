@@ -5,8 +5,8 @@ import SwiftUI
 /// 16 pt between blocks, 20 pt at the bottom.
 enum NotchLayout {
     static let earWidth: CGFloat = 40
-    static let statusWing: CGFloat = 88
-    static let compactInset: CGFloat = 12
+    static let statusWing: CGFloat = 112
+    static let compactInset: CGFloat = 16
     static let side: CGFloat = 24
     static let background = Color(.sRGB, red: 0, green: 0, blue: 0, opacity: 1)
     static let noticeWidth: CGFloat = 420
@@ -48,7 +48,7 @@ enum NotchLayout {
         case .open:
             let body: CGFloat = model.tab == .files ? shelfHeight : model.tab == .utilities ? utilitiesHeight(model)
                 : tileHeight + (model.nowPlaying == nil ? 0 : playerHeight + 16)
-            let usage = model.usage.contains { NotchUsage.window(for: $0) != nil } ? usageHeight + 12 : 0
+            let usage = model.tab != .files && model.usage.contains { NotchUsage.window(for: $0) != nil } ? usageHeight + 12 : 0
             let message: CGFloat = model.toolMessage.isEmpty ? 0 : 24
             return CGSize(width: max(openWidth, notch.width + 48),
                           height: notch.height + 16 + body + usage + message + 20)
@@ -223,7 +223,7 @@ struct NotchView: View {
                 case .utilities:
                     NotchUtilitiesView(model: model, actions: actions)
                 }
-                if model.usage.contains(where: { NotchUsage.window(for: $0) != nil }) {
+                if model.tab != .files && model.usage.contains(where: { NotchUsage.window(for: $0) != nil }) {
                     UsageStrip(usage: model.usage)
                         .padding(.top, -4)
                 }
@@ -340,11 +340,12 @@ struct NotchView: View {
                 if notice.agent == "buddy" { AvatarView(size: 16) }
                 else { ProviderMark(provider: AgentNames.mark(notice.agent), size: 13, showsTooltip: false) }
                 Text(notice.agentName).font(.system(size: 10, weight: .medium)).lineLimit(1)
-            }.frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .trailing)
+            }.padding(.trailing, 6).frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .trailing)
             Color.clear.frame(width: notch.width)
             Text(notice.kind == .finished ? "Listo" : notice.kind == .failed ? "Error" : "Espera")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(notice.kind == .failed ? Color.red : notice.kind == .waiting ? Color.orange : Color.accentColor)
+                .padding(.leading, 6)
                 .frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .leading)
         }.padding(.horizontal, NotchLayout.compactInset).tip("\(notice.title)\n\(notice.detail)")
     }
@@ -630,7 +631,7 @@ private struct MusicPlayer: View {
         }
         .padding(14)
         .frame(height: NotchLayout.playerHeight)
-        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.08)))
     }
 
@@ -764,7 +765,7 @@ private struct Tile<Content: View>: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: NotchLayout.tileHeight, maxHeight: NotchLayout.tileHeight, alignment: .topLeading)
-        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .clipped()
     }
@@ -952,8 +953,7 @@ private struct DropPanel: View {
             Text("Suelta tus archivos aquí").font(.system(size: 13, weight: .semibold))
         }
         .frame(maxWidth: .infinity).frame(height: NotchLayout.dropHeight)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(.white.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
+        .overlay(AnimatedDropBorder(cornerRadius: 16, opacity: 0.55))
     }
 }
 

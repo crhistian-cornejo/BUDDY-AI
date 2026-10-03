@@ -12,6 +12,7 @@ struct NotchShelfView: View {
                 Text("\(model.dropped.count)/32").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Añadir…", action: actions.addFiles).buttonStyle(IslandButtonStyle(prominent: false, compact: true))
+                    .tip("Añadir archivos a la bandeja")
             }.frame(height: 24)
             ScrollView {
                 if model.dropped.isEmpty {
@@ -19,7 +20,9 @@ struct NotchShelfView: View {
                         Image(systemName: "tray").font(.system(size: 22))
                         Text("Suelta archivos aquí o pulsa Añadir.").font(.system(size: 12))
                         Text("Se conservan al cerrar el notch.").font(.system(size: 10)).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, minHeight: 112)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 112)
+                    .overlay(AnimatedDropBorder(cornerRadius: 14, opacity: 0.38))
                 } else {
                     VStack(spacing: 8) {
                         ForEach(model.tools?.files ?? [], id: \.path) { file in
@@ -46,11 +49,30 @@ struct NotchShelfView: View {
             }.frame(height: 114)
             HStack(spacing: 8) {
                 Button("Dárselo a Buddy", action: actions.giveToBuddy).buttonStyle(IslandButtonStyle(prominent: true))
+                    .tip("Abrir el chat con los archivos de la bandeja")
                 Button("Compartir…", action: actions.share).buttonStyle(IslandButtonStyle(prominent: false))
+                    .tip("Compartir los archivos de la bandeja")
                 Button("Copiar rutas", action: actions.copyPaths).buttonStyle(IslandButtonStyle(prominent: false))
+                    .tip("Copiar las rutas de los archivos")
                 Spacer(minLength: 0)
             }.disabled(model.tools?.files.contains(where: \.available) != true).frame(height: 28)
         }.frame(height: NotchLayout.shelfHeight)
+    }
+}
+
+struct AnimatedDropBorder: View {
+    let cornerRadius: CGFloat
+    let opacity: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+            let phase = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: 1.5) * 12
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(.white.opacity(opacity), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [5, 5], dashPhase: -phase))
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -100,7 +122,8 @@ struct NotchUtilitiesView: View {
                 Menu {
                     Button("Elegir agenda .ics…", action: actions.pickCalendar)
                     if model.tools?.calendarPath != nil { Button("Desconectar agenda", action: actions.clearCalendar) }
-                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Fuente de la agenda")
+                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
+                    .accessibilityLabel("Fuente de la agenda").tip("Elegir o desconectar agenda")
             }
             if let event = model.appointment {
                 Button(action: actions.openAppointment) {
@@ -113,6 +136,7 @@ struct NotchUtilitiesView: View {
             } else if model.tools?.calendarPath == nil {
                 Text("Agenda local (.ics)").font(.system(size: 10)).foregroundStyle(.secondary)
                 Button("Elegir agenda…", action: actions.pickCalendar).font(.system(size: 11)).buttonStyle(.plain)
+                    .tip("Elegir un archivo de calendario .ics")
             } else {
                 Text(model.calendarError.isEmpty ? "Sin próximas citas" : model.calendarError).font(.system(size: 11)).lineLimit(2)
                 Text(URL(fileURLWithPath: model.tools?.calendarPath ?? "").lastPathComponent)
@@ -147,7 +171,7 @@ struct NotchUtilitiesView: View {
                     }
                 }
             }.frame(height: 70)
-        }.padding(12).frame(height: 128).background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+        }.padding(12).frame(height: 128).background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.08)))
     }
 
@@ -167,7 +191,7 @@ struct NotchUtilitiesView: View {
 private extension View {
     func notchUtilityCard() -> some View {
         self.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+            .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.08)))
     }
 }

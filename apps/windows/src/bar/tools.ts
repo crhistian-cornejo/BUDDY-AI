@@ -10,7 +10,7 @@ interface Appointment { title: string; start: number; end: number; allDay: boole
 type Tab = "home" | "files" | "utilities";
 const $ = (id: string) => document.getElementById(id)!;
 const glyph = (path: string) => svg(path, 14, { fill: "none", stroke: "currentColor", "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round" });
-const button = (label: string, action: () => void, primary = false) => h("button", { class: `btn ${primary ? "primary" : ""}`, type: "button", onclick: action }, label);
+const button = (label: string, action: () => void, primary = false, tip = label) => h("button", { class: `btn ${primary ? "primary" : ""}`, type: "button", title: tip, onclick: action }, label);
 const smallButton = (path: string, label: string, action: () => void, disabled = false) => h("button", { class: "icon-btn", type: "button", title: label, "aria-label": label, disabled, onclick: action }, glyph(path));
 
 /** Locally saved tools. Reading the clipboard always starts with an explicit button press. */
@@ -134,12 +134,12 @@ export class NotchToolPanel {
         h("span", {}, h("strong", { text: file.name }), h("small", { text: file.available ? file.path : "Archivo no disponible" }))),
       smallButton(TABLER.x, `Retirar ${file.name} de la bandeja; el archivo permanece en su carpeta`, () => this.mutate("notch_remove_file", { path: file.path }))));
     const available = files.filter((f) => f.available).map((f) => f.path);
-    const give = button("Dárselo a Buddy", () => this.action("give_files", { paths: available }), true);
-    const copy = button("Copiar rutas", () => this.action("notch_copy_paths", undefined, "Rutas copiadas."));
+    const give = button("Dárselo a Buddy", () => this.action("give_files", { paths: available }), true, "Abrir el chat con los archivos de la bandeja");
+    const copy = button("Copiar rutas", () => this.action("notch_copy_paths", undefined, "Rutas copiadas."), false, "Copiar las rutas de los archivos");
     give.disabled = copy.disabled = !available.length;
     $("files-tools").replaceChildren(
       h("div", { class: "tool-head" }, h("strong", { text: "Tu bandeja" }), h("small", { class: "muted", text: `${files.length}/32` }),
-        h("span", { class: "spacer" }), button("Añadir…", () => this.mutate("notch_pick_files"))),
+        h("span", { class: "spacer" }), button("Añadir…", () => this.mutate("notch_pick_files"), false, "Añadir archivos a la bandeja")),
       h("div", { class: "shelf-list" }, ...(rows.length ? rows : [h("div", { class: "shelf-empty" }, glyph(TABLER.folder),
         h("span", { text: "Suelta archivos aquí o pulsa Añadir." }), h("small", { class: "muted", text: "Se conservan al cerrar el notch." }))])),
       h("div", { class: "row-btns" }, give, copy));
