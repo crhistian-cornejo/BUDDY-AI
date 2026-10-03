@@ -16,8 +16,19 @@ const POSTS: &str = "telegram.account.posts";
 const MAX_CHATS: usize = 10;
 const MAX_POSTS: usize = 200;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq)]
 struct Credentials { id: i32, hash: String }
+fn credentials(input: &Value, current: Option<&str>) -> Result<Credentials, String> {
+    let id = input["id"].as_i64().and_then(|v| i32::try_from(v).ok()).filter(|v| *v > 0).ok_or("api_id no válido.")?;
+    let supplied = input["hash"].as_str().unwrap_or("").trim();
+    let hash = if supplied.is_empty() {
+        current.and_then(|s| serde_json::from_str::<Credentials>(s).ok()).map(|c| c.hash).unwrap_or_default()
+    } else { supplied.into() };
+    if hash.len() != 32 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("api_hash no válido (32 caracteres).".into());
+    }
+    Ok(Credentials { id, hash })
+}
 struct Connection { runtime: tokio::runtime::Runtime, telegram: Telegram }
 
 pub struct Account {
@@ -83,12 +94,11 @@ impl Account {
         let mut held = self.connection.lock().unwrap_or_else(|p| p.into_inner());
         if action == "configure" {
             let input: Value = serde_json::from_str(value).map_err(|_| "Revisa api_id y api_hash.")?;
-            let id = input["id"].as_i64().and_then(|v| i32::try_from(v).ok()).filter(|v| *v > 0).ok_or("api_id no válido.")?;
-            let hash = input["hash"].as_str().unwrap_or("").trim();
-            if hash.len() != 32 || !hash.chars().all(|c| c.is_ascii_hexdigit()) { return Err("api_hash no válido (32 caracteres).".into()); }
+            let saved = secret(CONFIG)?;
+            let credentials = credentials(&input, saved.as_deref())?;
             // Re-entering the same API credentials must not erase an authorized session.
-            let config = serde_json::to_string(&Credentials { id, hash: hash.into() }).unwrap();
-            if secret(CONFIG)?.as_deref() != Some(&config) {
+            let config = serde_json::to_string(&credentials).unwrap();
+            if saved.as_deref().and_then(|s| serde_json::from_str::<Credentials>(s).ok()).as_ref() != Some(&credentials) {
                 forget(SESSION)?;
                 *held = None;
                 self.write(SELECTED, &Vec::<ChatRef>::new())?;
@@ -153,7 +163,7 @@ impl Account {
                 self.write(POSTS, &posts)?;
                 self.prune_media(&posts);
             }
-            Ok::<Value, String>(json!({"configured":true,"authorized":status.authorized,"step":status.step,
+            Ok::<Value, String>(json!({"configured":true,"apiId":config.id,"authorized":status.authorized,"step":status.step,
                 "name":status.name,"hint":status.hint,"chats":chats.iter().map(|c| json!({"id":c.id,"title":c.title,"kind":c.kind})).collect::<Vec<_>>(),"selected":chosen.iter().map(|c| c.id).collect::<Vec<_>>(),
                 "posts":posts,"errors":errors}))
         }).await });
@@ -166,7 +176,7 @@ impl Account {
             let _ = std::fs::remove_dir_all(&self.media);
             removal?;
             result.map_err(|_| "No se pudo confirmar el cierre remoto. Revoca esta sesión en Telegram → Dispositivos.".to_string())??;
-            return Ok(json!({"configured":true,"authorized":false,"step":"idle","chats":[],"selected":[],"posts":[]}).to_string());
+            return Ok(json!({"configured":true,"apiId":config.id,"authorized":false,"step":"idle","chats":[],"selected":[],"posts":[]}).to_string());
         } else if let Some(session) = connection.telegram.session() { keep(SESSION, &session)?; }
         result.map_err(|_| "Telegram tardó demasiado. Intenta de nuevo.".to_string())?.map(|v| v.to_string())
     }
@@ -210,6 +220,14 @@ mod tests {
     use super::*;
     fn chat(id:i64) -> ChatRef { ChatRef { id, hash:0, title:format!("Grupo {id}"), kind:"group".into() } }
     fn post(chat_id:i64,id:i32) -> Post { Post { chat_id, chat:"grupo".into(), id, date:id as i64, text:format!("pick {id}"), sender:String::new(), links:vec![], photos:vec![], media:String::new(), album:None } }
+    #[test] fn editing_the_id_can_keep_the_hash_without_exposing_it() {
+        let current = serde_json::to_string(&Credentials { id: 12, hash: "a".repeat(32) }).unwrap();
+        let next = credentials(&json!({"id":13,"hash":""}),Some(&current)).unwrap();
+        assert_eq!(next.id,13);
+        assert_eq!(next.hash,"a".repeat(32));
+        assert!(credentials(&json!({"id":13,"hash":""}),None).is_err());
+        assert!(credentials(&json!({"id":13,"hash":"mistyped"}),Some(&current)).is_err());
+    }
     #[test] fn only_selected_available_groups_are_accepted() {
         assert!(selection(&[chat(1)], &[2]).is_err());
         assert!(selection(&[], &(0..11).collect::<Vec<_>>()).is_err());

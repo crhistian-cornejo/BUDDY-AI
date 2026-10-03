@@ -15,6 +15,7 @@ private struct AccountPost: Decodable, Identifiable {
     var key: String { "\(chatId):\(id)" }
 }
 private struct AccountState: Decodable {
+    var apiId: Int64?
     var configured = false
     var authorized = false
     var step = "idle"
@@ -30,6 +31,7 @@ private struct AccountState: Decodable {
 struct TelegramAccountSection: View {
     let core: BuddyCore
     @State private var state = AccountState()
+    @State private var editingCredentials = false
     @State private var apiId = ""
     @State private var apiHash = ""
     @State private var phone = ""
@@ -41,17 +43,23 @@ struct TelegramAccountSection: View {
 
     var body: some View {
         Section {
-            if !state.configured {
+            if !state.configured || editingCredentials {
                 Text("Conecta tu cuenta para consultar los picks de los grupos y canales que elijas.")
                     .font(.caption).foregroundStyle(.secondary)
                 Link("Obtener api_id y api_hash", destination: URL(string: "https://my.telegram.org/apps")!)
                 TextField("api_id", text: $apiId)
-                SecureField("api_hash", text: $apiHash)
+                SecureField("api_hash", text: $apiHash, prompt: Text(state.configured ? "Deja vacío para conservar el guardado" : "api_hash"))
                 Button("Guardar y continuar") {
-                    let data = try? JSONSerialization.data(withJSONObject: ["id": Int64(apiId) ?? 0, "hash": apiHash])
+                    let data = try? JSONSerialization.data(withJSONObject: ["id": Int64(apiId.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0, "hash": apiHash])
                     perform("configure", value: data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
-                }.disabled(busy || apiId.isEmpty || apiHash.isEmpty)
+                }.disabled(busy || apiId.isEmpty || (!state.configured && apiHash.isEmpty))
+                if editingCredentials { Button("Cancelar") { editingCredentials = false; apiId = ""; apiHash = "" }.disabled(busy) }
             } else if !state.authorized {
+                Button("Editar api_id / api_hash") {
+                    apiId = state.apiId.map(String.init) ?? ""
+                    apiHash = ""
+                    editingCredentials = true
+                }.disabled(busy)
                 if state.step == "password" {
                     Text("Telegram pide tu contraseña de verificación en dos pasos.").font(.caption)
                     if let hint = state.hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
@@ -140,7 +148,7 @@ struct TelegramAccountSection: View {
                         analysis = (try? JSONSerialization.jsonObject(with: data) as? [String: String])?["analysis"]
                     } else if let next = try? JSONDecoder().decode(AccountState.self, from: data) {
                         state = next
-                        if action == "configure" { apiId = ""; apiHash = "" }
+                        if action == "configure" { apiId = ""; apiHash = ""; editingCredentials = false }
                         if action == "signIn" { code = "" }
                         if action == "password" { password = "" }
                         if action == "signOut" || action == "select" || action == "fetch" { analysis = nil }

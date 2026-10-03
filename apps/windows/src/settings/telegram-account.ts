@@ -4,13 +4,14 @@ import { button, errorText, section } from "./ui";
 
 interface Chat { id: number; title: string; kind: string }
 interface Post { chatId: number; chat: string; id: number; date: number; text: string; photos: string[] }
-interface Account { configured: boolean; authorized: boolean; step: string; name?: string; hint?: string; chats: Chat[]; selected: number[]; posts: Post[]; errors?: string[] }
+interface Account { apiId?: number; configured: boolean; authorized: boolean; step: string; name?: string; hint?: string; chats: Chat[]; selected: number[]; posts: Post[]; errors?: string[] }
 
 /** Separate from the bot: the user's account, read only and only on an explicit click. */
 export function renderTelegramAccount(): HTMLElement {
   const { el, card } = section("Telegram · Cuenta personal");
   el.append(h("p", { class: "muted small", text: "Consulta los últimos 20 mensajes por grupo al pulsar Consultar mensajes. Solo lee los grupos elegidos: excluye chats privados y contenido protegido. No envía mensajes ni marca como leído. Las credenciales y la sesión van al Administrador de credenciales; el código y la contraseña no se guardan. Analizar con PARLEY envía los mensajes y hasta 10 fotos al proveedor del agente." }));
   let state: Account = { configured: false, authorized: false, step: "idle", chats: [], selected: [], posts: [] };
+  let editingCredentials = false;
   let busy = false;
   let problem = "";
   let analysis = "";
@@ -27,19 +28,22 @@ export function renderTelegramAccount(): HTMLElement {
     try {
       const reply = JSON.parse(await invoke<string>("telegram_account_request", { action, value }));
       if (action === "analyze") analysis = reply.analysis ?? "";
-      else { state = reply; if (["select", "fetch", "signOut"].includes(action)) analysis = ""; }
+      else { state = reply; if (action === "configure") editingCredentials = false; if (["select", "fetch", "signOut"].includes(action)) analysis = ""; }
     } catch (error) { problem = errorText(error); }
     finally { busy = false; draw(); }
   }
   function draw() {
     const content: Node[] = [];
-    if (!state.configured) {
+    if (!state.configured || editingCredentials) {
       const id = field("api_id", "number");
-      const hash = field("api_hash", "password");
+      id.value = state.apiId?.toString() ?? "";
+      const hash = field(state.configured ? "api_hash (vacío conserva el guardado)" : "api_hash", "password");
       content.push(h("p", { class: "muted small", text: "Conecta tu cuenta para consultar los picks de los grupos y canales que elijas." }),
         button("Obtener api_id y api_hash", () => void invoke("open_url", { url: "https://my.telegram.org/apps" })), id, hash,
         button("Guardar y continuar", () => void request("configure", JSON.stringify({ id: Number(id.value), hash: hash.value })), "primary"));
+      if (editingCredentials) content.push(button("Cancelar", () => { editingCredentials = false; draw(); }));
     } else if (!state.authorized) {
+      content.push(button("Editar api_id / api_hash", () => { editingCredentials = true; draw(); }));
       if (state.step === "password") {
         const password = field("Contraseña de verificación en dos pasos", "password");
         content.push(h("p", { text: state.hint ?? "Telegram pide tu contraseña de dos pasos." }), password,
