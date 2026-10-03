@@ -28,7 +28,7 @@ pub mod voice;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-pub use chat::ChatEngine;
+pub use chat::{ChatEngine, QueuedMessage};
 pub use events::{Event, EventBus};
 pub use folders::AuthorizedFolder;
 pub use orchestrator::Agent;
@@ -190,12 +190,24 @@ impl BuddyCore {
         self.chat.send(chat_id, text, attachments)
     }
 
+    pub fn queued_messages(&self, chat_id: String) -> Vec<QueuedMessage> {
+        self.chat.queued_messages(&chat_id)
+    }
+
+    pub fn remove_queued(&self, chat_id: String, message_id: String) {
+        self.chat.remove_queued(&chat_id, &message_id);
+    }
+
+    pub fn resume_queue(&self, chat_id: String) -> Result<(), CoreError> {
+        self.chat.resume_queue(&chat_id)
+    }
+
     /// Call when the composer opens: Buddy's provider gets ready so the first words come sooner.
     pub fn prewarm(&self) {
         self.chat.prewarm();
     }
 
-    /// Stops the answer being written in that chat.
+    /// Stops the answer being written in that chat and clears its pending messages.
     pub fn cancel_chat(&self, chat_id: String) {
         self.chat.cancel(&chat_id);
     }

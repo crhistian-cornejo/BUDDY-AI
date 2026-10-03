@@ -14,8 +14,11 @@ import { makeSource, type ChatSource } from "./markdown";
 applyTokens();
 
 interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean; attachments?: string[] }
+interface QueuedMessage { id: string; text: string; attachments: string[] }
 interface Agent { id: string; name: string }
 type CoreEvent =
+  | { type: "chatDequeued"; chatId: string; text: string; attachments: string[] }
+  | { type: "chatQueueChanged"; chatId: string }
   | { type: "chatStarted"; chatId: string; agent: string; agentName: string; provider: string }
   | { type: "chatDelta"; chatId: string; text: string }
   | { type: "chatTool"; chatId: string; name: string; summary: string }
@@ -31,6 +34,11 @@ const input = $<HTMLTextAreaElement>("input");
 const send = $<HTMLButtonElement>("send");
 
 let chatId: string | null = null;
+let submitting = false;
+let chatGeneration = 0;
+let submissionGeneration = -1;
+let queueRevision = 0;
+let queued: QueuedMessage[] = [];
 /** Files waiting to go with the next message. */
 let files: string[] = [];
 const filesEl = $("files");
@@ -61,6 +69,37 @@ $("new").append(icon(TABLER.edit));
 $("attach").append(icon(TABLER.paperclip));
 $("history").append(icon(TABLER.history));
 $("close").append(icon(TABLER.x));
+$("stop").append(icon(TABLER.playerStop));
+$("stop").addEventListener("click", () => { if (chatId) void invoke("cancel_chat", { chatId }); });
+
+function queueError(text: string | null) {
+  $("queue-error").textContent = text;
+  $("queue-error").hidden = !text;
+}
+
+function drawQueue() {
+  const el = $("queue");
+  el.hidden = !queued.length;
+  const header = h("div", { class: "queue-header" }, h("span", { text: `En cola · ${queued.length}` }));
+  if (!streaming) header.append(h("button", { type: "button", class: "queue-resume", text: "Continuar", onclick: () => {
+    if (chatId) void invoke("resume_queue", { chatId }).catch((e) => queueError(`No se pudo continuar: ${e}`));
+  } }));
+  el.replaceChildren(header, h("div", { class: "queue-list" }, ...queued.map((item) => h("div", { class: "queue-item" },
+    ...(item.attachments.length ? [icon(TABLER.paperclip, 14)] : []),
+    h("span", { text: item.text, title: item.text }),
+    h("button", { type: "button", class: "ghost small", title: "Quitar de la cola", "aria-label": "Quitar de la cola", onclick: () => {
+      if (chatId) void invoke("remove_queued", { chatId, messageId: item.id });
+    } }, icon(TABLER.x, 12))))));
+}
+
+async function refreshQueue() {
+  const revision = ++queueRevision;
+  const id = chatId;
+  if (!id) { queued = []; drawQueue(); return; }
+  const pending = await invoke<QueuedMessage[]>("queued_messages", { chatId: id });
+  if (id === chatId && revision === queueRevision) { queued = pending; drawQueue(); }
+}
+
 
 
 interface Activity { icon: string; text: string }
@@ -141,19 +180,20 @@ function addAnswer(name: string, provider: string | null, text = "", sources: Ch
 
 function render() {
   panel.hidden = list.childElementCount === 0;
-  send.replaceChildren(icon(streaming ? TABLER.playerStop : TABLER.arrowUp, 16));
-  send.title = streaming ? "Detener la respuesta" : "Enviar (Enter)";
-  send.disabled = !streaming && !input.value.trim() && !files.length;
+  send.replaceChildren(icon(streaming ? TABLER.arrowsExchange : TABLER.arrowUp, 16));
+  send.title = streaming ? "Añadir a la cola (Enter)" : "Enviar (Enter)";
+  send.setAttribute("aria-label", send.title);
+  send.disabled = submitting || (!input.value.trim() && !files.length);
+  $("stop").hidden = !streaming;
+  drawQueue();
   const first = list.querySelector(".msg-user")?.textContent ?? "Buddy";
   $("title").textContent = first.split("\n")[0]!;
   list.scrollTop = list.scrollHeight;
 }
 
 async function submit() {
-  if (streaming) {
-    if (chatId) await invoke("cancel_chat", { chatId });
-    return;
-  }
+  if (submitting) return;
+  const generation = chatGeneration;
   let text = input.value.trim();
   if (!text && !files.length) return;
   if (!text) text = files.length === 1 ? "Revisa este archivo." : "Revisa estos archivos.";
@@ -162,14 +202,23 @@ async function submit() {
   drawFiles();
   input.value = "";
   autosize();
-  addUser(text, sending);
-  startLive();
-  streaming = true;
+  submitting = true;
+  submissionGeneration = generation;
+  queueError(null);
   render();
   try {
-    chatId = await invoke<string>("send_message", { chatId, text, attachments: sending });
+    const id = await invoke<string>("send_message", { chatId, text, attachments: sending });
+    if (generation === chatGeneration) { chatId = id; await refreshQueue(); }
   } catch (e) {
-    finish(`No se pudo enviar: ${e}`);
+    if (generation === chatGeneration) {
+      input.value = input.value ? `${text}\n${input.value}` : text;
+      files = [...new Set([...sending, ...files])];
+      drawFiles(); autosize();
+      queueError(`No se pudo enviar: ${e}`);
+    }
+  } finally {
+    submitting = false;
+    render();
   }
 }
 
@@ -213,7 +262,16 @@ function finish(failureText: string | null) {
 }
 
 function onCore(event: CoreEvent) {
-  if (!live || !("chatId" in event) || event.chatId !== chatId) return;
+  if (event.type === "chatDequeued" && !chatId && submitting && submissionGeneration === chatGeneration) chatId = event.chatId ?? null;
+  if (!("chatId" in event) || event.chatId !== chatId) return;
+  if (event.type === "chatQueueChanged") { void refreshQueue(); return; }
+  if (event.type === "chatDequeued") {
+    const e = event as Extract<CoreEvent, { type: "chatDequeued" }>;
+    addUser(e.text, e.attachments);
+    startLive(); streaming = true;
+    render(); void refreshQueue(); return;
+  }
+  if (!live) return;
   switch (event.type) {
     case "chatStarted": {
       const e = event as Extract<CoreEvent, { type: "chatStarted" }>;
@@ -251,13 +309,16 @@ function onCore(event: CoreEvent) {
 }
 
 async function openChat(id: string) {
-  if (streaming && chatId) await invoke("cancel_chat", { chatId });
+  chatGeneration++;
+  queueError(null);
+  if (chatId) await invoke("cancel_chat", { chatId });
   const [messages, agents] = await Promise.all([
     invoke<SavedMessage[]>("messages", { chatId: id }),
     invoke<Agent[]>("agents"),
   ]);
   const names = new Map(agents.map((a) => [a.id, a.name]));
   chatId = id;
+  void refreshQueue();
   streaming = false;
   live = null;
   list.textContent = "";
@@ -272,7 +333,10 @@ async function openChat(id: string) {
 }
 
 function newChat() {
-  if (streaming && chatId) void invoke("cancel_chat", { chatId });
+  chatGeneration++;
+  queueError(null);
+  queued = [];
+  if (chatId) void invoke("cancel_chat", { chatId });
   chatId = null;
   streaming = false;
   live = null;

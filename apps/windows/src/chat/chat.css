@@ -294,3 +294,12 @@ button {
     animation: none;
   }
 }
+
+#queue, #queue-error { width: 100%; }
+#queue { padding: 4px 6px 8px; border-bottom: 1px solid var(--color-stroke); }
+.queue-header { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--color-text-muted); margin-bottom: 4px; }
+.queue-resume { border: 0; background: none; color: var(--color-accent); }
+.queue-list { display: flex; flex-direction: column; gap: 4px; max-height: 102px; overflow: auto; }
+.queue-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: var(--color-surface); border-radius: 8px; }
+.queue-item > span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#queue-error { color: var(--color-danger); font-size: 12px; padding: 0 6px; }

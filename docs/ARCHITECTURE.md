@@ -51,6 +51,12 @@ trait Provider {
 - **El enrutador** elige el modelo según la tarea: barato para clasificar, resumir y los mensajitos; bueno para el chat y el trabajo. Si un plan está casi agotado, cambia de proveedor y avisa.
 - **Respaldo por falta de créditos**, el `CreditFallback` de MIKA, generalizado.
 
+## Cola del chat
+
+El núcleo mantiene una cola FIFO por chat (hasta 20 pendientes). Enviar mientras hay una respuesta activa añade un pendiente; no cancela al proveedor. Los adjuntos se copian al entrar en la cola, y el mensaje pasa al historial justo antes de iniciar su turno. `ChatDequeued` abre la nueva respuesta en ambas interfaces; `ChatQueueChanged` permite redibujar los pendientes sin sondeos.
+
+Una respuesta completa inicia el siguiente mensaje después de guardarse. Un fallo deja los pendientes en pausa con «Continuar»; se pueden quitar individualmente. «Detener y vaciar la cola», abrir otro chat o crear uno nuevo cancela la respuesta y vacía los pendientes de la conversación anterior. Cerrar el panel permite que el chat siga trabajando. La cola vive en memoria durante la sesión de la app; los pendientes no sobreviven al cierre de Buddy.
+
 ## Datos
 
 - **Base:** SQLite en la carpeta de datos de la app (`~/Library/Application Support/Buddy`, `%LOCALAPPDATA%\Buddy`).

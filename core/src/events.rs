@@ -26,6 +26,10 @@ pub enum Event {
     /// The answer is complete and saved.
     ChatDone { chat_id: String, message_id: i64 },
     ChatFailed { chat_id: String, message: String },
+    /// Pending messages changed; read `queued_messages` for this chat.
+    ChatQueueChanged { chat_id: String },
+    /// A pending user message becomes the active turn, before ChatStarted (also for the first message).
+    ChatDequeued { chat_id: String, text: String, attachments: Vec<String> },
     /// The focus timer started (`running`, ends at unix seconds) or stopped.
     FocusChanged { running: bool, ends_at: i64 },
     /// A focus block of `minutes` ended.

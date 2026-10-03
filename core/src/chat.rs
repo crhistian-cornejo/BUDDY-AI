@@ -4,7 +4,7 @@
 //! shown and the specialist answers instead. When a provider is missing or out of usage before any text arrived,
 //! the turn moves to the next installed provider and says so. The mascot follows along: think → work → done/error.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,12 +18,24 @@ use crate::store::{NewMessage, SourceLink, Store};
 /// Setting: "false" means the agents never get to run commands, not even with a click.
 pub const COMMANDS_SETTING: &str = "commands.enabled";
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct QueuedMessage {
+    pub id: String,
+    pub text: String,
+    pub attachments: Vec<String>,
+}
+
 pub struct ChatEngine {
     data_dir: PathBuf,
     store: Arc<Mutex<Store>>,
     bus: Arc<EventBus>,
     providers: Vec<Arc<dyn Provider>>,
     running: Mutex<HashMap<String, Cancel>>,
+    /// Serializes admission, cancellation and the hand-off to the next queued turn.
+    dispatch: Mutex<()>,
+    pending: Mutex<HashMap<String, VecDeque<QueuedMessage>>>,
     usage: Option<Arc<crate::usage::Usage>>,
     gate: Option<Arc<crate::sessions::SessionHub>>,
 }
@@ -40,7 +52,7 @@ struct Answer {
 
 impl ChatEngine {
     pub fn new(data_dir: PathBuf, store: Arc<Mutex<Store>>, bus: Arc<EventBus>, providers: Vec<Arc<dyn Provider>>) -> Self {
-        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()), usage: None, gate: None }
+        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()), dispatch: Mutex::new(()), pending: Mutex::new(HashMap::new()), usage: None, gate: None }
     }
 
     /// Commands go through this hub's gate (a click each time) while it runs and the user allows commands.
@@ -94,35 +106,61 @@ impl ChatEngine {
         orchestrator::load(&self.data_dir)
     }
 
-    /// Saves the user's message and answers it on a background thread. Returns the chat id (new when `chat_id` is
-    /// None). A turn already running in that chat is stopped first.
+    /// Adds a message to this chat's FIFO. A running answer continues; its next message starts only after saving it.
     pub fn send(self: &Arc<Self>, chat_id: Option<String>, text: String, attachments: Vec<String>) -> Result<String, CoreError> {
         let text = text.trim().to_string();
+        if text.is_empty() && attachments.is_empty() { return Err(CoreError::Store("Escribe un mensaje o adjunta un archivo.".into())); }
         let chat_id = chat_id.filter(|c| !c.is_empty()).unwrap_or_else(new_chat_id);
-        self.cancel(&chat_id);
-        let previous = self.lock().messages(&chat_id)?;
+        let _dispatch = self.dispatch.lock().unwrap();
+        if self.queued_messages(&chat_id).len() >= 20 { return Err(CoreError::Store("La cola admite hasta 20 mensajes.".into())); }
         let copies = self.copy_attachments(&chat_id, &attachments)?;
-        {
-            let store = self.lock();
-            store.ensure_chat(&chat_id, &title_for(&text))?;
-            store.add_message(NewMessage {
-                chat_id: &chat_id,
-                role: "user",
-                agent: ORCHESTRATOR,
-                provider: None,
-                text: &text,
-                sources: &[],
-                failed: false,
-                attachments: &copies,
-            })?;
-        }
-        self.spawn_turn(&chat_id, text, copies, previous.last().map(|m| (m.agent.clone(), m.text.clone())))?;
+        self.lock().ensure_chat(&chat_id, &title_for(&text))?;
+        self.pending.lock().unwrap().entry(chat_id.clone()).or_default().push_back(QueuedMessage { id: new_chat_id(), text, attachments: copies });
+        self.emit(Event::ChatQueueChanged { chat_id: chat_id.clone() });
+        if !self.running.lock().unwrap().contains_key(&chat_id) { self.start_next(&chat_id)?; }
         Ok(chat_id)
+    }
+
+    pub fn queued_messages(&self, chat_id: &str) -> Vec<QueuedMessage> {
+        self.pending.lock().unwrap().get(chat_id).map(|q| q.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    pub fn remove_queued(&self, chat_id: &str, message_id: &str) {
+        let _dispatch = self.dispatch.lock().unwrap();
+        if let Some(queue) = self.pending.lock().unwrap().get_mut(chat_id) { queue.retain(|m| m.id != message_id); }
+        self.emit(Event::ChatQueueChanged { chat_id: chat_id.into() });
+    }
+
+    /// A failed answer leaves the remaining queue paused until the user continues it.
+    pub fn resume_queue(self: &Arc<Self>, chat_id: &str) -> Result<(), CoreError> {
+        let _dispatch = self.dispatch.lock().unwrap();
+        if !self.running.lock().unwrap().contains_key(chat_id) { self.start_next(chat_id)?; }
+        Ok(())
+    }
+
+    /// Caller holds `dispatch`. Only active questions enter the archive; queued ones remain removable.
+    fn start_next(self: &Arc<Self>, chat_id: &str) -> Result<(), CoreError> {
+        let next = self.pending.lock().unwrap().get_mut(chat_id).and_then(|q| q.pop_front());
+        let Some(next) = next else { return Ok(()) };
+        let result = (|| {
+            let previous = self.lock().messages(chat_id)?;
+            let message_id = self.lock().add_message(NewMessage { chat_id, role: "user", agent: ORCHESTRATOR, provider: None,
+                text: &next.text, sources: &[], failed: false, attachments: &next.attachments })?;
+            let result = self.spawn_turn(chat_id, next.text.clone(), next.attachments.clone(), previous.last().map(|m| (m.agent.clone(), m.text.clone())), Some(next.clone()));
+            if result.is_err() { self.lock().delete_messages_from(chat_id, message_id)?; }
+            result
+        })();
+        if result.is_err() {
+            self.pending.lock().unwrap().entry(chat_id.into()).or_default().push_front(next);
+            self.emit(Event::ChatQueueChanged { chat_id: chat_id.into() });
+        }
+        result
     }
 
     /// Answers the last question of the chat again: its answer is removed and a new one is written.
     pub fn regenerate(self: &Arc<Self>, chat_id: &str) -> Result<(), CoreError> {
-        self.cancel(chat_id);
+        let _dispatch = self.dispatch.lock().unwrap();
+        if self.running.lock().unwrap().contains_key(chat_id) { return Err(CoreError::Store("Espera a que termine la respuesta.".into())); }
         let messages = self.lock().messages(chat_id)?;
         let Some(index) = messages.iter().rposition(|m| m.role == "user") else {
             return Err(CoreError::Store("no hay ninguna pregunta que rehacer".into()));
@@ -131,7 +169,7 @@ impl ChatEngine {
             self.lock().delete_messages_from(chat_id, answer.id)?;
         }
         let previous = index.checked_sub(1).and_then(|i| messages.get(i)).map(|m| (m.agent.clone(), m.text.clone()));
-        self.spawn_turn(chat_id, messages[index].text.clone(), messages[index].attachments.clone(), previous)
+        self.spawn_turn(chat_id, messages[index].text.clone(), messages[index].attachments.clone(), previous, None)
     }
 
     /// Copies the user's files into `<data>/adjuntos/<chat>/` (regular files up to 25 MB): a turn reads only those.
@@ -186,6 +224,7 @@ impl ChatEngine {
         text: String,
         attachments: Vec<String>,
         last: Option<(String, String)>,
+        new_message: Option<QueuedMessage>,
     ) -> Result<(), CoreError> {
         let cancel = Cancel::default();
         self.running.lock().unwrap().insert(chat_id.to_string(), cancel.clone());
@@ -194,14 +233,26 @@ impl ChatEngine {
         std::thread::Builder::new()
             .name("buddy-turn".into())
             .spawn(move || {
+                if let Some(message) = new_message {
+                    engine.emit(Event::ChatQueueChanged { chat_id: id.clone() });
+                    engine.emit(Event::ChatDequeued { chat_id: id.clone(), text: message.text, attachments: message.attachments });
+                }
                 let files: Vec<PathBuf> = attachments.iter().map(PathBuf::from).collect();
-                engine.turn(&id, &text, &files, last, &cancel);
-                let mut running = engine.running.lock().unwrap();
-                if running.get(&id).is_some_and(|c| c.same(&cancel)) {
-                    running.remove(&id);
+                let success = engine.turn(&id, &text, &files, last, &cancel);
+                let _dispatch = engine.dispatch.lock().unwrap();
+                let current = engine.running.lock().unwrap().get(&id).is_some_and(|c| c.same(&cancel));
+                if current {
+                    engine.running.lock().unwrap().remove(&id);
+                    if success && !cancel.is_cancelled() {
+                        if let Err(e) = engine.start_next(&id) { engine.emit(Event::ChatFailed { chat_id: id.clone(), message: e.to_string() }); }
+                    }
+                    engine.emit(Event::ChatQueueChanged { chat_id: id.clone() });
                 }
             })
-            .map_err(|e| CoreError::Io(e.to_string()))?;
+            .map_err(|e| {
+                self.running.lock().unwrap().remove(chat_id);
+                CoreError::Io(e.to_string())
+            })?;
         Ok(())
     }
 
@@ -237,9 +288,12 @@ impl ChatEngine {
     }
 
     pub fn cancel(&self, chat_id: &str) {
-        if let Some(cancel) = self.running.lock().unwrap().remove(chat_id) {
+        let _dispatch = self.dispatch.lock().unwrap();
+        if let Some(cancel) = self.running.lock().unwrap().get(chat_id) {
             cancel.cancel();
         }
+        self.pending.lock().unwrap().remove(chat_id);
+        self.emit(Event::ChatQueueChanged { chat_id: chat_id.into() });
     }
 
     pub fn statuses(&self) -> Vec<crate::providers::ProviderStatus> {
@@ -261,7 +315,7 @@ impl ChatEngine {
         self.emit(Event::MascotState { state: state.into() });
     }
 
-    fn turn(&self, chat_id: &str, question: &str, files: &[PathBuf], last: Option<(String, String)>, cancel: &Cancel) {
+    fn turn(&self, chat_id: &str, question: &str, files: &[PathBuf], last: Option<(String, String)>, cancel: &Cancel) -> bool {
         let agents = self.agents();
         let buddy = agents.iter().find(|a| a.id == ORCHESTRATOR).cloned().expect("orchestrator::load always has buddy");
         let known: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
@@ -313,7 +367,7 @@ impl ChatEngine {
         if agent.id == ORCHESTRATOR && answer.text.trim_start().starts_with("[[pasar:") && orchestrator::parse_handoff(&answer.text, &known).is_some() {
             self.emit(Event::ChatDone { chat_id: chat_id.into(), message_id: 0 });
             self.mascot("idle");
-            return;
+            return false;
         }
         let failed = answer.failure.is_some();
         let text = match (&answer.failure, answer.text.trim().is_empty()) {
@@ -330,6 +384,7 @@ impl ChatEngine {
             failed,
             attachments: &[],
         });
+        let success = saved.is_ok() && !failed && !cancel.is_cancelled();
         match (saved, &answer.failure) {
             (Ok(_), Some(message)) => {
                 self.emit(Event::ChatFailed { chat_id: chat_id.into(), message: message.clone() });
@@ -344,6 +399,7 @@ impl ChatEngine {
                 self.mascot("error");
             }
         }
+        success
     }
 
     /// Runs one agent, trying its provider first and the other installed ones after a missing CLI or no usage
@@ -580,6 +636,115 @@ mod tests {
         }
     }
 
+    /// Holds the first request so messages can be queued deterministically, without sleeps or live services.
+    struct Held {
+        fake: Arc<Fake>,
+        release: Mutex<Option<Receiver<()>>>,
+        ready: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Provider for Held {
+        fn id(&self) -> ProviderId { self.fake.id() }
+        fn installed(&self) -> bool { true }
+        fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
+            let release = self.release.lock().unwrap().take();
+            if let Some(release) = release {
+                self.ready.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            self.fake.run(request, cancel, emit);
+        }
+    }
+
+    fn held(scripts: Vec<Vec<TurnEvent>>) -> (Arc<Held>, Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (ready, ready_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        (Arc::new(Held { fake: Fake::new(ProviderId::Claude, scripts), release: Mutex::new(Some(release_rx)), ready }), ready_rx, release)
+    }
+
+    fn wait_idle(engine: &ChatEngine, rx: &Receiver<Event>, chat: &str) {
+        loop {
+            let event = rx.recv_timeout(Duration::from_secs(5)).expect("queue settles");
+            if matches!(event, Event::ChatQueueChanged { ref chat_id } if chat_id == chat) && !engine.running.lock().unwrap().contains_key(chat) { return; }
+        }
+    }
+
+    #[test]
+    fn messages_wait_in_fifo_without_interrupting_and_can_be_removed() {
+        let (provider, ready, release) = held(vec![vec![TurnEvent::Delta("Primera".into()), TurnEvent::Done], vec![TurnEvent::Delta("Última".into()), TurnEvent::Done]]);
+        let (engine, rx, dir) = engine(vec![provider.clone()]);
+        let chat = engine.send(None, "Uno".into(), vec![]).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        engine.send(Some(chat.clone()), "Quitar".into(), vec![]).unwrap();
+        let file = dir.path().join("nota.txt");
+        std::fs::write(&file, "Archivo pendiente").unwrap();
+        engine.send(Some(chat.clone()), "Tres".into(), vec![file.to_string_lossy().into_owned()]).unwrap();
+        let queue = engine.queued_messages(&chat);
+        assert_eq!(queue.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["Quitar", "Tres"]);
+        assert_ne!(queue[0].id, queue[1].id);
+        assert_eq!(std::fs::read_to_string(&queue[1].attachments[0]).unwrap(), "Archivo pendiente");
+        assert_eq!(engine.lock().messages(&chat).unwrap().len(), 1);
+        assert!(!engine.running.lock().unwrap().get(&chat).unwrap().is_cancelled());
+        engine.remove_queued(&chat, &queue[0].id);
+        release.send(()).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        let messages = engine.lock().messages(&chat).unwrap();
+        assert_eq!(messages.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect::<Vec<_>>(), [("user", "Uno"), ("assistant", "Primera"), ("user", "Tres"), ("assistant", "Última")]);
+        assert!(engine.queued_messages(&chat).is_empty());
+        assert_eq!(provider.fake.prompts.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_failure_pauses_pending_messages_until_resumed() {
+        let (provider, ready, release) = held(vec![vec![TurnEvent::Failed(Failure::new("Error"))], vec![TurnEvent::Delta("Sigo".into()), TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![provider.clone()]);
+        let chat = engine.send(None, "Uno".into(), vec![]).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        engine.send(Some(chat.clone()), "Dos".into(), vec![]).unwrap();
+        release.send(()).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        assert_eq!(provider.fake.prompts.lock().unwrap().len(), 1);
+        assert_eq!(engine.queued_messages(&chat).len(), 1);
+        engine.resume_queue(&chat).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        assert_eq!(engine.lock().messages(&chat).unwrap().last().unwrap().text, "Sigo");
+        assert!(engine.queued_messages(&chat).is_empty());
+    }
+
+    #[test]
+    fn another_chat_runs_while_the_first_chat_has_pending_messages() {
+        let (provider, ready, release) = held(vec![vec![TurnEvent::Done], vec![TurnEvent::Done], vec![TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![provider]);
+        let first = engine.send(None, "Primer chat".into(), vec![]).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        engine.send(Some(first.clone()), "Pendiente".into(), vec![]).unwrap();
+        let other = engine.send(None, "Otro chat".into(), vec![]).unwrap();
+        wait_idle(&engine, &rx, &other);
+        assert_eq!(engine.lock().messages(&other).unwrap().len(), 2);
+        assert_eq!(engine.queued_messages(&first).len(), 1);
+        assert!(!engine.running.lock().unwrap().get(&first).unwrap().is_cancelled());
+        release.send(()).unwrap();
+        wait_idle(&engine, &rx, &first);
+        assert_eq!(engine.lock().messages(&first).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn stop_clears_the_queue_and_the_queue_is_bounded() {
+        let (provider, ready, release) = held(vec![vec![TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![provider.clone()]);
+        let chat = engine.send(None, "Uno".into(), vec![]).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        for i in 0..20 { engine.send(Some(chat.clone()), format!("Pendiente {i}"), vec![]).unwrap(); }
+        assert!(engine.send(Some(chat.clone()), "Demasiados".into(), vec![]).is_err());
+        engine.cancel(&chat);
+        assert!(engine.queued_messages(&chat).is_empty());
+        assert!(engine.running.lock().unwrap().get(&chat).unwrap().is_cancelled());
+        release.send(()).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        assert_eq!(provider.fake.prompts.lock().unwrap().len(), 1);
+        assert_eq!(engine.lock().messages(&chat).unwrap().len(), 2);
+    }
+
     fn engine(providers: Vec<Arc<dyn Provider>>) -> (Arc<ChatEngine>, Receiver<Event>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let bus = Arc::new(EventBus::default());
@@ -591,13 +756,13 @@ mod tests {
     /// Events until the turn ends.
     fn until_end(rx: &Receiver<Event>) -> Vec<Event> {
         let mut out = vec![];
+        let mut ended = false;
         loop {
             let e = rx.recv_timeout(Duration::from_secs(5)).expect("the turn ends");
-            let end = matches!(e, Event::MascotState { ref state } if ["done", "error", "idle"].contains(&state.as_str()));
+            let settled = ended && matches!(e, Event::ChatQueueChanged { .. });
+            ended |= matches!(e, Event::MascotState { ref state } if ["done", "error", "idle"].contains(&state.as_str()));
+            if settled { return out; }
             out.push(e);
-            if end {
-                return out;
-            }
         }
     }
 
@@ -619,7 +784,7 @@ mod tests {
         let (engine, rx, _dir) = engine(vec![claude.clone()]);
         let chat = engine.send(None, "Hola Buddy".into(), vec![]).unwrap();
         let events = until_end(&rx);
-        assert_eq!(events[0], Event::MascotState { state: "think".into() });
+        assert!(events.contains(&Event::MascotState { state: "think".into() }));
         assert_eq!(deltas(&events), "Hola, ¿qué tal?");
         assert!(events.iter().any(|e| matches!(e, Event::ChatDone { .. })));
         assert_eq!(events.last(), Some(&Event::MascotState { state: "done".into() }));

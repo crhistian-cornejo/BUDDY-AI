@@ -10,6 +10,8 @@ final class ChatController {
     private(set) var messages: [LiveMessage] = []
     private(set) var streaming = false
     private(set) var recent: [ChatSummary] = []
+    private(set) var queued: [QueuedMessage] = []
+    private(set) var queueError: String?
     var draft = ""
     /// Files waiting to go with the next message.
     var attachments: [URL] = []
@@ -74,14 +76,31 @@ final class ChatController {
         let files = attachments
         draft = ""
         attachments = []
-        messages.append(LiveMessage(role: "user", content: text, files: files.map(\.path)))
-        messages.append(LiveMessage(role: "assistant", content: "", isStreaming: true, author: "Buddy", activity: .thinking))
-        streaming = true
+        queueError = nil
         do {
             chatID = try core.sendMessage(chatId: chatID, text: text, attachments: files.map(\.path))
         } catch {
-            finish(failure: "No se pudo enviar: \(error)")
+            draft = text
+            attachments = files
+            queueError = "No se pudo enviar: \(error)"
         }
+    }
+
+    func refreshQueue() {
+        queued = chatID.map { core.queuedMessages(chatId: $0) } ?? []
+    }
+
+    func removeQueued(_ id: String) {
+        guard let chatID else { return }
+        core.removeQueued(chatId: chatID, messageId: id)
+        refreshQueue()
+    }
+
+    func resumeQueue() {
+        guard let chatID else { return }
+        queueError = nil
+        do { try core.resumeQueue(chatId: chatID) }
+        catch { queueError = "No se pudo continuar: \(error)" }
     }
 
     /// Writes the last answer again.
@@ -105,12 +124,15 @@ final class ChatController {
     func stop() {
         guard let chatID else { return }
         core.cancelChat(chatId: chatID)
+        refreshQueue()
     }
 
     func newChat() {
         stop()
         chatID = nil
         messages = []
+        queued = []
+        queueError = nil
         streaming = false
     }
 
@@ -121,6 +143,8 @@ final class ChatController {
     func open(_ id: String) {
         stop()
         chatID = id
+        refreshQueue()
+        queueError = nil
         streaming = false
         let agents = Dictionary(core.agents().map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         messages = ((try? core.messages(chatId: id)) ?? []).map { m in
@@ -136,6 +160,14 @@ final class ChatController {
     /// A core event for the chat on screen (others are ignored here; the history has them).
     func handle(_ event: Event) {
         switch event {
+        case let .chatQueueChanged(chatId) where chatId == chatID:
+            refreshQueue()
+        case let .chatDequeued(chatId, text, attachments) where chatId == chatID:
+            messages.append(LiveMessage(role: "user", content: text, files: attachments))
+            messages.append(LiveMessage(role: "assistant", content: "", isStreaming: true, author: "Buddy", activity: .thinking))
+            streaming = true
+            refreshQueue()
+
         case let .chatStarted(chatId, agent, agentName, provider) where chatId == chatID:
             update { m in
                 m.author = agentName

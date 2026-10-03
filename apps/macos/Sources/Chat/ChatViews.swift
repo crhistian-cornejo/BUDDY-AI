@@ -24,6 +24,10 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !chat.queued.isEmpty { queue }
+            if let error = chat.queueError {
+                Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 8)
+            }
             if !chat.attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -78,6 +82,38 @@ struct ComposerView: View {
         pasteMonitor.value = nil
     }
 
+    private var queue: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("En cola · \(chat.queued.count)", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if !chat.streaming {
+                    Button("Continuar", action: chat.resumeQueue).buttonStyle(.borderless).font(.caption)
+                }
+            }
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(chat.queued, id: \.id) { item in
+                        HStack(spacing: 6) {
+                            if !item.attachments.isEmpty {
+                                Image(systemName: "paperclip").foregroundStyle(.secondary)
+                            }
+                            Text(item.text).font(.callout).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                            Button { chat.removeQueued(item.id) } label: { Image(systemName: "xmark") }
+                                .buttonStyle(.borderless).foregroundStyle(.secondary).tip("Quitar de la cola")
+                        }
+                        .padding(6)
+                        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+            .frame(height: min(CGFloat(chat.queued.count) * 34, 102))
+            Divider()
+        }
+        .padding(.horizontal, 6)
+    }
+
     private var field: some View {
         HStack(alignment: .bottom, spacing: 6) {
             Button(action: pickFiles) {
@@ -96,24 +132,21 @@ struct ComposerView: View {
                 .focused($focused)
                 .onSubmit { chat.send() }
                 .padding(.vertical, 5)
-            Group {
-                if chat.streaming {
-                    Button(action: chat.stop) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 10, weight: .bold))
-                            .frame(width: 16, height: 16)
-                    }
-                    .tip("Detener la respuesta")
-                } else {
-                    Button(action: chat.send) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 12, weight: .bold))
-                            .frame(width: 16, height: 16)
-                    }
-                    .disabled(empty)
-                    .tip("Enviar (↩)")
+            if chat.streaming {
+                Button(action: chat.stop) {
+                    Image(systemName: "stop.fill").font(.system(size: 10, weight: .bold)).frame(width: 24, height: 24)
                 }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .tip("Detener y vaciar la cola")
             }
+            Button(action: chat.send) {
+                Image(systemName: chat.streaming ? "text.line.first.and.arrowtriangle.forward" : "arrow.up")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 16, height: 16)
+            }
+            .disabled(empty)
+            .tip(chat.streaming ? "Añadir a la cola (↩)" : "Enviar (↩)")
             .buttonStyle(.borderedProminent)
             .buttonBorderShape(.circle)
             .controlSize(.small)

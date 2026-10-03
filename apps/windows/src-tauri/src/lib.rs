@@ -170,6 +170,9 @@ pub fn run() {
             close_chat,
             chat_resize,
             send_message,
+            queued_messages,
+            remove_queued,
+            resume_queue,
             cancel_chat,
             chats,
             search_chats,
@@ -590,6 +593,21 @@ fn shortcuts(state: State<'_, AppCore>) -> Result<Vec<buddy_core::Shortcut>, Str
 #[tauri::command]
 fn remove_shortcut(state: State<'_, AppCore>, id: String) -> Result<Vec<buddy_core::Shortcut>, String> {
     state.core.remove_shortcut(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn queued_messages(state: State<'_, AppCore>, chat_id: String) -> Vec<buddy_core::QueuedMessage> {
+    state.core.queued_messages(chat_id)
+}
+
+#[tauri::command]
+fn remove_queued(state: State<'_, AppCore>, chat_id: String, message_id: String) {
+    state.core.remove_queued(chat_id, message_id);
+}
+
+#[tauri::command]
+fn resume_queue(state: State<'_, AppCore>, chat_id: String) -> Result<(), String> {
+    state.core.resume_queue(chat_id).map_err(|e| e.to_string())
 }
 
 /// The system's file picker: an app (.exe / .lnk) or a file to pin.
