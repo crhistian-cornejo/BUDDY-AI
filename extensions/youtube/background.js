@@ -1,6 +1,23 @@
 const HOST = 'io.github.crhistian_cornejo.buddy_youtube';
 let port = null, connecting = false, pending = false, lastSent = 0;
 let pendingAction = null;
+// Transcript parts waiting to go to Buddy: one with each message, so every message fits the native host's frame.
+const outbox = [];
+const bytes = value => new TextEncoder().encode(JSON.stringify(value)).length;
+function queueTranscript(videoId, result) {
+  const lines = Array.isArray(result?.lines) ? result.lines : [];
+  if (!lines.length) outbox.push({ videoId, error: String(result?.error || 'Este video no ofrece transcripción.').slice(0, 200) });
+  else {
+    const parts = [[]]; let size = 0;
+    for (const line of lines) {
+      const cost = bytes(line) + 1;
+      if (parts.at(-1).length && size + cost > 30000) { parts.push([]); size = 0; }
+      parts.at(-1).push(line); size += cost;
+    }
+    parts.forEach((part, i) => outbox.push({ videoId, part: i + 1, parts: parts.length, lang: String(result.lang || ''), lines: part }));
+  }
+  void send(true);
+}
 let connection = 'Abre Buddy y configura Video en Ajustes → Conexiones.';
 const snapshots = new Map();
 const browser = /Edg\//.test(navigator.userAgent) ? 'Edge' : 'Chrome';
@@ -17,9 +34,11 @@ function connect() {
     port.onMessage.addListener(message => {
       pending = false;
       connection = message.enabled ? 'Conectado con Buddy ✓' : 'Activa Video en los Ajustes de Buddy.';
-      if (pendingAction) void send(true);
+      if (pendingAction || outbox.length) void send(true);
       for (const command of message.commands || []) {
         if (['pause', 'toggle'].includes(command.type)) chrome.tabs.sendMessage(command.tabId, { type: command.type, videoId: command.videoId }).catch(() => {});
+        if (command.type === 'transcript') chrome.tabs.sendMessage(command.tabId, { type: 'transcript', videoId: command.videoId })
+          .then(result => queueTranscript(command.videoId, result), () => queueTranscript(command.videoId, { error: 'No se pudo leer la página del video. Recarga esa pestaña.' }));
         if (command.type === 'pip') void chrome.tabs.update(command.tabId, { active: true }).then(async tab => {
           await chrome.windows.update(tab.windowId, { focused: true });
           await chrome.action.openPopup({ windowId: tab.windowId });
@@ -45,9 +64,10 @@ async function send(force = false) {
         caption: v.caption, playing: v.playing, tabId: tab.id, title: (state.title || tab.title || 'Video').replace(/ - YouTube$/, '').slice(0, 240),
         active: Boolean(tab.active && tab.windowId === focused?.id && v.visible) }];
     }).sort((a, b) => Number(b.active) - Number(a.active) || Number(b.playing) - Number(a.playing)).slice(0, 20);
-    while (videos.length && new TextEncoder().encode(JSON.stringify({ browser, videos })).length > 60000) videos.pop();
+    const transcript = outbox.shift();
+    while (videos.length && bytes({ browser, videos, transcript }) > 60000) videos.pop();
     const action = pendingAction; pendingAction = null;
-    lastSent = Date.now(); port.postMessage({ browser, videos, action });
+    lastSent = Date.now(); port.postMessage(transcript ? { browser, videos, action, transcript } : { browser, videos, action });
   } catch (_) { pending = false; port = null; }
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {

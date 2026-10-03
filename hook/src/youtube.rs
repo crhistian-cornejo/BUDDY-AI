@@ -44,7 +44,7 @@ pub fn main(origin: &str) {
         payload
             .as_object_mut()
             .unwrap()
-            .retain(|k, _| ["browser", "videos", "action"].contains(&k.as_str()));
+            .retain(|k, _| ["browser", "videos", "action", "transcript"].contains(&k.as_str()));
         payload["_youtube"] = json!(true);
         payload["sourceId"] = json!(source);
         let raw = format!("{payload}\n");

@@ -48,12 +48,67 @@ struct Connection {
     videos: Vec<(YouTubeVideo, bool)>,
     commands: Vec<Value>,
 }
+/// The longest line of a transcript kept, in characters.
+const MAX_LINE: usize = 400;
+/// A transcript's limits: lines, and characters in all.
+const MAX_LINES: usize = 12_000;
+const MAX_CHARS: usize = 600_000;
+/// Transcripts kept (the last videos asked about).
+const KEPT: usize = 3;
+
+/// What a video says, with the second each line starts at: read by the extension from the transcript the page
+/// itself shows. Someone else's text, never instructions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transcript {
+    pub lang: String,
+    pub lines: Vec<(f64, String)>,
+    /// Why there is none, in words for the user (empty: there is one).
+    pub error: String,
+}
+
+impl Transcript {
+    /// The transcript as timed paragraphs (`[12:30] …`, a new one every half minute), up to `max` characters.
+    pub fn text(&self, max: usize) -> String {
+        let mut out = String::new();
+        let mut paragraph_at = f64::NEG_INFINITY;
+        for (at, line) in &self.lines {
+            if at - paragraph_at >= 30.0 {
+                if out.len() >= max {
+                    out.push_str("\n(la transcripción sigue, pero aquí se corta por su longitud)");
+                    return out;
+                }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("[{}] ", clock(*at)));
+                paragraph_at = *at;
+            } else {
+                out.push(' ');
+            }
+            out.push_str(line);
+        }
+        out
+    }
+}
+
+/// Seconds as a player shows them: `7:05`, `1:02:05`.
+pub fn clock(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
 #[derive(Default)]
 struct State {
     enabled: bool,
     connections: HashMap<String, Connection>,
     viewer: Option<YouTubeVideo>,
     destination: String,
+    /// Finished transcripts, newest last.
+    transcripts: Vec<(String, Transcript)>,
+    /// The one arriving: its video, the part expected next, and what came so far.
+    arriving: Option<(String, u64, Transcript)>,
+    /// Videos whose transcript was asked for and has not come yet.
+    asked: Vec<String>,
 }
 pub struct YouTube {
     state: Mutex<State>,
@@ -160,6 +215,9 @@ impl YouTube {
             c.seen = Instant::now();
             c.videos = videos;
         }
+        if let Some(sent) = payload.get("transcript").filter(|t| t.is_object()) {
+            s.take_transcript(sent);
+        }
         let commands = s
             .connections
             .get_mut(source)
@@ -211,6 +269,46 @@ impl YouTube {
         if let Some(c) = s.connections.get_mut(source) { c.commands.push(json!({"type":"pip","tabId":v.tab_id,"videoId":v.video_id})); }
         Ok(())
     }
+    /// Asks the extension for the transcript of `video` (from the tab it plays in). False when that tab is gone.
+    pub fn request_transcript(&self, video: &YouTubeVideo) -> bool {
+        let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if video.service != "youtube" || !s.connections.contains_key(&video.source_id) {
+            return false;
+        }
+        if s.transcripts.iter().any(|(id, _)| *id == video.video_id) || s.asked.contains(&video.video_id) {
+            return true;
+        }
+        s.asked.push(video.video_id.clone());
+        if let Some(c) = s.connections.get_mut(&video.source_id) {
+            c.commands.push(json!({"type":"transcript","tabId":video.tab_id,"videoId":video.video_id}));
+        }
+        true
+    }
+
+    /// The transcript of a video, once the extension handed it over (or said there is none).
+    pub fn transcript(&self, video_id: &str) -> Option<Transcript> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).transcripts.iter().find(|(id, _)| id == video_id).map(|(_, t)| t.clone())
+    }
+
+    /// Asks for the transcript and waits for it up to `limit` (or until `stopped`). None: it did not come.
+    pub fn wait_transcript(&self, video: &YouTubeVideo, limit: Duration, stopped: &dyn Fn() -> bool) -> Option<Transcript> {
+        if !self.request_transcript(video) {
+            return None;
+        }
+        let started = Instant::now();
+        loop {
+            if let Some(found) = self.transcript(&video.video_id) {
+                return Some(found);
+            }
+            if stopped() || started.elapsed() >= limit {
+                // Asked again next time: the extension may have been reloaded meanwhile.
+                self.state.lock().unwrap_or_else(|p| p.into_inner()).asked.retain(|id| *id != video.video_id);
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     pub fn position(&self, source: &str, video: &str, seconds: f64) {
         if !seconds.is_finite() || !(0.0..=604800.0).contains(&seconds) { return; }
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -251,6 +349,55 @@ impl YouTube {
     pub fn close(&self) {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).viewer = None;
         self.bus.publish(Event::YouTubeChanged);
+    }
+}
+
+impl State {
+    /// One part of a transcript from the extension: parts come in order, the last one completes it. Everything in
+    /// it is bounded and cleaned; a part out of order is dropped with whatever came before it.
+    fn take_transcript(&mut self, sent: &Value) {
+        let Some(video) = sent["videoId"].as_str().filter(|id| valid_id(id)).map(str::to_string) else { return };
+        let finish = |state: &mut State, transcript: Transcript| {
+            state.asked.retain(|id| *id != video);
+            state.transcripts.retain(|(id, _)| *id != video);
+            state.transcripts.push((video.clone(), transcript));
+            let extra = state.transcripts.len().saturating_sub(KEPT);
+            state.transcripts.drain(..extra);
+        };
+        if let Some(error) = sent["error"].as_str().filter(|e| !e.trim().is_empty()) {
+            let error: String = error.chars().filter(|c| !c.is_control()).take(200).collect();
+            self.arriving = None;
+            finish(self, Transcript { lang: String::new(), lines: Vec::new(), error });
+            return;
+        }
+        let (part, parts) = (sent["part"].as_u64().unwrap_or(0), sent["parts"].as_u64().unwrap_or(0));
+        if part == 0 || part > parts || parts > 200 {
+            return;
+        }
+        if part == 1 {
+            let lang: String = sent["lang"].as_str().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(12).collect();
+            self.arriving = Some((video.clone(), 1, Transcript { lang, lines: Vec::new(), error: String::new() }));
+        }
+        let Some((arriving, expected, transcript)) = self.arriving.as_mut().filter(|(id, expected, _)| *id == video && *expected == part) else {
+            self.arriving = None;
+            return;
+        };
+        let mut chars: usize = transcript.lines.iter().map(|(_, l)| l.len()).sum();
+        for line in sent["lines"].as_array().into_iter().flatten() {
+            let (Some(at), Some(text)) = (line[0].as_f64(), line[1].as_str()) else { continue };
+            let text: String = text.chars().filter(|c| !c.is_control() || c.is_whitespace()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(MAX_LINE).collect();
+            if !at.is_finite() || !(0.0..=604800.0).contains(&at) || text.is_empty() || transcript.lines.len() >= MAX_LINES || chars + text.len() > MAX_CHARS {
+                continue;
+            }
+            chars += text.len();
+            transcript.lines.push((at, text));
+        }
+        *expected += 1;
+        let _ = arriving;
+        if part == parts {
+            let (_, _, done) = self.arriving.take().unwrap();
+            finish(self, done);
+        }
     }
 }
 
@@ -373,6 +520,90 @@ pub fn prepare(data: &Path, relay: &Path, browser: &str) -> Result<PathBuf, Core
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn enabled() -> YouTube {
+        let y = YouTube::new(Arc::new(EventBus::default()));
+        y.enable(true);
+        y.receive(&snapshot("s1", "abcdefghijk", true));
+        y
+    }
+    fn part(n: u32, of: u32, lines: Value) -> Value {
+        json!({"sourceId":"s1","browser":"Chrome","videos":[],"transcript":{"videoId":"abcdefghijk","part":n,"parts":of,"lang":"es","lines":lines}})
+    }
+
+    /// The extension reads the transcript the page shows and hands it over in parts.
+    #[test]
+    fn a_transcript_is_asked_from_the_videos_tab_and_put_together_from_its_parts() {
+        let y = enabled();
+        let video = y.context().unwrap();
+        assert!(y.transcript("abcdefghijk").is_none());
+        assert!(y.request_transcript(&video));
+        let reply: Value = serde_json::from_str(&y.receive(&snapshot("s1", "abcdefghijk", true))).unwrap();
+        assert_eq!(reply["commands"], json!([{"type":"transcript","tabId":7,"videoId":"abcdefghijk"}]));
+        // Asked once: the command is not repeated while the answer is on its way.
+        assert!(y.request_transcript(&video));
+        assert_eq!(serde_json::from_str::<Value>(&y.receive(&snapshot("s1", "abcdefghijk", true))).unwrap()["commands"], json!([]));
+        y.receive(&part(1, 2, json!([[0.0, "Hola a todos"], [5.5, "hoy  vemos\nredes neuronales"]])));
+        assert!(y.transcript("abcdefghijk").is_none(), "not until its last part");
+        y.receive(&part(2, 2, json!([[3120.0, "gracias por ver"]])));
+        let t = y.transcript("abcdefghijk").unwrap();
+        assert_eq!((t.lang.as_str(), t.error.as_str()), ("es", ""));
+        assert_eq!(t.lines, [(0.0, "Hola a todos".to_string()), (5.5, "hoy vemos redes neuronales".to_string()), (3120.0, "gracias por ver".to_string())]);
+        // A video with no tab in the browser cannot be asked for.
+        let mut gone = video.clone();
+        gone.source_id = "otro".into();
+        assert!(!y.request_transcript(&gone));
+    }
+
+    /// What comes from a page is someone else's text: bounded, cleaned, and never taken out of order.
+    #[test]
+    fn a_transcript_is_bounded_and_junk_is_dropped() {
+        let y = enabled();
+        // A part out of order, or of another video, starts nothing.
+        y.receive(&part(2, 2, json!([[1.0, "x"]])));
+        assert!(y.transcript("abcdefghijk").is_none());
+        let long = "a".repeat(5000);
+        y.receive(&part(1, 1, json!([[1.0, long], [-4.0, "antes de cero"], ["x", "sin tiempo"], [2.0, ""], [3.0, "con\u{0007}control"], [4e9, "fuera de rango"]])));
+        let t = y.transcript("abcdefghijk").unwrap();
+        assert_eq!(t.lines.len(), 2, "{:?}", t.lines);
+        assert_eq!(t.lines[0].1.chars().count(), MAX_LINE);
+        assert_eq!(t.lines[1], (3.0, "concontrol".to_string()));
+        // The page has none: said once, kept, so the question does not wait for it again.
+        let y = enabled();
+        y.receive(&json!({"sourceId":"s1","browser":"Chrome","videos":[],"transcript":{"videoId":"abcdefghijk","error":"Este video no tiene transcripción."}}));
+        let t = y.transcript("abcdefghijk").unwrap();
+        assert!(t.lines.is_empty() && t.error.contains("no tiene"));
+    }
+
+    #[test]
+    fn waiting_for_a_transcript_ends_when_it_arrives_or_the_time_is_up() {
+        let y = Arc::new(enabled());
+        let video = y.context().unwrap();
+        let started = Instant::now();
+        assert!(y.wait_transcript(&video, Duration::from_millis(250), &|| false).is_none());
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        let giver = y.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            giver.receive(&part(1, 1, json!([[0.0, "Hola"]])));
+        });
+        let got = y.wait_transcript(&video, Duration::from_secs(5), &|| false).unwrap();
+        assert_eq!(got.lines.len(), 1);
+        assert!(started.elapsed() < Duration::from_secs(4));
+        // A stopped turn does not wait.
+        let other = Arc::new(enabled());
+        assert!(other.wait_transcript(&video, Duration::from_secs(5), &|| true).is_none());
+    }
+
+    #[test]
+    fn a_transcript_reads_as_timed_paragraphs() {
+        let t = Transcript { lang: "es".into(), error: String::new(), lines: vec![(0.0, "Hola a todos".into()), (4.0, "hoy vemos redes".into()), (31.0, "primero las neuronas".into()), (3725.0, "gracias".into())] };
+        assert_eq!(t.text(10_000), "[0:00] Hola a todos hoy vemos redes\n[0:31] primero las neuronas\n[1:02:05] gracias");
+        let cut = t.text(40);
+        assert!(cut.starts_with("[0:00] Hola a todos hoy vemos redes\n") && cut.ends_with("(la transcripción sigue, pero aquí se corta por su longitud)"), "{cut}");
+        assert_eq!(clock(59.9), "0:59"); assert_eq!(clock(600.0), "10:00"); assert_eq!(clock(3600.0), "1:00:00");
+    }
+
     fn snapshot(source: &str, id: &str, active: bool) -> Value {
         json!({"sourceId":source,"browser":"Chrome","videos":[{"tabId":7,"videoId":id,"title":"Video de prueba","seconds":42.5,"playing":true,"active":active}]})
     }

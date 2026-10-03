@@ -5,6 +5,13 @@ import SwiftUI
 /// Buddy goes, and when the chat opens it moves out of its way without leaving Buddy's side.
 enum VideoPlacement {
     static let pictureSize = CGSize(width: 384, height: 216)
+    /// How wide the corner can make it: a little larger, never a window of its own.
+    static let maxWidth: CGFloat = 640
+    /// The picture for a wanted width: within the limits, always 16:9.
+    static func size(width: CGFloat) -> CGSize {
+        let w = min(max(width.rounded(), pictureSize.width), maxWidth)
+        return CGSize(width: w, height: (w * 9 / 16).rounded())
+    }
     /// Nothing around the picture: the window is the picture, with round corners and no border, haze or shadow.
     static let edge: CGFloat = 0
     static let cornerRadius: CGFloat = 16
@@ -22,10 +29,10 @@ enum VideoPlacement {
     ///
     /// Without a chat: above Buddy. With one: a place by Buddy that the chat's column never reaches, and when there
     /// is none (Buddy in a corner), right on top of the chat, at its edge by Buddy, climbing as the chat grows.
-    static func frame(pet: NSRect, chat: NSRect?, area: NSRect) -> NSRect {
-        let (w, h) = (pictureSize.width, pictureSize.height)
+    static func frame(pet: NSRect, chat: NSRect?, area: NSRect, size wanted: CGSize = pictureSize) -> NSRect {
+        let (w, h) = (wanted.width, wanted.height)
         func window(_ x: CGFloat, _ y: CGFloat) -> NSRect {
-            let size = windowSize
+            let size = CGSize(width: w + edge * 2, height: h + edge * 2)
             return NSRect(x: min(max(x - edge, area.minX), max(area.minX, area.maxX - size.width)),
                           y: min(max(y - edge, area.minY), max(area.minY, area.maxY - size.height)), width: size.width, height: size.height)
         }
@@ -68,9 +75,14 @@ final class VideoWindowController {
     private var panel: NSPanel?
     private var key = ""
     private var observers: [NSObjectProtocol] = []
+    /// The picture's size: the user's, from the corner (kept between launches).
+    private var size: CGSize
+    private static let widthSetting = "video.width"
 
     init(core: BuddyCore, petFrame: @escaping () -> NSRect, chatFrame: @escaping () -> NSRect?, onAsk: @escaping () -> Void) {
         self.core = core; self.petFrame = petFrame; self.chatFrame = chatFrame; self.onAsk = onAsk
+        let saved = (try? core.setting(key: Self.widthSetting)).flatMap { $0 }.flatMap(Double.init) ?? 0
+        size = VideoPlacement.size(width: CGFloat(saved))
     }
 
     func refresh() {
@@ -79,11 +91,15 @@ final class VideoWindowController {
         let next = video.sourceId + video.videoId
         if panel != nil, next == key { return }
         let window = panel ?? Self.makePanel()
-        let host = NSHostingView(rootView: VideoCompanionView(core: core, video: video, onAsk: onAsk))
-        host.frame = NSRect(origin: .zero, size: VideoPlacement.windowSize)
+        let host = NSHostingView(rootView: VideoCompanionView(
+            core: core, video: video, onAsk: onAsk,
+            width: { [weak self] in self?.size.width ?? VideoPlacement.pictureSize.width },
+            onResize: { [weak self] width in self?.resize(to: width) },
+            onResizeEnd: { [weak self] in self?.saveSize() }))
+        host.frame = NSRect(origin: .zero, size: size)
         // Only the picture, cut to its round corners: no border, no haze, no shadow around it.
         host.wantsLayer = true
-        host.layer?.mask = Self.roundMask(size: VideoPlacement.windowSize)
+        host.layer?.mask = Self.roundMask(size: size)
         window.contentView = host
         let isNew = panel == nil
         panel = window; key = next
@@ -106,7 +122,23 @@ final class VideoWindowController {
     private func placed() -> NSRect {
         let pet = petFrame()
         let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: pet.midX, y: pet.midY)) } ?? NSScreen.main
-        return VideoPlacement.frame(pet: pet, chat: chatFrame(), area: screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800))
+        return VideoPlacement.frame(pet: pet, chat: chatFrame(), area: screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800), size: size)
+    }
+
+    /// The corner is being dragged: the picture takes that width (within its limits) and stays by Buddy.
+    private func resize(to width: CGFloat) {
+        let next = VideoPlacement.size(width: width)
+        guard next != size, let panel else { return }
+        size = next
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        panel.setFrame(placed(), display: true)
+        panel.contentView?.layer?.mask = Self.roundMask(size: next)
+        CATransaction.commit()
+    }
+
+    private func saveSize() {
+        try? core.setSetting(key: Self.widthSetting, value: String(Int(size.width)))
     }
 
     /// Buddy moved (the video goes with it, at once) or the chat opened, closed or grew (the video glides aside).
@@ -137,7 +169,7 @@ final class VideoWindowController {
     }
 
     private static func makePanel() -> NSPanel {
-        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: VideoPlacement.windowSize),
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: VideoPlacement.pictureSize),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -164,18 +196,23 @@ final class VideoWindowController {
     }
 }
 
-/// The player filling the window, with Buddy's few actions over it while the pointer is on the video (and for a
-/// moment when it appears, so they are found). They stay reachable for VoiceOver and the keyboard at all times.
+/// The player filling the window, with Buddy's few actions at its left edge, half way up: the one place the
+/// player's own controls (title, subtitles, settings, volume, progress) never use. They show while the pointer is on
+/// the video and for a moment when it appears; VoiceOver reaches them at all times.
 private struct VideoCompanionView: View {
     let core: BuddyCore
     let video: YouTubeVideo
     let onAsk: () -> Void
+    let width: () -> CGFloat
+    let onResize: (CGFloat) -> Void
+    let onResizeEnd: () -> Void
     @State private var error = ""
     @State private var hovering = false
     @State private var introduced = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let shown = hovering || !introduced || !error.isEmpty
         ZStack {
             Color.black
             YouTubeWebPlayer(video: video) { type, code in
@@ -185,33 +222,47 @@ private struct VideoCompanionView: View {
                 if type == "blocked" { error = "Pulsa reproducir en el video." }
             }
             .accessibilityLabel("Video: \(video.title)")
-            VStack(spacing: 0) {
-                HStack(spacing: 2) {
-                    action("sparkles", "Preguntar a Gemini sobre este video", onAsk)
-                    action("rectangle.topthird.inset.filled", "Pasar el video al notch") { try? core.youtubeMove(destination: "notch") }
-                    action("arrow.up.right", "Abrir en YouTube") { if let url = URL(string: video.url) { NSWorkspace.shared.open(url) } }
-                    action("xmark", "Cerrar el video") { core.youtubeClose() }
-                }
-                .padding(3)
-                .background(.black.opacity(0.7), in: Capsule())
-                .fixedSize()
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .opacity(hovering || !introduced || !error.isEmpty ? 1 : 0)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Acciones del video")
-                Spacer()
-                if !error.isEmpty {
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(.black.opacity(0.75), in: Capsule())
-                        .padding(.bottom, 46)
-                }
+            VStack(spacing: 2) {
+                action("sparkles", "Preguntar a Buddy sobre este video", onAsk)
+                action("rectangle.topthird.inset.filled", "Pasar el video al notch") { try? core.youtubeMove(destination: "notch") }
+                action("arrow.up.right", "Abrir en YouTube") { if let url = URL(string: video.url) { NSWorkspace.shared.open(url) } }
+                action("xmark", "Cerrar el video") { core.youtubeClose() }
             }
-            .padding(VideoPlacement.edge + 8)
+            .padding(3)
+            .background(.black.opacity(0.7), in: Capsule())
+            .fixedSize()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(.leading, 8)
+            .opacity(shown ? 1 : 0)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Acciones del video")
+            if !error.isEmpty {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.black.opacity(0.75), in: Capsule())
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 56)
+            }
+            // The corner: drag it to make the picture a little larger or smaller.
+            ResizeCorner(width: width, onResize: onResize, onEnd: onResizeEnd)
+                .frame(width: 22, height: 22)
+                .overlay {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(4)
+                        .background(.black.opacity(0.7), in: Circle())
+                        .allowsHitTesting(false)
+                }
+                .tip("Arrastra para cambiar el tamaño", iconOnly: true)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(4)
+                .opacity(shown ? 1 : 0)
         }
-        .frame(width: VideoPlacement.windowSize.width, height: VideoPlacement.windowSize.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .tooltipHost()
         .onHover { inside in withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { hovering = inside } }
         .task {
             // Shown for a moment when the video appears, then only under the pointer.
@@ -220,7 +271,7 @@ private struct VideoCompanionView: View {
         }
     }
 
-    /// A round button of at least 28 points, named for VoiceOver and with its name as help.
+    /// A button of at least 28 points with Buddy's tooltip, which is also its name for VoiceOver.
     private func action(_ symbol: String, _ help: String, _ run: @escaping () -> Void) -> some View {
         Button(action: run) {
             Image(systemName: symbol)
@@ -230,8 +281,47 @@ private struct VideoCompanionView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel(help)
+        .tip(help, iconOnly: true)
+    }
+}
+
+/// The corner that resizes the video. The window moves while it is dragged (it stays by Buddy), so the drag is
+/// measured on the screen, not inside the window.
+private struct ResizeCorner: NSViewRepresentable {
+    let width: () -> CGFloat
+    let onResize: (CGFloat) -> Void
+    let onEnd: () -> Void
+
+    func makeNSView(context: Context) -> Corner {
+        let view = Corner()
+        view.width = width; view.onResize = onResize; view.onEnd = onEnd
+        return view
+    }
+    func updateNSView(_ view: Corner, context: Context) {
+        view.width = width; view.onResize = onResize; view.onEnd = onEnd
+    }
+
+    final class Corner: NSView {
+        var width: () -> CGFloat = { 0 }
+        var onResize: (CGFloat) -> Void = { _ in }
+        var onEnd: () -> Void = {}
+        private var start: (pointer: CGPoint, width: CGFloat)?
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .frameResize(position: .topLeft, directions: .all)) }
+        override func mouseDown(with event: NSEvent) { start = (NSEvent.mouseLocation, width()) }
+        override func mouseDragged(with event: NSEvent) {
+            guard let start else { return }
+            let now = NSEvent.mouseLocation
+            // The corner is the top left one: pulling it up or to the left makes the picture larger.
+            let pulled = max(start.pointer.x - now.x, (now.y - start.pointer.y) * 16 / 9)
+            let pushed = min(start.pointer.x - now.x, (now.y - start.pointer.y) * 16 / 9)
+            onResize(start.width + (pulled > 0 ? pulled : pushed))
+        }
+        override func mouseUp(with event: NSEvent) {
+            if start != nil { onEnd() }
+            start = nil
+        }
     }
 }
 

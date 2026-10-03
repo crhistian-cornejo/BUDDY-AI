@@ -90,3 +90,70 @@ test('browser PiP respects platform restrictions and optional permissions requir
   await p.el('enable').click(); assert.equal(p.calls[0].origins[0], 'https://video.example/*');
   assert.equal(p.calls[1][0].matches[0], 'https://video.example/*');
 });
+
+// The transcript: read from the panel YouTube itself shows, opened and closed again if it was not open.
+function transcriptPage({ offered = true, appears = true } = {}) {
+  const clicks = [];
+  let open = false;
+  const segment = (time, text) => ({ innerText: `${time}\n${text}` });
+  const segments = [segment('0:00', 'Hola a todos'), segment('4:35', 'aquí entra   la función\nde activación'), segment('1:02:05', 'gracias por ver'), { innerText: 'Capítulo 2' }];
+  const openButton = { click() { clicks.push('open'); if (appears) open = true; }, getAttribute: () => 'Mostrar transcripción' };
+  const closeButton = { click() { clicks.push('close'); open = false; } };
+  const video = { currentTime: 281, duration: 3144, paused: false, ended: false, addEventListener() {}, removeEventListener() {} };
+  const listeners = {};
+  const sandbox = { URL, location: { href: 'https://www.youtube.com/watch?v=abcdefghijk' }, Date, Number, Promise, setTimeout: f => setImmediate(f),
+    MutationObserver: class { observe() {} }, window: { addEventListener() {} },
+    document: { visibilityState: 'visible', documentElement: {}, addEventListener() {},
+      querySelector: q => q === 'video' ? video
+        : q.startsWith('ytd-video-description-transcript-section-renderer') ? (offered ? openButton : null)
+        : q.includes('#visibility-button') || q.includes('transcript') ? (open ? closeButton : null) : null,
+      querySelectorAll: q => q.includes('transcript-segment') ? (open ? segments : []) : [] },
+    chrome: { runtime: { sendMessage: async () => {}, onMessage: { addListener: f => { listeners.message = f; } } } } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), sandbox);
+  const ask = videoId => new Promise(resolve => { if (listeners.message({ type: 'transcript', videoId }, {}, resolve) !== true) resolve(undefined); });
+  return { ask, clicks };
+}
+
+test('reads the transcript the page shows, with its times, and leaves the page as it was', async () => {
+  const page = transcriptPage();
+  const result = await page.ask('abcdefghijk');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.lines)), [[0, 'Hola a todos'], [275, 'aquí entra la función de activación'], [3725, 'gracias por ver']]);
+  assert.deepEqual(page.clicks, ['open', 'close']);
+  // Another video's transcript is never read from this tab.
+  assert.equal(await transcriptPage().ask('lmnopqrstuv'), undefined);
+});
+
+test('says so when the video offers no transcript or YouTube does not show it', async () => {
+  assert.match((await transcriptPage({ offered: false }).ask('abcdefghijk')).error, /no ofrece transcripción/);
+  const silent = transcriptPage({ appears: false });
+  assert.match((await silent.ask('abcdefghijk')).error, /no mostró/);
+});
+
+test('background asks the tab for the transcript and hands it to Buddy in parts that fit a frame', async () => {
+  const posted = [], listeners = {};
+  const lines = Array.from({ length: 900 }, (_, i) => [i * 4, `línea número ${i} con algo de texto para ocupar espacio — ñandú`]);
+  const tab = { id: 7, windowId: 1, active: true, title: 'Demo' };
+  const port = { postMessage: m => posted.push(m), onDisconnect: { addListener() {} }, onMessage: { addListener: f => { listeners.native = f; } } };
+  const sandbox = { navigator: { userAgent: 'Chrome/130' }, TextEncoder, URL, Date, Map, Set, Boolean, Number, String, Array, setInterval() {}, chrome: {
+    permissions: {}, runtime: { connectNative: () => port, onMessage: { addListener: f => { listeners.message = f; } } },
+    windows: { getLastFocused: async () => ({ id: 1 }) },
+    tabs: { query: async () => [tab], sendMessage: async (id, m) => m.type === 'transcript' && id === 7 ? { lines } : {}, onRemoved: { addListener() {} }, onActivated: { addListener() {} }, onUpdated: { addListener() {} } } } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8'), sandbox);
+  const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(setImmediate); };
+  await settle();
+  listeners.native({ enabled: true, commands: [{ type: 'transcript', tabId: 7, videoId: 'abcdefghijk' }] });
+  // Each reply from Buddy lets the next part leave.
+  for (let i = 0; i < 12; i++) { await settle(); listeners.native({ enabled: true, commands: [] }); }
+  await settle();
+  const parts = posted.filter(m => m.transcript).map(m => m.transcript);
+  assert.ok(parts.length >= 2, `in several parts: ${parts.length}`);
+  assert.deepEqual(parts.map(p => p.part), parts.map((_, i) => i + 1));
+  assert.ok(parts.every(p => p.parts === parts.length && p.videoId === 'abcdefghijk'));
+  assert.equal(parts.reduce((n, p) => n + p.lines.length, 0), 900);
+  for (const message of posted) assert.ok(new TextEncoder().encode(JSON.stringify(message)).length < 64 * 1024, 'fits the native host frame');
+  // A tab that cannot be read answers with the reason, not with silence.
+  sandbox.chrome.tabs.sendMessage = async () => { throw new Error('no receiver'); };
+  listeners.native({ enabled: true, commands: [{ type: 'transcript', tabId: 9, videoId: 'lmnopqrstuv' }] });
+  for (let i = 0; i < 3; i++) { await settle(); listeners.native({ enabled: true, commands: [] }); }
+  assert.ok(posted.some(m => m.transcript?.videoId === 'lmnopqrstuv' && /Recarga/.test(m.transcript.error)));
+});

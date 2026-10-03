@@ -187,9 +187,12 @@ final class ChatController {
         refreshQueue()
     }
 
+    /// A chat about the video next to Buddy: what people ask of a video, one click each (Buddy reads its
+    /// transcript, so it can summarise it and point at the minutes worth watching).
     func askVideo() {
-        newChat(); videoMode = true; suggestions = []; command = nil
-        draft = "Explícame este momento del video."
+        newChat(); videoMode = true; command = nil
+        draft = ""
+        suggestions = ["Resume este video", "Dame los momentos clave con su minuto", "Explícame este momento del video"]
     }
     func newChat() {
         videoMode = false

@@ -83,6 +83,17 @@ final class YouTubeNotchTests: XCTestCase {
         // Next to Buddy: its edge is the chat's edge by the pet.
         XCTAssertEqual(last?.maxX ?? 0, 1092, accuracy: 0.5)
     }
+    /// The corner makes the picture a little larger, never small or huge, always 16:9.
+    func testTheVideoResizesWithinLimitsAndKeepsItsShape() {
+        XCTAssertEqual(VideoPlacement.size(width: 100), CGSize(width: 384, height: 216))
+        XCTAssertEqual(VideoPlacement.size(width: 512), CGSize(width: 512, height: 288))
+        XCTAssertEqual(VideoPlacement.size(width: 5000), CGSize(width: 640, height: 360))
+        let screen = NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let pet = NSRect(x: 1100, y: 40, width: 128, height: 128)
+        let large = VideoPlacement.frame(pet: pet, chat: nil, area: screen, size: VideoPlacement.size(width: 640))
+        XCTAssertEqual(large.size, CGSize(width: 640, height: 360))
+        XCTAssertTrue(screen.contains(large)); XCTAssertFalse(large.intersects(pet))
+    }
     /// The window is the picture: nothing around it to draw a border or a shadow with.
     func testTheVideoWindowIsOnlyThePicture() {
         XCTAssertEqual(VideoPlacement.windowSize, VideoPlacement.pictureSize)
