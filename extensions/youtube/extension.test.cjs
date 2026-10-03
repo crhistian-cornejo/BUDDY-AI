@@ -10,7 +10,7 @@ function content(href) {
     addEventListener() {}, removeEventListener() {}, pause() { this.paused = true; }, async play() { this.paused = false; } };
   const sandbox = { URL, location: { href }, Date, Number, MutationObserver: class { observe() {} },
     document: { visibilityState: 'visible', documentElement: {}, addEventListener() {}, querySelector: q => q === 'video' ? video : null },
-    window: { addEventListener() {} }, chrome: { runtime: { sendMessage: async m => reports.push(m), onMessage: { addListener: f => { listeners.message = f; } } } } };
+    window: { addEventListener() {} }, chrome: { runtime: { id: 'abc', sendMessage: async m => reports.push(m), onMessage: { addListener: f => { listeners.message = f; } } } } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), sandbox);
   return { video, reports, listeners };
 }
@@ -108,7 +108,7 @@ function transcriptPage({ offered = true, appears = true } = {}) {
         : q.startsWith('ytd-video-description-transcript-section-renderer') ? (offered ? openButton : null)
         : q.includes('#visibility-button') || q.includes('transcript') ? (open ? closeButton : null) : null,
       querySelectorAll: q => q.includes('transcript-segment') ? (open ? segments : []) : [] },
-    chrome: { runtime: { sendMessage: async () => {}, onMessage: { addListener: f => { listeners.message = f; } } } } };
+    chrome: { runtime: { id: 'abc', sendMessage: async () => {}, onMessage: { addListener: f => { listeners.message = f; } } } } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), sandbox);
   const ask = videoId => new Promise(resolve => { if (listeners.message({ type: 'transcript', videoId }, {}, resolve) !== true) resolve(undefined); });
   return { ask, clicks };
@@ -156,4 +156,23 @@ test('background asks the tab for the transcript and hands it to Buddy in parts 
   listeners.native({ enabled: true, commands: [{ type: 'transcript', tabId: 9, videoId: 'lmnopqrstuv' }] });
   for (let i = 0; i < 3; i++) { await settle(); listeners.native({ enabled: true, commands: [] }); }
   assert.ok(posted.some(m => m.transcript?.videoId === 'lmnopqrstuv' && /Recarga/.test(m.transcript.error)));
+});
+
+// After the extension is reloaded, the copy of the script left in an open tab can no longer talk to it.
+test('a script orphaned by an extension reload stops quietly instead of throwing', () => {
+  const handlers = {}; let observing = true, removed = 0;
+  const video = { currentTime: 1, duration: 10, paused: false, ended: false, addEventListener: (name, f) => { handlers[name] = f; }, removeEventListener() { removed++; } };
+  const runtime = { id: 'abc', sendMessage: async () => {}, onMessage: { addListener() {} } };
+  const sandbox = { URL, location: { href: 'https://www.youtube.com/watch?v=abcdefghijk' }, Date, Number, Promise, Boolean, setTimeout,
+    MutationObserver: class { observe() {} disconnect() { observing = false; } }, window: { addEventListener() {} },
+    document: { visibilityState: 'visible', documentElement: {}, addEventListener: (name, f) => { handlers[name] = f; }, querySelector: q => q === 'video' ? video : null, querySelectorAll: () => [] },
+    chrome: { runtime } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), sandbox);
+  // The reload: the runtime loses its id and every call into it throws.
+  delete runtime.id;
+  runtime.sendMessage = () => { throw new Error('Extension context invalidated.'); };
+  assert.doesNotThrow(() => handlers.visibilitychange());
+  assert.doesNotThrow(() => handlers.seeked());
+  assert.equal(observing, false, 'it stops watching the page');
+  assert.ok(removed > 0, 'and lets go of the video');
 });

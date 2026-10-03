@@ -896,7 +896,8 @@ impl remote::rpc::Host for PhoneHost {
             Call::SearchChats { query, limit } => shown(store().search_chats(&query, limit)),
             Call::Messages { chat_id } => shown(store().messages(&chat_id)),
             Call::ImagePreview { path } => Ok(json!(self.chat.image_preview(&path))),
-            Call::Agents => shown(Ok(self.chat.agents())),
+            // Who they are, not how they are instructed: an agent's prompt and permissions stay on this machine.
+            Call::Agents => Ok(json!(self.chat.agents().iter().map(|a| json!({ "id": a.id, "name": a.name, "specialty": a.specialty, "provider": a.provider.as_str() })).collect::<Vec<_>>())),
             Call::AgentSprite { agent_id } => {
                 let name = self.chat.agents().into_iter().find(|a| a.id == agent_id).map(|a| a.name).unwrap_or_default();
                 let look = look::resolve(&self.data_dir, &store(), &agent_id);
@@ -995,7 +996,9 @@ mod tests {
         assert!(!hello["name"].as_str().unwrap().is_empty());
         assert_eq!(hello["platform"], std::env::consts::OS);
         assert_eq!(host.run(Call::Chats { limit: 10 }).unwrap(), serde_json::json!([]));
-        assert!(host.run(Call::Agents).unwrap().as_array().unwrap().iter().any(|a| a["id"] == "buddy"));
+        let agents = host.run(Call::Agents).unwrap();
+        assert!(agents.as_array().unwrap().iter().any(|a| a["id"] == "buddy" && a["name"] == "Buddy"));
+        assert!(agents.as_array().unwrap().iter().all(|a| a.get("prompt").is_none() && a.get("permissions").is_none()), "instructions never leave the machine");
         assert!(host.run(Call::Sprite { id: "no-existe".into() }).is_err());
         assert_eq!(host.run(Call::FocusStart { minutes: 25 }).unwrap()["running"], true);
         assert_eq!(host.run(Call::FocusStop).unwrap(), serde_json::Value::Null);

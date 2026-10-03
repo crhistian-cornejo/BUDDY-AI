@@ -1,7 +1,19 @@
 // Local playback state, and the transcript YouTube itself shows on the page when Buddy is asked about the video.
 // Never access a media URL, account, cookie or private YouTube API.
 (() => {
-  let last = 0, bound;
+  let last = 0, bound, observer;
+  const EVENTS = ['play', 'pause', 'ended', 'seeked', 'timeupdate', 'loadedmetadata'];
+  // When the extension is reloaded or updated, the copy of this script left in an open tab is an orphan: it can no
+  // longer reach the extension, and every call into it throws «Extension context invalidated». It stops, quietly;
+  // the tab gets the new script when it is reloaded.
+  function tell(message) {
+    try {
+      if (chrome.runtime?.id) return void chrome.runtime.sendMessage(message).catch(() => {});
+    } catch (_) { /* gone */ }
+    if (bound) for (const event of EVENTS) bound.removeEventListener(event, changed);
+    bound = undefined;
+    observer?.disconnect();
+  }
   const id = () => {
     const u = new URL(location.href);
     const v = u.pathname === '/watch' ? u.searchParams.get('v') : /^\/(shorts|live)\/([\w-]{11})/.exec(u.pathname)?.[2];
@@ -15,14 +27,14 @@
     const seconds = video?.currentTime;
     const snapshot = videoId && video && Number.isFinite(seconds) && !document.querySelector('.ad-showing')
       ? { videoId, seconds, duration: Number.isFinite(video.duration) ? video.duration : null, caption: (document.querySelector('.ytp-caption-window-container')?.innerText || '').slice(0, 2000), playing: !video.paused && !video.ended, visible: document.visibilityState === 'visible' } : null;
-    chrome.runtime.sendMessage({ type: 'snapshot', snapshot }).catch(() => {});
+    tell({ type: 'snapshot', snapshot });
   }
   function bind() {
     const video = document.querySelector('video');
     if (video !== bound) {
-      if (bound) for (const event of ['play', 'pause', 'ended', 'seeked', 'timeupdate', 'loadedmetadata']) bound.removeEventListener(event, changed);
+      if (bound) for (const event of EVENTS) bound.removeEventListener(event, changed);
       bound = video;
-      if (bound) for (const event of ['play', 'pause', 'ended', 'seeked', 'timeupdate', 'loadedmetadata']) bound.addEventListener(event, changed);
+      if (bound) for (const event of EVENTS) bound.addEventListener(event, changed);
     }
     report(true);
   }
@@ -71,8 +83,8 @@
   });
   document.addEventListener('yt-navigate-finish', bind);
   document.addEventListener('visibilitychange', () => report(true));
-  window.addEventListener('pagehide', () => chrome.runtime.sendMessage({ type: 'snapshot', snapshot: null }).catch(() => {}));
-  new MutationObserver(() => { if (document.querySelector('video') !== bound) bind(); })
-    .observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('pagehide', () => tell({ type: 'snapshot', snapshot: null }));
+  observer = new MutationObserver(() => { if (document.querySelector('video') !== bound) bind(); });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
   bind();
 })();

@@ -556,6 +556,7 @@ dependencies = [
  "snow",
  "subtle",
  "thiserror 2.0.21",
+ "uniffi",
  "x25519-dalek",
 ]
 

@@ -20,7 +20,7 @@
     const snapshot = video && Number.isFinite(seconds) && video.readyState > 0 ?
       { service: 'browser', videoId: videoId(), url, seconds, duration: Number.isFinite(video.duration) ? video.duration : null,
         caption, playing: !video.paused && !video.ended, visible: document.visibilityState === 'visible' } : null;
-    chrome.runtime.sendMessage({ type: 'snapshot', snapshot }).catch(() => {});
+    try { if (chrome.runtime?.id) chrome.runtime.sendMessage({ type: 'snapshot', snapshot }).catch(() => {}); } catch (_) { /* the extension was reloaded: this copy is an orphan */ }
   }
   function changed() { report(); }
   function bind() {
@@ -40,7 +40,7 @@
     }
   });
   document.addEventListener('visibilitychange', () => report(true));
-  window.addEventListener('pagehide', () => chrome.runtime.sendMessage({ type: 'snapshot', snapshot: null }).catch(() => {}));
+  window.addEventListener('pagehide', () => { try { if (chrome.runtime?.id) chrome.runtime.sendMessage({ type: 'snapshot', snapshot: null }).catch(() => {}); } catch (_) { /* orphan */ } });
   new MutationObserver(() => { if (choose() !== bound) bind(); }).observe(document.documentElement, { childList: true, subtree: true });
   bind();
 })();

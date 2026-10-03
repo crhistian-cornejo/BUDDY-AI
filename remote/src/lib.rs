@@ -6,10 +6,14 @@
 
 pub mod channel;
 pub mod pairing;
+pub mod phone;
 pub mod push;
 pub mod wire;
 
 pub use channel::{Channel, Handshake, Keys};
+
+#[cfg(feature = "ffi")]
+uniffi::setup_scaffolding!();
 
 
 use base64::Engine;
