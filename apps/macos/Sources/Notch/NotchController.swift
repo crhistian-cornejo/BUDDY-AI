@@ -93,6 +93,10 @@ final class NotchController {
             model.closeApproval(requestId)
         case .usageChanged:
             model.usage = core.usage()
+        case let .chatActivity(_, kind, label):
+            model.buddyActivity = (kind, label)
+        case .chatDone, .chatFailed:
+            model.buddyActivity = nil
         case .briefingReady:
             model.briefing = core.briefing()
         case let .mediaCommand(action, uri):
@@ -103,6 +107,7 @@ final class NotchController {
                              detail: "Ventana: \(label). Buddy usará el otro proveedor si se acaba."))
         case let .mascotState(state):
             model.buddyBusy = state == "think" || state == "work"
+            if !model.buddyBusy { model.buddyActivity = nil }
         case let .focusChanged(running, _):
             model.focus = running ? core.focusStatus() : nil
         case let .focusFinished(minutes):

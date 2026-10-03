@@ -217,6 +217,7 @@ pub fn run() {
             pick_shortcut,
             open_shortcut,
             reveal_path,
+            open_document,
             give_files,
             pick_files,
             usage,
@@ -243,11 +244,22 @@ pub fn run() {
             agent_permission_catalog,
             set_agent_permissions,
             set_agent_model,
+            agent_look,
+            set_agent_look,
+            reset_agent_look,
+            agent_sprite,
+            look_preview,
+            look_options,
             set_router_mode,
             set_router_tier,
             router_preview,
             spotify_disconnect,
             spotify_client_id,
+            telegram_status,
+            telegram_connect,
+            telegram_disconnect,
+            telegram_new_pairing_code,
+            telegram_send,
             set_briefing_topics,
             briefing_now
         ])
@@ -688,6 +700,23 @@ fn reveal_path(app: AppHandle, path: String) -> Result<(), String> {
     app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
+/// Opens a document Buddy made or a file the user attached, in its default app: only inside Buddy's documents and
+/// attachments folders (the page never opens arbitrary paths).
+#[tauri::command]
+fn open_document(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let data = std::path::PathBuf::from(app.state::<AppCore>().core.data_dir());
+    let file = std::fs::canonicalize(&path).map_err(|_| "ya no está".to_string())?;
+    let allowed = ["documentos", "adjuntos"]
+        .iter()
+        .filter_map(|d| std::fs::canonicalize(data.join(d)).ok())
+        .any(|root| file.starts_with(root));
+    if !allowed || !file.is_file() {
+        return Err("solo se abren archivos de Buddy".into());
+    }
+    app.opener().open_path(file.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
 /// Files dropped on the bar: a new chat with them attached.
 #[tauri::command]
 fn give_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
@@ -953,6 +982,38 @@ fn set_agent_model(state: State<'_, AppCore>, agent_id: String, model: String) -
     state.core.set_agent_model(agent_id, model).map_err(|e| e.to_string())
 }
 
+/// An agent's face («cara»): colour, accessory, eyes and the accessory's colour.
+#[tauri::command]
+fn agent_look(state: State<'_, AppCore>, agent_id: String) -> buddy_core::AgentLook {
+    state.core.agent_look(agent_id)
+}
+
+#[tauri::command]
+fn set_agent_look(state: State<'_, AppCore>, agent_id: String, look: buddy_core::AgentLook) -> Result<(), String> {
+    state.core.set_agent_look(agent_id, look).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reset_agent_look(state: State<'_, AppCore>, agent_id: String) -> Result<(), String> {
+    state.core.reset_agent_look(agent_id).map_err(|e| e.to_string())
+}
+
+/// The agent wearing its face (the same sprite format as `sprite`, with its avatar square).
+#[tauri::command]
+fn agent_sprite(state: State<'_, AppCore>, agent_id: String) -> Result<Sprite, String> {
+    state.core.agent_sprite(agent_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn look_preview(state: State<'_, AppCore>, look: buddy_core::AgentLook) -> Result<Sprite, String> {
+    state.core.look_preview(look).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn look_options(state: State<'_, AppCore>) -> buddy_core::LookOptions {
+    state.core.look_options()
+}
+
 /// Opens a web page in the browser: http and https only, nothing else ever leaves through here.
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
@@ -1125,6 +1186,42 @@ fn spotify_disconnect(state: State<'_, AppCore>) -> Result<(), String> {
 #[tauri::command]
 fn spotify_client_id(state: State<'_, AppCore>) -> String {
     state.core.spotify_client_id()
+}
+
+/// Telegram for Settings: connected bot, paired chat and the code to send as `/start <code>`.
+#[tauri::command]
+fn telegram_status(state: State<'_, AppCore>) -> buddy_core::TelegramStatus {
+    state.core.telegram_status()
+}
+
+/// Checks the bot token with Telegram, then keeps it only in Credential Manager (off the UI thread).
+#[tauri::command]
+async fn telegram_connect(app: AppHandle, token: String) -> Result<(), String> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.telegram_connect(token))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn telegram_disconnect(state: State<'_, AppCore>) -> Result<(), String> {
+    state.core.telegram_disconnect().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn telegram_new_pairing_code(state: State<'_, AppCore>) -> Result<String, String> {
+    state.core.telegram_new_pairing_code().map_err(|e| e.to_string())
+}
+
+/// Sends text to the paired chat (the user's click: «Enviar prueba», later PARLEY's picks).
+#[tauri::command]
+async fn telegram_send(app: AppHandle, text: String) -> Result<(), String> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.telegram_send(text))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

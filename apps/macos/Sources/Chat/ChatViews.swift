@@ -294,6 +294,7 @@ private struct MessageRow: View {
                 } else if !message.content.isEmpty || !message.sources.isEmpty {
                     AssistantBubble(message: message)
                 }
+                ForEach(message.files, id: \.self) { DocumentCard(path: $0) }
                 if !message.isStreaming && !message.content.isEmpty {
                     MessageActions(text: message.content, provider: message.provider, canRegenerate: isLastAnswer && canRegenerate,
                                    onRegenerate: onRegenerate)
@@ -313,7 +314,7 @@ private struct AuthorLine: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            AvatarView(size: 18)
+            AgentAvatarView(agentId: Avatar.agentId(named: name), size: 18)
                 .tip(name == "Buddy" ? "Buddy" : "\(name), del equipo de Buddy")
             Text(name)
                 .font(.caption.weight(.semibold))
@@ -404,6 +405,70 @@ struct BubbleView: View {
 }
 
 /// A file as a small chip: its icon and name; with a remove button while it waits in the composer.
+/// A document an agent made: its icon (the one Finder shows), its name and kind; a click opens it in its app.
+struct DocumentCard: View {
+    let path: String
+    @State private var hovering = false
+
+    private var url: URL { URL(fileURLWithPath: path) }
+    private var exists: Bool { FileManager.default.fileExists(atPath: path) }
+
+    private var kind: String {
+        switch url.pathExtension.lowercased() {
+        case "docx", "doc": return "Documento de Word"
+        case "xlsx", "xls": return "Hoja de Excel"
+        case "pptx", "ppt": return "Presentación de PowerPoint"
+        case "pdf": return "PDF"
+        default: return url.pathExtension.uppercased()
+        }
+    }
+
+    private var opener: String? {
+        NSWorkspace.shared.urlForApplication(toOpen: url).map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+    }
+
+    var body: some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            HStack(spacing: 10) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(url.deletingPathExtension().lastPathComponent)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(exists ? kind : "Ya no está en la carpeta")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "arrow.up.forward.app")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(hovering ? .primary : .secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: 320, alignment: .leading)
+            .background(hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.quinary), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!exists)
+        .onHover { hovering = $0 }
+        .tip(opener.map { "Abrir en \($0)" } ?? "Abrir")
+        .contextMenu {
+            Button("Abrir") { NSWorkspace.shared.open(url) }
+            Button("Mostrar en el Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+        .accessibilityLabel("\(kind): \(url.lastPathComponent)")
+        .accessibilityHint("Abre el archivo")
+    }
+}
+
 struct FileChip: View {
     let path: String
     var compact = false

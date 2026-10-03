@@ -53,6 +53,8 @@ final class NotchModel {
     var briefing: [BriefingItem] = []
     /// Buddy is answering in the chat (the ears show it while the chat is closed).
     var buddyBusy = false
+    /// What Buddy's turn is doing (`activity::of_tool` in the core): the ear shows its icon, the tooltip its label.
+    var buddyActivity: (kind: String, label: String)?
     /// What a player says is playing, from its own change notifications (no polling): for the ears.
     var earTrack: EarTrack?
 

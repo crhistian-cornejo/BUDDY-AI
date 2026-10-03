@@ -20,6 +20,7 @@ interface UsageWindow { label: string; usedPct: number; resetsAt: number | null 
 interface ProviderUsage { provider: string; name: string; windows: UsageWindow[] }
 interface TokenReport { feature: string; provider: string; turns: number; input: number; output: number; cached: number; costUsd: number }
 interface BriefingItem { topic: string; text: string; url: string | null; at: number }
+interface TelegramStatus { connected: boolean; paired: boolean; botName: string; pairingCode: string; error: string }
 
 interface Tab {
   id: string;
@@ -206,7 +207,7 @@ async function renderConnections(view: HTMLElement) {
   const message = h("p", { class: "muted small", role: "status" });
   const { el, card } = section("Avisos de tus sesiones");
   const dialog = h("dialog", { class: "confirm", "aria-labelledby": "confirm-title" });
-  view.append(header("Conexiones"), el, message, dialog, renderSpotify());
+  view.append(header("Conexiones"), el, message, dialog, renderSpotify(), renderTelegram());
 
   async function draw() {
     const status = await invoke<HookStatusInfo[]>("hooks_status").catch(() => [] as HookStatusInfo[]);
@@ -299,6 +300,82 @@ function renderSpotify(): HTMLElement {
   return el;
 }
 
+/** Telegram: the user's own bot (token only in Credential Manager), paired with one chat by `/start <code>`.
+ *  PARLEY answers that chat; nothing else is heard. The core does all of it. */
+function renderTelegram(): HTMLElement {
+  const { el, card } = section("Telegram");
+  el.append(h("p", { class: "muted small", text: "El token se guarda solo en el Administrador de credenciales. Buddy atiende únicamente al chat vinculado, y desde Telegram PARLEY no ejecuta comandos ni cambia archivos." }));
+  let note = "";
+
+  async function draw() {
+    const status = await invoke<TelegramStatus>("telegram_status").catch(() => null);
+    if (!status) { card.replaceChildren(emptyRow("No se pudo leer el estado de Telegram.")); return; }
+    const problem = status.error ? h("p", { class: "error small", role: "alert", text: status.error }) : null;
+    const disconnect = button("Desconectar", () => void invoke("telegram_disconnect").then(() => { note = ""; return draw(); }));
+    const newCode = (label: string) => button(label, () => void invoke("telegram_new_pairing_code").then(() => { note = ""; return draw(); }));
+    if (!status.connected) {
+      const token = h("input", { class: "text", type: "password", placeholder: "Token del bot (123456789:AA…)", "aria-label": "Token del bot", autocomplete: "off", spellcheck: "false" });
+      const error = h("p", { class: "error small", role: "alert" });
+      const connect = button("Conectar", async () => {
+        connect.disabled = true;
+        error.textContent = "";
+        try {
+          await invoke("telegram_connect", { token: token.value });
+          await draw();
+        } catch (e) {
+          error.textContent = errorText(e);
+          connect.disabled = false;
+        }
+      }, "primary");
+      card.replaceChildren(
+        h("div", { class: "field" },
+          h("p", { class: "muted small", text: "Para hablar con PARLEY desde Telegram y recibir ahí sus picks:" }),
+          h("p", { class: "muted small", text: "1. Abre @BotFather, envíale /newbot y elige un nombre para tu bot." }),
+          h("p", { class: "muted small", text: "2. Copia el token que te da y pégalo aquí." }),
+          h("div", {}, button("Abrir @BotFather", () => void invoke("open_url", { url: "https://t.me/BotFather" }))),
+          token,
+          h("div", { class: "actions" }, error, connect)),
+        ...(problem ? [problem] : []));
+      return;
+    }
+    if (!status.paired) {
+      const bot = status.botName.replace(/^@/, "");
+      const link = `https://t.me/${encodeURIComponent(bot)}?start=${encodeURIComponent(status.pairingCode)}`;
+      card.replaceChildren(
+        row(`Conectado con ${status.botName}`, "Falta vincular tu chat", disconnect),
+        h("div", { class: "field" },
+          h("p", { class: "muted small", text: `Envía este mensaje a ${status.botName} desde tu Telegram:` }),
+          h("p", { class: "pairing-code", text: `/start ${status.pairingCode}` }),
+          h("p", { class: "muted small", text: "El código vale 15 minutos. Solo el chat que lo envíe podrá hablar con Buddy." }),
+          h("div", { class: "actions" },
+            button(`Abrir ${status.botName} en Telegram`, () => void invoke("open_url", { url: link })),
+            newCode("Nuevo código"))),
+        ...(problem ? [problem] : []));
+      return;
+    }
+    const test = button("Enviar prueba", async () => {
+      test.disabled = true;
+      try {
+        await invoke("telegram_send", { text: "¡Hola! Soy Buddy. Así te llegarán los mensajes y los picks de PARLEY." });
+        note = "Enviado. Míralo en Telegram.";
+      } catch (e) {
+        note = errorText(e);
+      }
+      await draw();
+    });
+    card.replaceChildren(
+      row(`Conectado con ${status.botName}`, "Tu chat está vinculado: lo que le escribas lo responde PARLEY.", test, disconnect),
+      h("div", { class: "field" }, h("div", { class: "actions" }, h("p", { class: "muted small", role: "status", text: note }), newCode("Cambiar de chat"))),
+      ...(problem ? [problem] : []));
+  }
+
+  onCoreEvent = (e) => {
+    if (e.type === "telegramChanged") void draw();
+  };
+  void draw();
+  return el;
+}
+
 // MARK: Uso
 
 async function renderUsage(view: HTMLElement) {
@@ -339,7 +416,7 @@ async function renderUsage(view: HTMLElement) {
         text: `${k(r.input + r.cached)} entrada · ${k(r.output)} salida`,
         title: r.costUsd > 0 ? `Equivaldría a ${r.costUsd.toFixed(2)} US$ en la API (tu plan no paga extra)` : undefined,
       });
-      return row(r.feature, `${r.turns} turnos · ${r.provider === "codex" ? "Codex" : "Claude"}`, figures);
+      return row(r.feature, `${r.turns} turnos · ${r.provider === "codex" ? "Codex" : r.provider === "antigravity" ? "Gemini" : "Claude"}`, figures);
     }) : [emptyRow("Todavía no hay turnos medidos.")]));
   }
 

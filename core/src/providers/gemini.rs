@@ -1,0 +1,665 @@
+//! Gemini through the user's Google AI Pro subscription: the Antigravity CLI (`agy`), Google's successor to the
+//! Gemini CLI (whose Google-account sign-in stopped serving AI Pro on 2026-06-18). One process per turn:
+//! `agy --input-format stream-json --output-format stream-json`, one user message on stdin, then stdin closes and the
+//! CLI answers that turn as NDJSON (`init`, `step_update`…, `result`) and exits. The conversation continues next turn
+//! with `--conversation <id>`.
+//!
+//! Permissions live in the agent workspace's `.agents/` folder (project-level settings the CLI reads): shell commands
+//! are always denied (the CLI cannot route an approval to Buddy's card, and headless mode would soft-deny them
+//! anyway), the web is allowed or denied by the agent's permission, read-only folders get a `write_file` deny, and
+//! Buddy's own MCP server (`.agents/mcp_config.json`) carries the Office, music, screen and skills tools.
+//!
+//! Everything that depends on the CLI's spelling (flags, file names, rule syntax, tool names) is in this file, so a
+//! change in `agy` (or going back to another Gemini CLI) is a change here only.
+
+use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::{Value, json};
+
+use super::process;
+use super::{Cancel, Failure, FailureKind, Provider, ProviderId, TokenCount, TurnEvent, TurnRequest};
+
+/// The CLI's command name.
+pub const EXE: &str = "agy";
+/// How long one turn may run before the CLI gives up (its default is 5 minutes, short for research turns).
+const PRINT_TIMEOUT: &str = "20m";
+/// The folder inside the workspace with the CLI's project-level settings.
+const CONFIG_DIR: &str = ".agents";
+
+pub struct Gemini {
+    exe: Option<PathBuf>,
+}
+
+impl Gemini {
+    pub fn new() -> Self {
+        Self { exe: locate() }
+    }
+
+    /// The command line. The prompt never goes here (it travels on stdin), nor do secrets.
+    pub fn arguments(request: &TurnRequest) -> Vec<String> {
+        let mut args: Vec<String> = ["--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", PRINT_TIMEOUT]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for dir in workspace_dirs(request) {
+            args.extend(["--add-dir".into(), dir]);
+        }
+        if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
+            args.extend(["--model".into(), model.clone()]);
+        }
+        if let Some(effort) = effort(request) {
+            args.extend(["--effort".into(), effort.into()]);
+        }
+        if let Some(id) = request.resume.as_ref().filter(|r| !r.is_empty()) {
+            args.extend(["--conversation".into(), id.clone()]);
+        }
+        args
+    }
+}
+
+impl Default for Gemini {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Finds `agy`, skipping the Antigravity IDE's old launcher of the same name (it opens the editor instead).
+fn locate() -> Option<PathBuf> {
+    let usable = |p: &PathBuf| !is_ide_launcher(p);
+    process::locate(EXE).filter(usable).or_else(|| {
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)?;
+        let name = if cfg!(windows) { format!("{EXE}.exe") } else { EXE.to_string() };
+        Some(home.join(".local/bin").join(name)).filter(|p| p.is_file() && usable(p))
+    })
+}
+
+/// The IDE's `agy` lives inside the editor (`Antigravity.app/Contents/Resources/app/bin`, `~/.antigravity/…/bin`).
+pub fn is_ide_launcher(path: &Path) -> bool {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    [path, real.as_path()].iter().any(|p| {
+        let text = p.to_string_lossy().replace('\\', "/").to_lowercase();
+        text.contains("/resources/app/bin/") || text.contains("/.antigravity/antigravity/bin/")
+    })
+}
+
+/// The folders this turn works in: its own workspace, the attachments' folders and the authorized folders.
+fn workspace_dirs(request: &TurnRequest) -> Vec<String> {
+    let mut dirs: Vec<String> = request
+        .attachments
+        .iter()
+        .filter_map(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
+        .chain(request.folders.iter().map(|f| f.path.clone()))
+        .filter(|d| !d.is_empty())
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    let own = request.workspace.to_string_lossy().into_owned();
+    if !own.is_empty() {
+        dirs.retain(|d| *d != own);
+        dirs.insert(0, own);
+    }
+    dirs
+}
+
+/// The router's effort, as the CLI takes it. Gemini Pro thinks only low or high.
+fn effort(request: &TurnRequest) -> Option<&'static str> {
+    let pro = request.model.as_deref().is_some_and(|m| m.contains("-pro"));
+    match request.effort.as_deref()? {
+        "low" => Some("low"),
+        "medium" if pro => Some("high"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        _ => None,
+    }
+}
+
+/// A rule's folder: the path with one trailing separator (the CLI matches by prefix).
+fn rule_dir(dir: &str) -> String {
+    format!("{}/", dir.trim_end_matches(['/', '\\']))
+}
+
+/// `.agents/settings.json`: what the CLI may do without asking (deny wins over allow).
+pub fn settings(request: &TurnRequest) -> Value {
+    // Never a shell: Buddy cannot approve it from here (the CLI has no approval channel back to the app).
+    let mut deny = vec!["command(*)".to_string()];
+    let mut allow = Vec::new();
+    if request.no_web {
+        deny.extend(["search_web(*)", "read_url(*)", "execute_url(*)"].map(String::from));
+    } else {
+        allow.extend(["search_web(*)", "read_url(*)"].map(String::from));
+    }
+    // Attachments and read-only folders are readable, never writable.
+    let mut read_only: Vec<String> =
+        request.attachments.iter().filter_map(|p| p.parent().map(|d| d.to_string_lossy().into_owned())).collect();
+    read_only.extend(request.folders.iter().filter(|f| !f.can_edit).map(|f| f.path.clone()));
+    read_only.sort();
+    read_only.dedup();
+    deny.extend(read_only.iter().filter(|d| !d.is_empty()).map(|d| format!("write_file({})", rule_dir(d))));
+    allow.extend(request.folders.iter().filter(|f| f.can_edit).map(|f| format!("write_file({})", rule_dir(&f.path))));
+    if request.office.is_some() {
+        allow.push("mcp(buddy/*)".into());
+    }
+    json!({ "permissions": { "allow": allow, "deny": deny } })
+}
+
+/// `.agents/mcp_config.json`: only Buddy's own server. Its secret (the music tools' token) travels in the CLI's
+/// environment, never in this file; the data folder is not secret.
+pub fn mcp_config(request: &TurnRequest) -> Option<Value> {
+    let office = request.office.as_ref()?;
+    let mut server = office.server();
+    if let Some(link) = &office.link {
+        server["env"] = json!({ "BUDDY_DATA_DIR": link.data_dir });
+    }
+    Some(json!({ "mcpServers": { "buddy": server } }))
+}
+
+/// Writes this turn's `.agents/` files into the workspace (and removes a stale MCP config).
+fn prepare(request: &TurnRequest) -> std::io::Result<()> {
+    let dir = request.workspace.join(CONFIG_DIR);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("settings.json"), serde_json::to_vec_pretty(&settings(request))?)?;
+    let mcp = dir.join("mcp_config.json");
+    match mcp_config(request) {
+        Some(config) => std::fs::write(mcp, serde_json::to_vec_pretty(&config)?)?,
+        None => {
+            if mcp.exists() {
+                std::fs::remove_file(mcp)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The text of the user message. The CLI has no system-prompt flag, so Buddy's instructions open a new
+/// conversation; a resumed one already holds them.
+pub fn prompt(request: &TurnRequest) -> String {
+    if request.system.trim().is_empty() || request.resume.as_ref().is_some_and(|r| !r.is_empty()) {
+        return request.prompt.clone();
+    }
+    format!("[Instrucciones de Buddy para esta conversación]\n{}\n\n[Mensaje del usuario]\n{}", request.system.trim(), request.prompt)
+}
+
+/// The stdin line for one turn (text blocks only: the CLI's stream-json input takes no images).
+pub fn user_line(request: &TurnRequest) -> String {
+    json!({ "event": "user", "message": { "content": prompt(request) } }).to_string()
+}
+
+/// A failure from the CLI's words: quota and credits are a limit (the next provider takes the turn), sign-in
+/// problems are auth, the rest as usual.
+pub fn failure(text: &str) -> Failure {
+    let t = text.to_lowercase();
+    let kind = if ["resource_exhausted", "quota", "out of credits", "ai credits", "insufficient credits"].iter().any(|k| t.contains(k)) {
+        FailureKind::Limit
+    } else if ["keyring", "not signed in", "signed out", "unauthenticated", "credentials", "oauth", "login", "/logout"]
+        .iter()
+        .any(|k| t.contains(k))
+    {
+        FailureKind::Auth
+    } else if ["model_capacity_exhausted", "unavailable"].iter().any(|k| t.contains(k)) {
+        FailureKind::Other
+    } else {
+        super::classify(text)
+    };
+    Failure { kind, message: text.trim().to_string() }
+}
+
+impl Provider for Gemini {
+    fn id(&self) -> ProviderId {
+        ProviderId::Antigravity
+    }
+
+    fn installed(&self) -> bool {
+        self.exe.is_some()
+    }
+
+    fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
+        let Some(exe) = &self.exe else {
+            emit(TurnEvent::Failed(Failure { kind: FailureKind::Missing, message: format!("{EXE} no está instalado") }));
+            return;
+        };
+        if let Err(e) = prepare(request) {
+            return emit(TurnEvent::Failed(Failure::new(format!("No se pudo preparar Gemini: {e}"))));
+        }
+        let mut cmd = process::command(exe);
+        cmd.args(Self::arguments(request)).current_dir(&request.workspace);
+        cmd.env(super::OWN_RUN_ENV, "1");
+        for (key, value) in request.office.iter().flat_map(|o| o.env()) {
+            cmd.env(key, value);
+        }
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return emit(TurnEvent::Failed(Failure::new(format!("No se pudo iniciar Gemini: {e}")))),
+        };
+        // One message, then stdin closes: the CLI answers this turn and exits.
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = writeln!(stdin, "{}", user_line(request)).and_then(|_| stdin.flush());
+        }
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            let _ = child.kill();
+            return emit(TurnEvent::Failed(Failure::new("No se pudo hablar con Gemini.")));
+        };
+        let (tx, lines) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let err_text = Arc::new(Mutex::new(String::new()));
+        let sink = err_text.clone();
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = stderr.take(32_768).read_to_string(&mut buf);
+            *sink.lock().unwrap() = buf;
+        });
+
+        let mut parser = StreamParser::default();
+        loop {
+            if cancel.is_cancelled() {
+                // Stopped by the user: ask the CLI to stop, and make sure it goes away.
+                process::interrupt(&mut child);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(3));
+                    let _ = child.kill();
+                    let _ = child.wait();
+                });
+                return emit(TurnEvent::Done);
+            }
+            match lines.recv_timeout(Duration::from_millis(100)) {
+                Ok(line) => {
+                    for event in parser.feed(&line) {
+                        let end = matches!(event, TurnEvent::Done | TurnEvent::Failed(_));
+                        emit(event);
+                        if end {
+                            std::thread::spawn(move || {
+                                let _ = child.wait();
+                            });
+                            return;
+                        }
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        // The CLI ended without a result: say what it printed, if anything.
+        let status = child.wait().ok();
+        // The stderr reader finishes right after the process.
+        std::thread::sleep(Duration::from_millis(50));
+        let detail = err_text.lock().unwrap().trim().to_string();
+        emit(match (status.is_some_and(|s| s.success()), detail.is_empty()) {
+            (_, false) => TurnEvent::Failed(failure(&detail)),
+            (true, true) if parser.wrote_text => TurnEvent::Done,
+            _ => TurnEvent::Failed(Failure::new("Gemini terminó sin responder.")),
+        });
+    }
+}
+
+/// Turns the CLI's `--output-format stream-json` lines into turn events. Thinking and tool arguments are never
+/// shown; a subagent's steps (another conversation id) are not the answer.
+#[derive(Default)]
+pub struct StreamParser {
+    conversation: Option<String>,
+    model: Option<String>,
+    wrote_text: bool,
+    /// A tool ran after some text: the next text starts a new paragraph.
+    break_before_text: bool,
+    /// Tool steps already announced, by step index.
+    announced: HashSet<i64>,
+}
+
+impl StreamParser {
+    pub fn feed(&mut self, line: &str) -> Vec<TurnEvent> {
+        let Ok(obj) = serde_json::from_str::<Value>(line) else {
+            return vec![];
+        };
+        match obj["event"].as_str() {
+            Some("init") => {
+                self.model = obj["init"]["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string);
+                match obj["conversation_id"].as_str().filter(|id| !id.is_empty()) {
+                    Some(id) => {
+                        self.conversation = Some(id.to_string());
+                        vec![TurnEvent::Session(id.into())]
+                    }
+                    None => vec![],
+                }
+            }
+            Some("step_update") => self.step(&obj["step_update"]),
+            Some("result") => self.result(&obj["result"]),
+            _ => match obj["error"].as_str().or(obj["error"]["message"].as_str()) {
+                Some(message) => vec![TurnEvent::Failed(failure(message))],
+                None => vec![],
+            },
+        }
+    }
+
+    fn step(&mut self, step: &Value) -> Vec<TurnEvent> {
+        if let (Some(mine), Some(theirs)) = (&self.conversation, step["conversation_id"].as_str())
+            && mine != theirs
+        {
+            return vec![];
+        }
+        match step["step_type"].as_str() {
+            Some("agent_response") => match step["text_delta"].as_str() {
+                Some(text) if !text.is_empty() => {
+                    let text = if std::mem::take(&mut self.break_before_text) && self.wrote_text {
+                        format!("\n\n{text}")
+                    } else {
+                        text.to_string()
+                    };
+                    self.wrote_text = true;
+                    vec![TurnEvent::Delta(text)]
+                }
+                _ => vec![],
+            },
+            Some("tool") => {
+                let info = &step["tool_info"];
+                let raw = step["tool_name"].as_str().or(info["name"].as_str()).unwrap_or("");
+                let params = &info["parameters"];
+                let mut events = vec![];
+                let index = step["step_index"].as_i64().unwrap_or(-1);
+                if self.announced.insert(index) || index < 0 {
+                    self.break_before_text = true;
+                    let (name, summary) = tool_status(raw, params);
+                    events.push(TurnEvent::Tool { name, summary });
+                }
+                if step["state"] == "DONE" {
+                    events.extend(sources(raw, params, &info["output"]).into_iter().map(|(title, url)| TurnEvent::Source { title, url }));
+                }
+                events
+            }
+            _ => vec![],
+        }
+    }
+
+    fn result(&mut self, result: &Value) -> Vec<TurnEvent> {
+        let mut events = vec![];
+        if let Some(usage) = result.get("usage").filter(|u| u.is_object()) {
+            let n = |k: &str| usage[k].as_i64().unwrap_or(0);
+            let cached = n("cache_read_tokens");
+            events.push(TurnEvent::Tokens(TokenCount {
+                input: (n("input_tokens") - cached).max(0),
+                output: n("output_tokens"),
+                cached,
+                cost_usd: None,
+                model: self.model.clone(),
+            }));
+        }
+        let response = result["response"].as_str().unwrap_or("");
+        match result["status"].as_str() {
+            Some("SUCCESS" | "CANCELED" | "INTERRUPTED" | "WAITING") => {
+                if !self.wrote_text && !response.trim().is_empty() {
+                    self.wrote_text = true;
+                    events.push(TurnEvent::Delta(response.to_string()));
+                }
+                events.push(TurnEvent::Done);
+            }
+            _ => {
+                let message = result["error"].as_str().filter(|e| !e.is_empty()).unwrap_or("Gemini no pudo completar la respuesta.");
+                events.push(TurnEvent::Failed(failure(message)));
+            }
+        }
+        events
+    }
+}
+
+/// The CLI's tool as Buddy's apps show it («Buscando: …», «Leyendo una página…», «Leyendo el archivo…»).
+fn tool_status(raw: &str, params: &Value) -> (String, String) {
+    let detail = |keys: &[&str]| -> String {
+        keys.iter().find_map(|k| params[*k].as_str()).unwrap_or("").chars().take(160).collect()
+    };
+    match raw {
+        "search_web" => ("WebSearch".into(), detail(&["query", "Query", "SearchQuery"])),
+        "read_url" | "read_url_content" | "execute_url" => ("WebFetch".into(), detail(&["url", "Url", "URL"])),
+        "read_file" | "view_file" | "list_dir" | "grep_search" | "find_by_name" => ("Read".into(), String::new()),
+        other => (other.to_string(), String::new()),
+    }
+}
+
+/// Pages a finished tool step read or found: the URL it read, or the links a search returned.
+fn sources(raw: &str, params: &Value, output: &Value) -> Vec<(String, String)> {
+    let web = |u: &str| u.starts_with("https://") || u.starts_with("http://");
+    match raw {
+        "read_url" | "read_url_content" => {
+            ["url", "Url", "URL"].iter().find_map(|k| params[*k].as_str()).filter(|u| web(u)).map(|u| vec![(String::new(), u.to_string())]).unwrap_or_default()
+        }
+        "search_web" => {
+            let text = match output {
+                Value::String(s) => s.clone(),
+                Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            links(&text)
+        }
+        _ => vec![],
+    }
+}
+
+/// Up to 8 web links in a tool's text: Markdown `[title](url)` first, else bare URLs.
+pub fn links(text: &str) -> Vec<(String, String)> {
+    let mut seen = HashSet::new();
+    let mut found = vec![];
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find("](") else { break };
+        let title = &after[..close];
+        let tail = &after[close + 2..];
+        let Some(end) = tail.find(')') else { break };
+        let url = tail[..end].trim();
+        if (url.starts_with("https://") || url.starts_with("http://")) && !title.contains('[') && seen.insert(url.to_string()) {
+            found.push((title.trim().to_string(), url.to_string()));
+        }
+        rest = &tail[end..];
+    }
+    if found.is_empty() {
+        for word in text.split(|c: char| c.is_whitespace() || c == '"' || c == '<' || c == '>') {
+            let url = word.trim_end_matches(['.', ',', ';', ')', ']', '}']);
+            if (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 10 && seen.insert(url.to_string()) {
+                found.push((String::new(), url.to_string()));
+            }
+        }
+    }
+    found.truncate(8);
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::folders::AuthorizedFolder;
+
+    fn feed_all(lines: &[&str]) -> Vec<TurnEvent> {
+        let mut p = StreamParser::default();
+        lines.iter().flat_map(|l| p.feed(l)).collect()
+    }
+
+    /// A turn as the CLI's headless docs show it: init, the user's step, the answer in pieces, the result.
+    const TURN: [&str; 6] = [
+        r#"{"event":"init","conversation_id":"c-1","init":{"cwd":"/d/agentes/buddy","tools":["search_web","read_url"],"permission_mode":"request-review","model":"gemini-3.8-flash"}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":0,"state":"DONE","step_type":"user_input"}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"¡Hola"}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"! ¿Qué tal?"}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":1,"state":"DONE","step_type":"agent_response","duration_seconds":1.5}}"#,
+        r#"{"event":"result","result":{"conversation_id":"c-1","status":"SUCCESS","response":"¡Hola! ¿Qué tal?","duration_seconds":6.88,"num_turns":1,"usage":{"input_tokens":10415,"output_tokens":657,"thinking_tokens":616,"cache_read_tokens":8113,"total_tokens":11072}}}"#,
+    ];
+
+    #[test]
+    fn streams_the_answer_with_its_conversation_and_tokens() {
+        let events = feed_all(&TURN);
+        assert_eq!(events[0], TurnEvent::Session("c-1".into()));
+        assert_eq!(events[1], TurnEvent::Delta("¡Hola".into()));
+        assert_eq!(events[2], TurnEvent::Delta("! ¿Qué tal?".into()));
+        assert_eq!(
+            events[3],
+            TurnEvent::Tokens(TokenCount { input: 2302, output: 657, cached: 8113, cost_usd: None, model: Some("gemini-3.8-flash".into()) })
+        );
+        assert_eq!(events[4], TurnEvent::Done);
+        assert_eq!(events.len(), 5, "the result's full text is not repeated");
+    }
+
+    #[test]
+    fn a_result_without_deltas_brings_the_whole_text() {
+        let events = feed_all(&[r#"{"event":"result","result":{"status":"SUCCESS","response":"Entero"}}"#]);
+        assert_eq!(events, vec![TurnEvent::Delta("Entero".into()), TurnEvent::Done]);
+    }
+
+    #[test]
+    fn web_tools_show_as_buddys_and_bring_sources() {
+        let events = feed_all(&[
+            TURN[0],
+            r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Busco."}}"#,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"search_web","tool_info":{"name":"search_web","parameters":{"query":"clima Lima"}}}}"#,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":2,"state":"DONE","step_type":"tool","tool_name":"search_web","tool_info":{"name":"search_web","parameters":{"query":"clima Lima"},"output":"1. [SENAMHI](https://senamhi.gob.pe) pronóstico\n2. [x](javascript:alert(1))"}}}"#,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":3,"state":"DONE","step_type":"tool","tool_name":"read_url","tool_info":{"name":"read_url","parameters":{"Url":"https://weather.com/lima"},"output":"..."}}}"#,
+            r#"{"event":"step_update","step_update":{"conversation_id":"c-1","step_index":4,"state":"ACTIVE","step_type":"agent_response","text_delta":"Listo"}}"#,
+        ]);
+        assert_eq!(events[2], TurnEvent::Tool { name: "WebSearch".into(), summary: "clima Lima".into() });
+        assert_eq!(events[3], TurnEvent::Source { title: "SENAMHI".into(), url: "https://senamhi.gob.pe".into() });
+        assert_eq!(events[4], TurnEvent::Tool { name: "WebFetch".into(), summary: "https://weather.com/lima".into() });
+        assert_eq!(events[5], TurnEvent::Source { title: String::new(), url: "https://weather.com/lima".into() });
+        assert_eq!(events[6], TurnEvent::Delta("\n\nListo".into()), "text after a tool starts a new paragraph");
+        assert_eq!(events.len(), 7, "a tool is announced once and a non-web link is dropped");
+    }
+
+    #[test]
+    fn a_subagents_steps_are_not_the_answer() {
+        let events = feed_all(&[
+            TURN[0],
+            r#"{"event":"step_update","step_update":{"conversation_id":"sub-9","step_index":0,"state":"ACTIVE","step_type":"agent_response","text_delta":"notas internas"}}"#,
+        ]);
+        assert_eq!(events, vec![TurnEvent::Session("c-1".into())]);
+    }
+
+    #[test]
+    fn failures_are_classified_and_quota_moves_to_the_next_provider() {
+        let events = feed_all(&[r#"{"event":"result","result":{"status":"ERROR","error":"RESOURCE_EXHAUSTED: Individual quota reached. Resets in 3h."}}"#]);
+        assert!(matches!(&events[0], TurnEvent::Failed(f) if f.kind == FailureKind::Limit && f.is_no_usage()), "{events:?}");
+        assert_eq!(failure("You are not signed in. Run agy to sign in.").kind, FailureKind::Auth);
+        assert_eq!(failure("keyring is locked").kind, FailureKind::Auth);
+        let capacity = failure("MODEL_CAPACITY_EXHAUSTED: try again later");
+        assert_eq!(capacity.kind, FailureKind::Other);
+        assert!(!capacity.is_no_usage(), "busy servers are not an empty plan");
+        assert_eq!(failure("Your AI credits ran out").kind, FailureKind::Limit);
+        let events = feed_all(&[r#"{"event":"result","result":{"status":"INVALID"}}"#]);
+        assert!(matches!(&events[0], TurnEvent::Failed(f) if f.kind == FailureKind::Other));
+        assert_eq!(feed_all(&["no es json", r#"{"event":"result","result":{"status":"CANCELED"}}"#]), vec![TurnEvent::Done]);
+    }
+
+    #[test]
+    fn arguments_keep_the_prompt_out_and_resume() {
+        let args = Gemini::arguments(&TurnRequest {
+            prompt: "hola".into(),
+            system: "Eres Buddy".into(),
+            workspace: "/d/agentes/buddy".into(),
+            resume: Some("c-1".into()),
+            model: Some("gemini-3.1-pro".into()),
+            effort: Some("medium".into()),
+            ..Default::default()
+        });
+        let joined = args.join(" ");
+        assert!(joined.starts_with("--input-format stream-json --output-format stream-json"), "{joined}");
+        assert!(joined.contains("--add-dir /d/agentes/buddy") && joined.contains("--conversation c-1"));
+        assert!(joined.contains("--model gemini-3.1-pro --effort high"), "Pro has no medium: {joined}");
+        assert!(!joined.contains("hola") && !joined.contains("Eres Buddy"), "prompt and instructions go on stdin");
+        assert!(!joined.contains("--dangerously-skip-permissions") && !joined.contains(" -p"), "{joined}");
+        let plain = Gemini::arguments(&TurnRequest::default()).join(" ");
+        assert!(!plain.contains("--model") && !plain.contains("--conversation") && !plain.contains("--effort"));
+    }
+
+    #[test]
+    fn instructions_open_a_new_conversation_only() {
+        let fresh = TurnRequest { prompt: "hola".into(), system: "Eres Buddy".into(), ..Default::default() };
+        let line: Value = serde_json::from_str(&user_line(&fresh)).unwrap();
+        assert_eq!(line["event"], "user");
+        let text = line["message"]["content"].as_str().unwrap();
+        assert!(text.starts_with("[Instrucciones de Buddy") && text.contains("Eres Buddy") && text.ends_with("hola"));
+        let resumed = TurnRequest { resume: Some("c-1".into()), ..fresh };
+        assert_eq!(prompt(&resumed), "hola");
+    }
+
+    #[test]
+    fn permissions_map_to_project_rules() {
+        let request = TurnRequest {
+            workspace: "/d/agentes/buddy".into(),
+            attachments: vec!["/d/adjuntos/c1/foto.png".into(), "/d/adjuntos/c1/notas.txt".into()],
+            folders: vec![
+                AuthorizedFolder { path: "/u/docs".into(), can_edit: false },
+                AuthorizedFolder { path: "/u/proyecto/".into(), can_edit: true },
+            ],
+            ..Default::default()
+        };
+        let s = settings(&request);
+        let list = |k: &str| s["permissions"][k].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let (allow, deny) = (list("allow"), list("deny"));
+        assert!(deny.contains(&"command(*)".into()), "never a shell");
+        assert!(allow.contains(&"search_web(*)".into()) && allow.contains(&"read_url(*)".into()));
+        assert!(deny.contains(&"write_file(/d/adjuntos/c1/)".into()) && deny.contains(&"write_file(/u/docs/)".into()));
+        assert!(allow.contains(&"write_file(/u/proyecto/)".into()) && !deny.iter().any(|d| d.contains("proyecto")));
+        assert!(!allow.iter().any(|a| a.starts_with("mcp(")), "no MCP without Buddy's tools");
+        let args = Gemini::arguments(&request).join(" ");
+        assert!(args.contains("--add-dir /d/agentes/buddy --add-dir /d/adjuntos/c1 --add-dir /u/docs --add-dir /u/proyecto/"), "{args}");
+
+        let offline = settings(&TurnRequest { no_web: true, ..Default::default() });
+        let deny = offline["permissions"]["deny"].to_string();
+        assert!(deny.contains("search_web(*)") && deny.contains("read_url(*)") && deny.contains("command(*)"));
+        assert!(!offline["permissions"]["allow"].to_string().contains("search_web"));
+    }
+
+    #[test]
+    fn office_tools_come_from_buddys_own_mcp_server_without_the_secret() {
+        let request = TurnRequest {
+            office: Some(super::super::Office {
+                relay: "/d/bin/buddy-hook".into(),
+                dir: "/d/documentos".into(),
+                skills: "/d/skills".into(),
+                link: Some(super::super::Link { token: "secreto".into(), data_dir: "/d".into() }),
+                read: vec!["/d/adjuntos".into()],
+            }),
+            ..Default::default()
+        };
+        let config = mcp_config(&request).unwrap().to_string();
+        assert!(config.contains("\"buddy\"") && config.contains("--mcp") && config.contains("/d/documentos"), "{config}");
+        assert!(config.contains("BUDDY_DATA_DIR") && !config.contains("secreto"), "the token travels in the environment");
+        assert!(settings(&request)["permissions"]["allow"].to_string().contains("mcp(buddy/*)"));
+        assert!(mcp_config(&TurnRequest::default()).is_none());
+    }
+
+    #[test]
+    fn prepare_writes_and_clears_the_workspace_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let office = super::super::Office {
+            relay: "/d/bin/buddy-hook".into(),
+            dir: "/d/documentos".into(),
+            skills: "/d/skills".into(),
+            link: None,
+            read: vec![],
+        };
+        let mut request = TurnRequest { workspace: dir.path().join("buddy"), office: Some(office), ..Default::default() };
+        prepare(&request).unwrap();
+        let agents = request.workspace.join(".agents");
+        assert!(agents.join("settings.json").is_file() && agents.join("mcp_config.json").is_file());
+        request.office = None;
+        prepare(&request).unwrap();
+        assert!(!agents.join("mcp_config.json").exists(), "no stale tools");
+    }
+
+    #[test]
+    fn the_ides_launcher_is_not_the_cli() {
+        assert!(is_ide_launcher(Path::new("/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity")));
+        assert!(is_ide_launcher(Path::new("/Users/u/.antigravity/antigravity/bin/agy")));
+        assert!(!is_ide_launcher(Path::new("/Users/u/.local/bin/agy")));
+    }
+
+    #[test]
+    fn bare_links_are_found_too() {
+        let found = links("Fuentes: https://a.pe/x, https://b.pe/y. y https://a.pe/x otra vez");
+        assert_eq!(found.iter().map(|l| l.1.as_str()).collect::<Vec<_>>(), vec!["https://a.pe/x", "https://b.pe/y"]);
+    }
+}

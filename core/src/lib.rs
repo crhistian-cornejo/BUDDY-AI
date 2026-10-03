@@ -3,12 +3,14 @@
 //! The Mac app reaches it through UniFFI (feature `ffi`); the Windows app (Tauri) calls it directly.
 //! Apps only draw what the core hands them: sprites, settings and the event stream.
 
+pub mod activity;
 pub mod briefing;
 pub mod chat;
 pub mod events;
 pub mod folders;
 pub mod images;
 pub mod log;
+pub mod look;
 pub mod media;
 pub mod orchestrator;
 pub mod parley;
@@ -21,6 +23,7 @@ pub mod skills;
 pub mod spotify;
 pub mod sessions;
 pub mod store;
+pub mod telegram;
 pub mod tools;
 pub mod usage;
 pub mod voice;
@@ -36,6 +39,7 @@ pub use providers::{ProviderId, ProviderStatus};
 pub use store::{ChatMessage, ChatSummary, SourceLink, TokenReport, TokenDay};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{FaceRect, Sprite, SpriteState};
+pub use look::{AgentLook, LookOption, LookOptions};
 pub use briefing::BriefingItem;
 pub use media::NowPlayingInfo;
 pub use skills::Skill;
@@ -43,6 +47,7 @@ pub use tools::{FocusStatus, Shortcut};
 pub use router::{ModelOption, RouterConfig, Tier, TierChoice};
 pub use usage::{ProviderUsage, UsageWindow};
 pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
+pub use telegram::TelegramStatus;
 
 #[cfg(feature = "ffi")]
 uniffi::setup_scaffolding!();
@@ -92,6 +97,7 @@ pub struct BuddyCore {
     briefing: Arc<briefing::Briefing>,
     sessions: Arc<SessionHub>,
     spotify: Arc<spotify::Spotify>,
+    telegram: Arc<telegram::Telegram>,
 }
 
 impl BuddyCore {
@@ -105,9 +111,15 @@ impl BuddyCore {
         log::init(&data_dir);
         let store = store::Store::open(&data_dir.join("buddy.sqlite"))?;
         log::line(format!("núcleo abierto (esquema v{})", store.schema_version()?));
-        let providers: Vec<Arc<dyn providers::Provider>> =
-            vec![Arc::new(providers::claude::Claude::new()), Arc::new(providers::codex::Codex::new())];
-        Self::with_providers(data_dir, store, providers)
+        let providers: Vec<Arc<dyn providers::Provider>> = vec![
+            Arc::new(providers::claude::Claude::new()),
+            Arc::new(providers::codex::Codex::new()),
+            Arc::new(providers::gemini::Gemini::new()),
+        ];
+        let core = Self::with_providers(data_dir, store, providers)?;
+        // Telegram listens from launch when a bot is connected and a chat paired (never in tests: fresh stores).
+        core.telegram.start_if_configured();
+        Ok(core)
     }
 
     /// The core with the given providers (tests use scripted ones).
@@ -136,7 +148,21 @@ impl BuddyCore {
                 s.search(id, &spotify::SystemSecrets, &text("query"), &text("kind"), payload["new"] == true)
             })
         }));
-        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify })
+        // Telegram: each message of the paired chat is a restricted PARLEY turn in «Telegram · PARLEY».
+        let engine = chat.clone();
+        let telegram = Arc::new(telegram::Telegram::new(
+            store.clone(),
+            bus.clone(),
+            Arc::new(telegram::HttpApi),
+            Box::new(telegram::TokenSecret),
+            Box::new(move |text| {
+                engine.run_direct(telegram::CHAT_ID, telegram::CHAT_TITLE, telegram::AGENT, text, true).map_err(|e| match e {
+                    CoreError::Store(m) | CoreError::Hooks(m) => m,
+                    other => other.to_string(),
+                })
+            }),
+        ));
+        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -272,6 +298,42 @@ impl BuddyCore {
         self.with_store(|s| s.set_setting(&orchestrator::permissions_key(&agent_id), &list))
     }
 
+    /// An agent's face (`cara`): agent.md's, or the one chosen in Settings.
+    pub fn agent_look(&self, agent_id: String) -> AgentLook {
+        self.with_store(|s| Ok(look::resolve(&self.data_dir, s, &agent_id))).unwrap_or_else(|_| AgentLook::buddy())
+    }
+
+    /// Saves a face chosen in Settings (agent.md's own clears the setting); announces it as a setting change.
+    pub fn set_agent_look(&self, agent_id: String, look: AgentLook) -> Result<(), CoreError> {
+        self.with_store(|s| look::save(&self.data_dir, s, &agent_id, &look))?;
+        self.bus.publish(Event::SettingChanged { key: look::look_key(&agent_id) });
+        Ok(())
+    }
+
+    /// Back to the face its agent.md gives.
+    pub fn reset_agent_look(&self, agent_id: String) -> Result<(), CoreError> {
+        self.with_store(|s| s.set_setting(&look::look_key(&agent_id), ""))?;
+        self.bus.publish(Event::SettingChanged { key: look::look_key(&agent_id) });
+        Ok(())
+    }
+
+    /// The agent wearing its face, ready to paint (same `Sprite` as buddy-base, with its avatar square).
+    pub fn agent_sprite(&self, agent_id: String) -> Result<Sprite, CoreError> {
+        let name = self.chat.agents().into_iter().find(|a| a.id == agent_id).map(|a| a.name).unwrap_or_default();
+        look::sprite(&self.agent_look(agent_id.clone()), &agent_id, &name)
+    }
+
+    /// Only idle frame 0 of a face that is not saved yet (previews in the editor).
+    pub fn look_preview(&self, look: AgentLook) -> Result<Sprite, CoreError> {
+        look.validate()?;
+        look::preview(&look)
+    }
+
+    /// The colours, accessories and eyes a face can have, with the words Settings shows.
+    pub fn look_options(&self) -> LookOptions {
+        look::options()
+    }
+
     /// An agent's model: "auto" (the router), a model id from `router_config().models`, or "" for its agent.md.
     pub fn set_agent_model(&self, agent_id: String, model: String) -> Result<(), CoreError> {
         let known = model.is_empty() || model == "auto" || router::MODELS.iter().any(|m| m.0 == model);
@@ -358,6 +420,33 @@ impl BuddyCore {
     /// The Client ID when Spotify is connected (empty otherwise). Never reads the secret back.
     pub fn spotify_client_id(&self) -> String {
         self.with_store(spotify::client_id).ok().flatten().unwrap_or_default()
+    }
+
+    /// Telegram for Settings: connected bot, paired chat, the pairing code to show. While connected and not
+    /// paired it makes a code (if none is valid) and starts listening for its `/start`.
+    pub fn telegram_status(&self) -> TelegramStatus {
+        self.telegram.status()
+    }
+
+    /// Checks the bot token with Telegram (`getMe`), then keeps it only in the Keychain / Credential Manager. Blocks
+    /// on the network: call it off the main thread.
+    pub fn telegram_connect(&self, token: String) -> Result<(), CoreError> {
+        self.telegram.connect(&token).map_err(CoreError::Hooks)
+    }
+
+    /// Forgets the token, the bot and the paired chat; stops listening.
+    pub fn telegram_disconnect(&self) -> Result<(), CoreError> {
+        self.telegram.disconnect().map_err(CoreError::Hooks)
+    }
+
+    /// Unpairs the current chat and returns a fresh 6-digit code (`/start <code>` pairs a chat again).
+    pub fn telegram_new_pairing_code(&self) -> Result<String, CoreError> {
+        self.telegram.new_pairing_code().map_err(CoreError::Hooks)
+    }
+
+    /// Sends `text` (Markdown becomes plain text; long text is split) to the paired chat. Blocks on the network.
+    pub fn telegram_send(&self, text: String) -> Result<(), CoreError> {
+        self.telegram.send(&text).map_err(CoreError::Hooks)
     }
 
     /// The router's Settings: mode ("auto" or a model id), each tier's model and effort, the models to pick from.
@@ -474,6 +563,13 @@ impl BuddyCore {
                 }
             })
             .ok();
+    }
+}
+
+impl Drop for BuddyCore {
+    /// The Telegram poller stops with the core (a request in flight ends within its timeout).
+    fn drop(&mut self) {
+        self.telegram.shutdown();
     }
 }
 

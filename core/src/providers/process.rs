@@ -13,6 +13,9 @@ const BLOCKED_ENV: &[&str] = &[
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
     "OPENAI_BASE_URL",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GENAI_USE_VERTEXAI",
 ];
 
 /// The environment a CLI runs with: the app's own, minus the API keys.

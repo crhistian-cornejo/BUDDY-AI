@@ -33,9 +33,26 @@
 | Claude | Responde Claude | Tonos cálidos, con un destello de ocho puntas en pixel art en el pecho |
 | Codex | Responde Codex | Tonos azules de terminal, con `>_` en la pantalla de la cara |
 | Gemini | Responde Gemini | Degradado azul y violeta, con una estrella de cuatro puntas pixel |
-| PARLEY | Trabaja el especialista de deportes | Verde, con una gorra deportiva pixel |
+| PARLEY | Trabaja el especialista de deportes | Capucha cielo, con una gorra deportiva pixel |
 
 Cambiar de traje es una transición de 6 fotogramas: un «parpadeo» de píxeles.
+
+### Caras de los agentes (2026-10-02)
+
+Cada agente lleva su propia cara: el mismo Buddy con otra capucha, un accesorio y otros ojos (`core/src/look.rs`).
+
+- **Color:** menta (el de Buddy), cielo, lavanda, rosa, fresa, mandarina, limón y grafito. Cada uno saca sus 5 tonos
+  (contorno, sombra honda, sombra, base, luz) con los mismos saltos de tono, saturación y luz que la menta.
+- **Accesorio:** ninguno, gorra, lentes, audífonos, corona, bandana o gorro de lana. Son sellos de píxeles anclados a
+  la ventana de la cara, así siguen al cuerpo en todos los estados; los sombreros quitan el brote.
+  El color del accesorio es la «insignia» (o uno automático que resalta sobre la capucha).
+- **Ojos:** normales, felices (^ ^), serios (cejas rectas) o guiño. Solo cambian los ojos abiertos; parpadeos y miradas
+  quedan como están.
+- **De dónde sale:** `cara: color=…, accesorio=…, ojos=…, insignia=…` en el agent.md y, por encima, el ajuste
+  `agent.<id>.cara` (mismo `k=v` o JSON) que escribe Ajustes › Agentes. Sin `cara:`, un color según el id.
+- Buddy por defecto es buddy-base byte a byte; PARLEY lleva capucha cielo y gorra fresa.
+- Vistas previas: `BUDDY_LOOK_PREVIEW=<carpeta> cargo test -p buddy-core look::tests::preview_sheets -- --ignored`
+  (también escribe el `agent-looks.json` de `apps/windows/preview`).
 
 ## Estados y animaciones
 

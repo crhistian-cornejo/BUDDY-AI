@@ -23,6 +23,9 @@ pub enum Event {
     /// The agent is using a tool (searching, reading a page).
     ChatTool { chat_id: String, name: String, summary: String },
     ChatSource { chat_id: String, title: String, url: String },
+    /// What the agent is doing now (`activity::of_tool`): `kind` is word, excel, powerpoint, web, read, command,
+    /// edit, screen, music, skill or tool. The answer's end (ChatDone / ChatFailed) ends it.
+    ChatActivity { chat_id: String, kind: String, label: String },
     /// The answer is complete and saved.
     ChatDone { chat_id: String, message_id: i64 },
     ChatFailed { chat_id: String, message: String },
@@ -68,6 +71,8 @@ pub enum Event {
     },
     /// The approval card must go: answered, timed out, or the agent stopped waiting.
     ApprovalClosed { request_id: String },
+    /// Telegram's connection or pairing changed: read `telegram_status`.
+    TelegramChanged,
 }
 
 #[derive(Default)]

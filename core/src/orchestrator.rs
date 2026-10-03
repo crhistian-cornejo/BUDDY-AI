@@ -11,7 +11,7 @@ pub const ORCHESTRATOR: &str = "buddy";
 const MARKER: &str = "[[pasar:";
 const MAX_TASK: usize = 4000;
 
-const BUILT_INS: &[(&str, &str)] =
+pub(crate) const BUILT_INS: &[(&str, &str)] =
     &[("buddy", include_str!("../agents/buddy.md")), ("parley", include_str!("../agents/parley.md"))];
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

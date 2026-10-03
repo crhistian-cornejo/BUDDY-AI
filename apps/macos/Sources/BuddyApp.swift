@@ -63,6 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NotificationCenter.default.post(name: .buddyUsageChanged, object: nil)
                 default: break
                 }
+                if case .telegramChanged = event {
+                    NotificationCenter.default.post(name: .buddyTelegramChanged, object: nil)
+                }
                 // A new «mensajito»: Buddy says the first line; the notch keeps the list.
                 if case let .briefingReady(count, headline) = event {
                     pet?.say(Self.short(headline) + (count > 1 ? " (+\(count - 1))" : ""), seconds: 8)
@@ -115,6 +118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if ProcessInfo.processInfo.environment["BUDDY_DEBUG_HISTORY"] != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { windows.showHistory() }
+            }
+            // BUDDY_DEBUG_OPEN_CHAT=<id>: opens that chat next to Buddy (to look at an answer).
+            if let id = ProcessInfo.processInfo.environment["BUDDY_DEBUG_OPEN_CHAT"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    chat.open(id)
+                    windows.open()
+                }
             }
             // BUDDY_DEBUG_DRAFT="…": opens the composer with that text, unsent (to look at a long draft).
             if let draft = ProcessInfo.processInfo.environment["BUDDY_DEBUG_DRAFT"] {

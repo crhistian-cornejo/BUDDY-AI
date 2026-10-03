@@ -73,9 +73,9 @@ export function iconButton(path: string, title: string, onClick: () => void): HT
   return el;
 }
 
-/** Claude's or Codex's mark (Codex takes the text colour, so it shows on light and dark). */
+/** Claude's, Codex's or Gemini's mark (Codex takes the text colour, so it shows on light and dark). */
 export function providerMark(provider: string, size: number): HTMLElement {
-  const mark = PROVIDER_MARKS[provider === "codex" ? "codex" : "claude"]!;
+  const mark = PROVIDER_MARKS[provider] ?? PROVIDER_MARKS.claude!;
   const el = h("span", { class: "mark", title: mark.label, style: mark.color ? `color:${mark.color}` : undefined });
   el.append(svg(mark.path, size, { fill: "currentColor" }));
   return el;

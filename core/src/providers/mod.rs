@@ -1,10 +1,11 @@
 //! Providers: the user's own subscriptions through their CLIs. Claude (Claude Code, `claude -p` stream-json),
-//! Codex (`codex app-server`, JSON-RPC over stdio) and, in phase 3, Gemini through Antigravity (`agy -p`).
+//! Codex (`codex app-server`, JSON-RPC over stdio) and Gemini through the Antigravity CLI (`agy`, stream-json).
 //! Ported from MIKA (ClaudeTurn/ClaudeStreamParser, codex_server.rs). A turn runs on its own thread and reports
 //! `TurnEvent`s; nothing here knows about chats, windows or the mascot.
 
 pub mod claude;
 pub mod codex;
+pub mod gemini;
 pub mod process;
 
 use std::path::PathBuf;
@@ -180,6 +181,8 @@ impl Failure {
             "credit balance",
             "hit your limit",
             "reached your limit",
+            // Gemini (Antigravity CLI): the plan's quota or AI credits are spent.
+            "resource_exhausted",
         ]
         .iter()
         .any(|fragment| text.contains(fragment))

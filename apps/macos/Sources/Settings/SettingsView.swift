@@ -282,6 +282,7 @@ private struct ConnectionSettings: View {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
             SpotifySection(core: core)
+            TelegramSection(core: core)
         }
         .formStyle(.grouped)
         .onAppear { status = core.hooksStatus() }
@@ -425,7 +426,7 @@ struct UsageSettings: View {
                             .help(row.costUsd > 0 ? String(format: "Equivaldría a %.2f US$ en la API (tu plan no paga extra)", row.costUsd) : "")
                     } label: {
                         Text(row.feature)
-                        Text("\(row.turns) turnos · \(row.provider == "codex" ? "Codex" : "Claude")")
+                        Text("\(row.turns) turnos · \(row.provider == "codex" ? "Codex" : row.provider == "antigravity" ? "Gemini" : "Claude")")
                     }
                 }
             }
@@ -569,9 +570,10 @@ private struct AgentSettings: View {
                             }
                         }
                     }
+                    AgentFaceEditor(core: core, agent: agent)
                 } header: {
                     HStack(spacing: 8) {
-                        if agent.id == "buddy" { AvatarView(size: 18) }
+                        AgentAvatarView(agentId: agent.id, size: 18)
                         Text(agent.name)
                         Text(agent.specialty).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }

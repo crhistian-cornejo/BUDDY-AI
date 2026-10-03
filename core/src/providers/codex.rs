@@ -251,6 +251,11 @@ pub fn turn_events(method: &str, params: &Value, turn_id: &str) -> Vec<TurnEvent
                     summary: item["query"].as_str().unwrap_or("").chars().take(160).collect(),
                 }],
                 Some("commandExecution") => vec![TurnEvent::Tool { name: "Bash".into(), summary: String::new() }],
+                Some("fileChange") => vec![TurnEvent::Tool { name: "Edit".into(), summary: String::new() }],
+                Some("mcpToolCall") => vec![TurnEvent::Tool {
+                    name: format!("mcp__{}__{}", item["server"].as_str().unwrap_or(""), item["tool"].as_str().unwrap_or("")),
+                    summary: String::new(),
+                }],
                 _ => vec![],
             }
         }

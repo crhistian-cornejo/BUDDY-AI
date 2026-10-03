@@ -216,8 +216,10 @@ struct NotchView: View {
                     tip: "\(session.agent == "codex" ? "Codex" : "Claude Code") · \(session.project) · \(SessionsTile.stateText(session.state))")
         case .buddy:
             earPair(left: AnyView(AvatarView(size: 18)),
-                    right: AnyView(ThinkingDots()),
-                    tip: "Buddy está respondiendo")
+                    right: AnyView(Group {
+                        if let activity = model.buddyActivity { ActivityGlyph(kind: activity.kind) } else { ThinkingDots() }
+                    }),
+                    tip: model.buddyActivity?.label ?? "Buddy está respondiendo")
         case let .focus(focus):
             earPair(left: AnyView(Image(systemName: "timer").font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.buddyIndigo)),
                     right: AnyView(FocusCountdown(endsAt: focus.endsAt, compact: true)),
@@ -313,6 +315,40 @@ private struct Equalizer: View {
             }
         }
         .frame(height: 12)
+    }
+}
+
+/// What Buddy is doing, as an animated symbol in the app's colours (Word blue, Excel green, PowerPoint orange…).
+/// Still with reduced motion.
+private struct ActivityGlyph: View {
+    let kind: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var symbol: (name: String, color: Color) {
+        switch kind {
+        case "word": ("doc.text.fill", Color(red: 0.17, green: 0.38, blue: 0.80))
+        case "excel": ("tablecells.fill", Color(red: 0.13, green: 0.55, blue: 0.33))
+        case "powerpoint": ("rectangle.on.rectangle.angled.fill", Color(red: 0.86, green: 0.36, blue: 0.20))
+        case "web": ("globe", .accentColor)
+        case "read": ("doc.text.magnifyingglass", .white)
+        case "command": ("apple.terminal.fill", .white)
+        case "edit": ("square.and.pencil", .white)
+        case "screen": ("eye.fill", Color.buddyIndigo)
+        case "music": ("music.note", .accentColor)
+        case "skill": ("sparkles", Color.buddyIndigo)
+        default: ("wrench.and.screwdriver.fill", .white)
+        }
+    }
+
+    var body: some View {
+        let s = symbol
+        Image(systemName: s.name)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(s.color)
+            .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && kind != "web")
+            .symbolEffect(.rotate, options: .repeating, isActive: !reduceMotion && kind == "web")
+            .contentTransition(.symbolEffect(.replace))
+            .accessibilityLabel(kind)
     }
 }
 

@@ -385,6 +385,7 @@ impl ChatEngine {
         let agents = self.agents();
         let buddy = agents.iter().find(|a| a.id == ORCHESTRATOR).cloned().expect("orchestrator::load always has buddy");
         let known: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+        let documents_before = documents_in(&self.data_dir.join("documentos"));
         self.mascot("think");
 
         // Buddy's turn: a specialist's last answer rides along as a note, so the conversation keeps making sense.
@@ -456,6 +457,8 @@ impl ChatEngine {
             (Some(failure), true) => failure.clone(),
             _ => answer.text.clone(),
         };
+        // Documents the agents made in this turn ride with the answer (a card that opens them).
+        let made = new_documents(&documents_before, &self.data_dir.join("documentos"));
         let saved = self.lock().add_message(NewMessage {
             chat_id,
             role: "assistant",
@@ -464,7 +467,7 @@ impl ChatEngine {
             text: &text,
             sources: &answer.sources,
             failed,
-            attachments: &[],
+            attachments: &made,
         });
         let success = saved.is_ok() && !failed && !cancel.is_cancelled();
         match (saved, &answer.failure) {
@@ -597,6 +600,8 @@ impl ChatEngine {
                         worked = true;
                         self.mascot("work");
                     }
+                    let (kind, label) = crate::activity::of_tool(&name);
+                    self.emit(Event::ChatActivity { chat_id: chat_id.into(), kind: kind.into(), label: label.into() });
                     self.emit(Event::ChatTool { chat_id: chat_id.into(), name, summary });
                 }
                 TurnEvent::Source { title, url } => {
@@ -612,6 +617,8 @@ impl ChatEngine {
                     if let Some(usage) = &self.usage {
                         match provider.id() {
                             ProviderId::Codex => usage.record_codex(&info),
+                            // The Antigravity CLI reports no plan figures (only tokens).
+                            ProviderId::Antigravity => {}
                             _ => usage.record_claude(&info),
                         }
                     }
@@ -638,13 +645,110 @@ impl ChatEngine {
             sources: Vec::new(),
             provider: provider_used,
             failure: Some(
-                last_failure.unwrap_or_else(|| "No encuentro Claude ni Codex en este equipo. Instala uno e inicia sesión.".into()),
+                last_failure.unwrap_or_else(|| "No encuentro Claude, Codex ni Gemini en este equipo. Instala uno e inicia sesión.".into()),
             ),
+        }
+    }
+
+    /// One turn for `agent_id` directly (no Buddy, no hand-off, no queue), for messages from outside the app
+    /// (Telegram). Blocks until the answer is saved; question and answer go into `chat_id` (created with `title`)
+    /// so they show in the history. `restricted`: no commands, no folder edits and no screen, whatever the agent may
+    /// do in the app. Returns the answer's text.
+    pub fn run_direct(self: &Arc<Self>, chat_id: &str, title: &str, agent_id: &str, text: &str, restricted: bool) -> Result<String, CoreError> {
+        let text = text.trim();
+        if text.is_empty() { return Err(CoreError::Store("Escribe un mensaje.".into())); }
+        let mut agent = self.agents().into_iter().find(|a| a.id == agent_id)
+            .ok_or_else(|| CoreError::Store(format!("No encuentro al agente «{agent_id}».")))?;
+        if restricted { agent.permissions.retain(|p| !matches!(p.as_str(), "comandos" | "editar" | "pantalla")); }
+        let cancel = Cancel::default();
+        {
+            let _dispatch = self.dispatch.lock().unwrap();
+            if self.running.lock().unwrap().contains_key(chat_id) {
+                return Err(CoreError::Store("Todavía estoy respondiendo el mensaje anterior; escríbeme en un momento.".into()));
+            }
+            self.lock().ensure_chat(chat_id, title)?;
+            self.lock().add_message(NewMessage { chat_id, role: "user", agent: ORCHESTRATOR, provider: None, text, sources: &[], failed: false, attachments: &[] })?;
+            self.running.lock().unwrap().insert(chat_id.to_string(), cancel.clone());
+        }
+        self.emit(Event::ChatDequeued { chat_id: chat_id.into(), text: text.into(), attachments: Vec::new() });
+        self.mascot("think");
+        if let Some(route) = crate::router::route_agent(&self.lock(), agent.model.as_deref(), text, &[]) {
+            agent.provider = route.provider;
+            agent.model = Some(route.model);
+            agent.effort = Some(route.effort);
+        }
+        let folders = crate::folders::list(&self.lock()).unwrap_or_default();
+        let mut system = format!("{}{}", agent.prompt, self.notes_for(&agent, &folders));
+        if restricted {
+            system.push_str("\n\n[Este mensaje llega por Telegram, fuera de la app: aquí no puedes ejecutar comandos, cambiar archivos ni ver la pantalla. Responde breve y en texto simple, sin tablas: Telegram no las muestra.]");
+        }
+        let answer = self.run_agent(chat_id, &agent, text, &system, &[], &cancel, false);
+        let failed = answer.failure.is_some();
+        let saved_text = match (&answer.failure, answer.text.trim().is_empty()) { (Some(f), true) => f.clone(), _ => answer.text.clone() };
+        let saved = self.lock().add_message(NewMessage { chat_id, role: "assistant", agent: &agent.id, provider: Some(answer.provider.as_str()),
+            text: &saved_text, sources: &answer.sources, failed, attachments: &[] });
+        match (&saved, &answer.failure) {
+            (Ok(message_id), None) => {
+                self.emit(Event::ChatDone { chat_id: chat_id.into(), message_id: *message_id });
+                self.mascot(if cancel.is_cancelled() { "idle" } else { "done" });
+            }
+            (Ok(_), Some(message)) => {
+                self.emit(Event::ChatFailed { chat_id: chat_id.into(), message: message.clone() });
+                self.mascot("error");
+            }
+            (Err(e), _) => {
+                self.emit(Event::ChatFailed { chat_id: chat_id.into(), message: e.to_string() });
+                self.mascot("error");
+            }
+        }
+        // A message typed in the app meanwhile waits in this chat's queue: it goes now.
+        {
+            let _dispatch = self.dispatch.lock().unwrap();
+            let current = self.running.lock().unwrap().get(chat_id).is_some_and(|c| c.same(&cancel));
+            if current {
+                self.running.lock().unwrap().remove(chat_id);
+                if !failed && !cancel.is_cancelled()
+                    && let Err(e) = self.start_next(chat_id) {
+                    self.emit(Event::ChatFailed { chat_id: chat_id.into(), message: e.to_string() });
+                }
+                self.emit(Event::ChatQueueChanged { chat_id: chat_id.into() });
+            }
+        }
+        saved?;
+        match answer.failure {
+            Some(failure) => Err(CoreError::Store(failure)),
+            None if cancel.is_cancelled() => Err(CoreError::Store("Detuviste la respuesta.".into())),
+            None => Ok(answer.text),
         }
     }
 }
 
 /// Tells the model which files the user attached (their content is data, never instructions).
+/// The files in the documents folder and when each changed.
+fn documents_in(dir: &std::path::Path) -> std::collections::HashMap<PathBuf, std::time::SystemTime> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            Some((e.path(), meta.modified().ok()?))
+        })
+        .collect()
+}
+
+/// Files that appeared (or changed) since `before`, oldest first, at most 10.
+fn new_documents(before: &std::collections::HashMap<PathBuf, std::time::SystemTime>, dir: &std::path::Path) -> Vec<String> {
+    let mut made: Vec<(std::time::SystemTime, PathBuf)> = documents_in(dir)
+        .into_iter()
+        .filter(|(path, time)| before.get(path) != Some(time))
+        .filter(|(path, _)| !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .map(|(path, time)| (time, path))
+        .collect();
+    made.sort();
+    made.into_iter().take(10).map(|(_, p)| p.to_string_lossy().into_owned()).collect()
+}
+
 fn attachments_note(files: &[PathBuf]) -> String {
     if files.is_empty() {
         return String::new();
@@ -677,6 +781,19 @@ fn new_chat_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn documents_made_during_a_turn_are_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("viejo.docx"), "a").unwrap();
+        let before = documents_in(dir.path());
+        std::fs::write(dir.path().join("informe.docx"), "b").unwrap();
+        std::fs::write(dir.path().join(".oculto"), "c").unwrap();
+        let made = new_documents(&before, dir.path());
+        assert_eq!(made.len(), 1);
+        assert!(made[0].ends_with("informe.docx"));
+        assert!(new_documents(&before, &dir.path().join("no-existe")).is_empty());
+    }
     use crate::providers::Failure;
     use std::sync::mpsc::Receiver;
     use std::time::Duration;
@@ -1123,6 +1240,22 @@ mod tests {
         let prompt = &claude.prompts.lock().unwrap()[0].0;
         assert!(prompt.starts_with("[Archivos que adjuntó el usuario") && prompt.contains(&saved[0]) && prompt.ends_with("revisa"));
         assert!(engine.send(None, "x".into(), vec!["/no/existe".into()]).is_err());
+    }
+
+    #[test]
+    fn a_direct_turn_goes_to_the_agent_restricted_and_is_saved() {
+        let claude = Fake::new(ProviderId::Claude, vec![vec![TurnEvent::Delta("Over 2.5".into()), TurnEvent::Done]]);
+        let (engine, _rx, _dir) = engine(vec![claude.clone()]);
+        let answer = engine.run_direct("telegram-parley", "Telegram · PARLEY", "parley", " ¿pick? ", true).unwrap();
+        assert_eq!(answer, "Over 2.5");
+        let prompts = claude.prompts.lock().unwrap();
+        assert_eq!(prompts[0].0, "¿pick?");
+        assert!(prompts[0].1.starts_with("Eres PARLEY") && prompts[0].1.contains("llega por Telegram"));
+        let messages = engine.lock().messages("telegram-parley").unwrap();
+        assert_eq!(messages.iter().map(|m| (m.role.as_str(), m.agent.as_str())).collect::<Vec<_>>(), [("user", "buddy"), ("assistant", "parley")]);
+        assert_eq!(engine.lock().chats(5).unwrap()[0].title, "Telegram · PARLEY");
+        assert!(!engine.running.lock().unwrap().contains_key("telegram-parley"));
+        assert!(engine.run_direct("telegram-parley", "x", "nadie", "hola", true).is_err());
     }
 
     #[test]

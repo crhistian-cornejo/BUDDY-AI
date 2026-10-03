@@ -7,7 +7,7 @@ import { applyTokens } from "../tokens";
 import { AnswerView } from "./answer";
 import { h, svg } from "./dom";
 import { TABLER } from "./tabler";
-import { buddyFace } from "./avatar";
+import { faceForName } from "./avatar";
 import { PROVIDER_MARKS } from "./provider-marks";
 import { makeSource, type ChatSource } from "./markdown";
 
@@ -162,7 +162,7 @@ function addUser(text: string, attached: string[] = []) {
 /** Buddy's face and the agent's name, with tooltips. */
 function setAuthor(el: HTMLElement, name: string) {
   const face = h("img", { class: "avatar", alt: "", title: name === "Buddy" ? "Buddy" : `${name}, del equipo de Buddy` });
-  void buddyFace().then((url) => { if (url) face.setAttribute("src", url); });
+  void faceForName(name).then((url) => { if (url) face.setAttribute("src", url); });
   el.replaceChildren(face, h("span", { text: name }));
 }
 
@@ -198,7 +198,50 @@ function failure(text: string) {
   return h("div", { class: "msg-failed" }, icon(TABLER.alertTriangle, 16), h("span", { text }));
 }
 
-function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false) {
+const KINDS: Record<string, [string, string, string]> = {
+  docx: ["W", "#2b579a", "Documento de Word"], doc: ["W", "#2b579a", "Documento de Word"],
+  xlsx: ["X", "#217346", "Hoja de Excel"], xls: ["X", "#217346", "Hoja de Excel"],
+  pptx: ["P", "#d24726", "Presentación de PowerPoint"], ppt: ["P", "#d24726", "Presentación de PowerPoint"],
+  pdf: ["PDF", "#c62828", "PDF"],
+};
+
+/** A page with a folded corner, the app's colour band and its letter: our own drawing, no logos. */
+function documentIcon(ext: string): SVGElement {
+  const [letter, colour] = KINDS[ext] ?? ["", "#71717a"];
+  const ns = "http://www.w3.org/2000/svg";
+  const el = (tag: string, attrs: Record<string, string>) => {
+    const node = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    return node;
+  };
+  const svgEl = el("svg", { viewBox: "0 0 32 32", width: "32", height: "32", "aria-hidden": "true" });
+  svgEl.append(
+    el("path", { d: "M7 3h13l6 6v20H7z", fill: "#fff", stroke: "rgba(0,0,0,.18)" }),
+    el("path", { d: "M20 3v6h6", fill: "none", stroke: "rgba(0,0,0,.18)" }),
+    el("path", { d: "M10 14h12M10 18h12M10 22h8", stroke: "rgba(0,0,0,.18)", "stroke-width": "1.5" }),
+    el("rect", { x: "2", y: "15", width: letter.length > 1 ? "18" : "13", height: "13", rx: "2.5", fill: colour }),
+  );
+  const label = el("text", { x: letter.length > 1 ? "11" : "8.5", y: "24.6", "text-anchor": "middle", fill: "#fff", "font-size": letter.length > 1 ? "7" : "9", "font-weight": "700", "font-family": "Segoe UI, system-ui, sans-serif" });
+  label.textContent = letter;
+  svgEl.append(label);
+  return svgEl;
+}
+
+/** A document an agent made: its icon, its name and kind; a click opens it in its app. */
+function documentCard(path: string): HTMLElement {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  const title = dot > 0 ? name.slice(0, dot) : name;
+  const card = h("button", { class: "doc-card", type: "button", title: "Abrir", "aria-label": `${KINDS[ext]?.[2] ?? "Archivo"}: ${name}` },
+    documentIcon(ext),
+    h("span", { class: "doc-text" }, h("span", { class: "doc-name", text: title }), h("span", { class: "doc-kind", text: KINDS[ext]?.[2] ?? ext.toUpperCase() })),
+    icon(TABLER.arrowUpRight, 14));
+  card.addEventListener("click", () => void invoke("open_document", { path }).catch((e) => { card.title = `No se pudo abrir: ${e}`; }));
+  return card;
+}
+
+function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false, documents: string[] = []) {
   const authorEl = h("div", { class: "msg-author" });
   setAuthor(authorEl, name);
   const activityEl = h("div", { class: "activity", role: "status" });
@@ -214,6 +257,7 @@ function addAnswer(name: string, provider: string | null, text = "", sources: Ch
     wrap.append(view.el);
   }
   actions.hidden = failed || !text;
+  for (const d of documents) wrap.append(documentCard(d));
   wrap.append(actions);
   list.append(wrap);
   return { view, author: authorEl, activity: activityEl, actions, state };
@@ -287,6 +331,14 @@ async function regenerate() {
 }
 
 function finish(failureText: string | null) {
+  // Documents the agent made in this turn come saved with the answer: show them as cards.
+  if (live && !failureText && chatId) {
+    const actionsEl = live.actions;
+    void invoke<SavedMessage[]>("messages", { chatId }).then((saved) => {
+      const last = [...saved].reverse().find((m) => m.role === "assistant");
+      for (const d of last?.attachments ?? []) actionsEl.before(documentCard(d));
+    }).catch(() => {});
+  }
   if (live) {
     setActivity(live.activity, null);
     liveState.text = live.text;
@@ -367,7 +419,7 @@ async function openChat(id: string) {
     if (m.role === "user") addUser(m.text, m.attachments ?? []);
     else {
       const sources = m.sources.map((s) => makeSource(s.title, s.url)).filter((s): s is ChatSource => !!s);
-      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed);
+      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed, m.attachments ?? []);
     }
   }
   render();

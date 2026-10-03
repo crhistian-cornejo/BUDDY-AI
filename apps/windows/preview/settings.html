@@ -24,6 +24,9 @@
         { agent: "codex", name: "Codex", installed: false, available: true, relayReady: true },
       ];
       let topics = "noticias de tecnología; Apple; fútbol peruano; el tiempo en Lima";
+      // ?telegram=pairing | paired shows those states (default: not connected).
+      const tgMode = new URLSearchParams(location.search).get("telegram") ?? "";
+      let telegram = { connected: tgMode !== "", paired: tgMode === "paired", botName: tgMode ? "@mi_buddy_bot" : "", pairingCode: tgMode === "pairing" ? "482913" : "", error: "" };
       const fake = {
         setting_flag: ({ key }) => flags[key],
         set_setting_flag: ({ key, on }) => { flags[key] = on; },
@@ -32,6 +35,14 @@
         set_folder_edit: ({ path, canEdit }) => (folders = folders.map((f) => (f.path === path ? { ...f, canEdit } : f))),
         remove_folder: ({ path }) => (folders = folders.filter((f) => f.path !== path)),
         hooks_status: () => hooks,
+        telegram_status: () => telegram,
+        telegram_connect: ({ token }) => {
+          if (!/^\d+:[\w-]{30,}$/.test(token.trim())) throw "Ese no parece un token de bot. Cópialo completo de @BotFather (números, dos puntos y letras).";
+          telegram = { connected: true, paired: false, botName: "@mi_buddy_bot", pairingCode: "482913", error: "" };
+        },
+        telegram_disconnect: () => { telegram = { connected: false, paired: false, botName: "", pairingCode: "", error: "" }; },
+        telegram_new_pairing_code: () => { telegram = { ...telegram, paired: false, pairingCode: "730154" }; return "730154"; },
+        telegram_send: () => {},
         hooks_preview: ({ agent, install }) => ({
           path: agent === "codex" ? "C:\\Users\\corx\\.codex\\hooks.json" : "C:\\Users\\corx\\.claude\\settings.json",
           fingerprint: "abc",
@@ -54,6 +65,21 @@
           { id: "investigador", name: "Investigador", specialty: "Busca en la web y resume con fuentes.", provider: "claude", model: "auto", permissions: ["web", "documentos"] },
           { id: "programador", name: "Programador", specialty: "Escribe y revisa código en tus carpetas.", provider: "codex", model: "codex:gpt-6.1-sol", permissions: ["leer", "editar", "comandos"] },
         ],
+        // Faces: agent-looks.json holds the core's idle face grids (written by core's look::tests::preview_sheets).
+        look_options: () => ({
+          colors: [["menta", "Menta", "#86DDB8"], ["cielo", "Cielo", "#8CC8F2"], ["lavanda", "Lavanda", "#B9A5F0"], ["rosa", "Rosa", "#F4A6CB"],
+            ["fresa", "Fresa", "#F28A8C"], ["mandarina", "Mandarina", "#F6B26E"], ["limon", "Limón", "#EBD86A"], ["grafito", "Grafito", "#A8B0BC"]]
+            .map(([id, label, hex]) => ({ id, label, hex })),
+          accessories: [["ninguno", "Ninguno"], ["gorra", "Gorra"], ["lentes", "Lentes"], ["audifonos", "Audífonos"], ["corona", "Corona"],
+            ["bandana", "Bandana"], ["gorro", "Gorro de lana"]].map(([id, label]) => ({ id, label, hex: null })),
+          eyes: [["normales", "Normales"], ["felices", "Felices"], ["serios", "Serios"], ["guino", "Guiño"]].map(([id, label]) => ({ id, label, hex: null })),
+        }),
+        agent_look: ({ agentId }) => ({ ...(looks[agentId] ?? { color: "rosa", accessory: "ninguno", eyes: "normales", badge: null }) }),
+        set_agent_look: ({ agentId, look }) => { looks[agentId] = look; },
+        reset_agent_look: ({ agentId }) => { looks[agentId] = { ...defaultLooks[agentId] }; },
+        agent_sprite: ({ agentId }) => lookSprite(fake.agent_look({ agentId })),
+        look_preview: ({ look }) => lookSprite(look),
+        sprite: () => lookSprite(defaultLooks.buddy),
         agent_permission_catalog: () => [
           { id: "web", name: "Web", detail: "Buscar y leer páginas" }, { id: "leer", name: "Leer carpetas", detail: "" },
           { id: "editar", name: "Editar carpetas", detail: "" }, { id: "comandos", name: "Comandos", detail: "" },
@@ -73,6 +99,24 @@
           { topic: "tecnología", text: "Claude Code añade agentes en segundo plano para tareas largas.", url: null, at: now },
         ],
       };
+      const defaultLooks = {
+        buddy: { color: "menta", accessory: "ninguno", eyes: "normales", badge: null },
+        investigador: { color: "lavanda", accessory: "lentes", eyes: "normales", badge: null },
+        programador: { color: "grafito", accessory: "audifonos", eyes: "serios", badge: "cielo" },
+      };
+      const looks = JSON.parse(JSON.stringify(defaultLooks));
+      const lookData = fetch("/preview/agent-looks.json").then((r) => r.json());
+      async function lookSprite(look) {
+        const d = await lookData;
+        const pal = { ...d.palette };
+        d.ramps[look.color].forEach((hex, i) => (pal["odBbl"[i]] = hex));
+        const auto = d.accessoryColors[look.accessory] ?? ["fresa"];
+        const accent = look.badge ?? auto.find((c) => c !== look.color) ?? auto[0];
+        d.ramps[accent].forEach((hex, i) => (pal["OQqaA"[i]] = hex));
+        const grid = d.grids[`${look.accessory}/${look.eyes}`];
+        const pixels = grid.flatMap((row) => [...row].map((ch) => (pal[ch] ? (0xff000000 | parseInt(pal[ch].slice(1), 16)) >>> 0 : 0)));
+        return { id: "look", name: "", size: grid.length, face: { x: 0, y: 0, size: grid.length }, states: [{ name: "idle", fps: 1, frames: [pixels] }] };
+      }
       window.__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: "settings" }, currentWebview: { windowLabel: "settings", label: "settings" } },
         transformCallback: (cb) => { const id = next++; handlers[id] = cb; return id; },

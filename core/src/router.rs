@@ -21,12 +21,15 @@ pub const MODE_KEY: &str = "router.mode";
 const TIER_KEY: &str = "router.tier.";
 
 /// The models Buddy can route to: (id, name shown, provider, model name for the CLI).
-pub const MODELS: [(&str, &str, ProviderId, &str); 5] = [
+pub const MODELS: [(&str, &str, ProviderId, &str); 7] = [
     ("claude:haiku", "Haiku 4.5", ProviderId::Claude, "haiku"),
     ("claude:sonnet", "Sonnet 5.5", ProviderId::Claude, "sonnet"),
     ("claude:opus", "Opus 5.5", ProviderId::Claude, "opus"),
     ("codex:gpt-6.1-sol", "GPT-6.1 Sol", ProviderId::Codex, "gpt-6.1-sol"),
     ("codex:gpt-6-luna", "GPT-6 Luna", ProviderId::Codex, "gpt-6-luna"),
+    // Gemini through the Antigravity CLI (Google AI Pro): the tier's effort goes as `--effort`.
+    ("antigravity:gemini-3.1-pro", "Gemini 3.1 Pro", ProviderId::Antigravity, "gemini-3.1-pro"),
+    ("antigravity:gemini-3.8-flash", "Gemini 3.8 Flash", ProviderId::Antigravity, "gemini-3.8-flash"),
 ];
 pub const EFFORTS: [&str; 3] = ["low", "medium", "high"];
 
@@ -217,7 +220,7 @@ pub fn classify(text: &str, files: &[PathBuf]) -> (Tier, &'static str) {
     (Tier::Normal, "pregunta normal")
 }
 
-/// «con opus», «usa gpt», «con sonnet»… anywhere in the message.
+/// «con opus», «usa gpt», «con sonnet», «usa gemini»… anywhere in the message.
 fn named_model(text: &str) -> Option<&'static str> {
     let t = fold(text);
     let asks = |word: &str| ["con ", "usa ", "usando ", "pasalo a ", "pregunta a ", "with "].iter().any(|p| t.contains(&format!("{p}{word}")));
@@ -231,6 +234,10 @@ fn named_model(text: &str) -> Option<&'static str> {
         Some("codex:gpt-6-luna")
     } else if asks("gpt") || asks("codex") || asks("sol") || asks("chatgpt") {
         Some("codex:gpt-6.1-sol")
+    } else if asks("gemini flash") {
+        Some("antigravity:gemini-3.8-flash")
+    } else if asks("gemini") || asks("antigravity") {
+        Some("antigravity:gemini-3.1-pro")
     } else {
         None
     }
@@ -382,6 +389,21 @@ mod tests {
         let r = route(&s, "hola", none);
         assert_eq!((r.provider, r.reason.as_str()), (ProviderId::Codex, "modelo fijo en Ajustes"));
         assert!(set_mode(&s, "claude:mythos").is_err());
+    }
+
+    #[test]
+    fn gemini_can_be_named_or_picked() {
+        let (s, _d) = store();
+        let none: &[PathBuf] = &[];
+        let r = route(&s, "Usa gemini: ¿qué es un agujero negro?", none);
+        assert_eq!((r.provider, r.model.as_str(), r.reason.as_str()), (ProviderId::Antigravity, "gemini-3.1-pro", "lo pediste"));
+        let r = route(&s, "resúmelo con gemini flash", none);
+        assert_eq!((r.model.as_str(), r.model_name.as_str()), ("gemini-3.8-flash", "Gemini 3.8 Flash"));
+        set_tier(&s, Tier::Normal, "antigravity:gemini-3.8-flash", "low").unwrap();
+        let r = route(&s, "¿qué tiempo hace en Lima?", none);
+        assert_eq!((r.provider, r.effort.as_str()), (ProviderId::Antigravity, "low"));
+        assert!(options().iter().any(|m| m.provider == "antigravity"));
+        assert_eq!(route(&s, "hola", none).provider, ProviderId::Claude, "defaults stay as they were");
     }
 
     #[test]

@@ -573,3 +573,28 @@ button {
     animation: none;
   }
 }
+
+/* What Buddy is doing: its icon breathes (the globe turns); still with reduced motion. */
+.activity-glyph {
+  display: inline-grid;
+  animation: glyph-pulse 1.4s ease-in-out infinite;
+}
+
+.activity-glyph.web {
+  animation: glyph-turn 2.4s linear infinite;
+}
+
+@keyframes glyph-pulse {
+  50% { opacity: 0.45; transform: scale(0.9); }
+}
+
+@keyframes glyph-turn {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-glyph,
+  .activity-glyph.web {
+    animation: none;
+  }
+}

@@ -218,10 +218,13 @@ final class ChatController {
     }
 
     private func finish(failure: String?) {
+        // Documents the agent made in this turn come saved with the answer: show them as cards.
+        let made = failure == nil ? chatID.flatMap { id in (try? core.messages(chatId: id))?.last { $0.role == "assistant" }?.attachments } ?? [] : []
         update { m in
             m.isStreaming = false
             m.activity = nil
             if let failure, m.content.isEmpty { m.content = failure; m.failed = true }
+            if !made.isEmpty { m.files = made }
         }
         streaming = false
     }

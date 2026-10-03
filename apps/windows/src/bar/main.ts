@@ -58,6 +58,8 @@ let tick = 0;
 let hooksConnected = false;
 /** Buddy is answering in the chat (shown beside the bar while the chat is closed). */
 let buddyBusy = false;
+/** What Buddy's turn is doing (the core's ChatActivity): the ear shows its icon. */
+let buddyActivity: { kind: string; label: string } | null = null;
 let usage: ProviderUsage[] = [];
 /** Today's «mensajitos», newest first. */
 let news: BriefingItem[] = [];
@@ -115,12 +117,29 @@ function earKind(): "session" | "buddy" | "focus" | "music" | "none" {
   return "none";
 }
 
+/** Tabler paths (MIT) and colours for what Buddy is doing: Word blue, Excel green, PowerPoint orange… */
+const ACTIVITY: Record<string, [string, string]> = {
+  word: [TABLER.fileText, "#4f8be0"],
+  excel: ["M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z M3 10h18 M10 3v18", "#3fb97a"],
+  powerpoint: ["M3 4h18 M4 4v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-10 M12 16v4 M9 20h6 M8 12l3 -3l2 2l3 -3", "#f0784a"],
+  web: [TABLER.world, "var(--mint)"],
+  read: [TABLER.search, "#fafafa"],
+  command: ["M5 7l5 5l-5 5 M12 19h7", "#fafafa"],
+  edit: [TABLER.pencil, "#fafafa"],
+  screen: ["M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0 M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6", "var(--indigo)"],
+  music: [TABLER.musicNote, "var(--mint)"],
+  skill: [TABLER.sparkles, "var(--indigo)"],
+};
+
 function drawEars(active: Session | undefined) {
   const kind = earKind();
   if (kind === "buddy") {
     $("ear-left").replaceChildren(h("span", { style: "display:inline-grid" }, icon(TABLER.sparkles, 14)));
-    $("ear-right").replaceChildren(h("span", { class: "thinking" }, h("i"), h("i"), h("i")));
-    ears.title = "Buddy está respondiendo";
+    const doing = buddyActivity && ACTIVITY[buddyActivity.kind];
+    $("ear-right").replaceChildren(doing
+      ? h("span", { class: `activity-glyph ${buddyActivity!.kind}`, style: `color:${doing[1]}` }, icon(doing[0], 14))
+      : h("span", { class: "thinking" }, h("i"), h("i"), h("i")));
+    ears.title = buddyActivity?.label ?? "Buddy está respondiendo";
     return;
   }
   if (kind === "music" && track) {
@@ -374,9 +393,21 @@ function onCore(e: CoreEvent) {
     case "mascotState": {
       const state = (e as Extract<CoreEvent, { type: "mascotState" }>).state;
       const busy = state === "think" || state === "work";
+      if (!busy) buddyActivity = null;
       if (busy !== buddyBusy) { buddyBusy = busy; render(); }
       break;
     }
+    case "chatActivity": {
+      const a = e as unknown as { kind: string; label: string };
+      buddyActivity = { kind: a.kind, label: a.label };
+      if (mode() === "idle") render();
+      break;
+    }
+    case "chatDone":
+    case "chatFailed":
+      buddyActivity = null;
+      if (mode() === "idle") render();
+      break;
     case "focusChanged":
       void invoke<FocusStatus>("focus_status").then((f) => { focus = f.running ? f : null; render(); });
       break;

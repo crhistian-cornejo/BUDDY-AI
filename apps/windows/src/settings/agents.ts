@@ -1,8 +1,9 @@
-// Settings › Agentes: each agent's model (the router, or one fixed) and what it may do, plus a way to their agent.md
-// files. Twin of AgentSettings in apps/macos/Sources/Settings/SettingsView.swift.
+// Settings › Agentes: each agent's model (the router, or one fixed), what it may do and its face, plus a way to their
+// agent.md files. Twin of AgentSettings in apps/macos/Sources/Settings/SettingsView.swift.
 import { invoke } from "@tauri-apps/api/core";
 import { h } from "../chat/dom";
-import { buddyFace } from "../chat/avatar";
+import { agentFace } from "../chat/avatar";
+import { faceEditor } from "./face-editor";
 import { SETTINGS_ICONS } from "./icons";
 import { button, emptyRow, errorText, header, icon, providerMark, row, section } from "./ui";
 
@@ -12,9 +13,7 @@ interface ModelOption { id: string; name: string; provider: string }
 
 function avatar(agent: Agent): HTMLElement {
   const box = h("span", { class: "avatar", "aria-hidden": "true" }, icon(SETTINGS_ICONS.userCircle, 20));
-  if (agent.id === "buddy") {
-    void buddyFace().then((url) => { if (url) box.replaceChildren(h("img", { src: url, alt: "", class: "pixel" })); });
-  }
+  void agentFace(agent.id).then((url) => { if (url) box.replaceChildren(h("img", { src: url, alt: "", class: "pixel" })); });
   return box;
 }
 
@@ -68,7 +67,10 @@ export async function renderAgents(view: HTMLElement): Promise<void> {
         });
         return h("label", { class: "perm", title: p.detail }, box, h("span", { id: `perm-${agent.id}-${p.id}`, text: p.name }));
       }));
-      return section(null, title(agent), row("Modelo", null, modelControl), row("Puede", null, checks)).el;
+      const head = title(agent);
+      const face = row("Cara", null, faceEditor(agent.id, agent.name, () => head.querySelector(".avatar")?.replaceWith(avatar(agent))));
+      face.classList.add("face-row");
+      return section(null, head, row("Modelo", null, modelControl), row("Puede", null, checks), face).el;
     }));
   }
 
