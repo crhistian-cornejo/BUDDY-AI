@@ -158,13 +158,13 @@ impl BuddyCore {
             bus.clone(),
             Arc::new(telegram::HttpApi),
             Box::new(telegram::TokenSecret),
-            Box::new(move |text| {
-                engine.run_direct(telegram::CHAT_ID, telegram::CHAT_TITLE, telegram::AGENT, text, true).map_err(|e| match e {
+            Box::new(move |text, files| {
+                engine.run_direct_with_attachments(telegram::CHAT_ID, telegram::CHAT_TITLE, telegram::AGENT, text, true, files).map_err(|e| match e {
                     CoreError::Store(m) | CoreError::Hooks(m) => m,
                     other => other.to_string(),
                 })
             }),
-        ));
+        ).with_media_dir(data_dir.join("telegram-bot-media")));
         let telegram_account = telegram_account::Account::new(store.clone(), data_dir.clone());
         Ok(Self { telegram_account, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram })
     }

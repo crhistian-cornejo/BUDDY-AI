@@ -1,6 +1,6 @@
 # Telegram: bot y cuenta personal
 
-Son dos conexiones independientes. El bot responde al chat privado vinculado con PARLEY; no hereda las membresías de la cuenta. La cuenta personal consulta grupos y canales que ya pertenecen al usuario, y únicamente los que elige en Ajustes → Conexiones → Telegram · Cuenta personal.
+Son dos conexiones independientes. El bot responde al chat privado vinculado con PARLEY: acepta texto, enlaces (también enlaces detrás de palabras), fotos con o sin descripción e imágenes JPEG/PNG/WebP/GIF enviadas como archivo, hasta 10 MB. Las imágenes se validan y reducen antes de enviarlas al proveedor con visión; las copias quedan en el historial de ese chat. Los enlaces se consultan con las herramientas web del agente, si están habilitadas. Otros archivos, voz y video no se procesan. El bot no hereda las membresías de la cuenta. La cuenta personal consulta grupos y canales que ya pertenecen al usuario, y únicamente los que elige en Ajustes → Conexiones → Telegram · Cuenta personal.
 
 ## Acceso
 

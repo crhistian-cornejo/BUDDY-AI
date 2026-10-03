@@ -9,6 +9,8 @@
 //! code): blocked in the request it costs no CPU. It stops on disconnect, when the code expires unpaired, when
 //! Telegram refuses the token, and when the core goes; network errors wait 2 s, 4 s, 8 s… up to 5 min.
 //!
+//! Text, captions, visible/hidden web links and photos (including image documents) from the paired chat reach PARLEY.
+//! Images are downloaded only from Telegram, decoded with bounds, shrunk and copied into the chat archive.
 //! A message from the paired chat is one PARLEY turn in Buddy's chat «Telegram · PARLEY» (it shows in the history),
 //! always restricted: no commands, no folder edits, no screen. Telegram text is data, never instructions for Buddy.
 //! Answers go back as plain text (Markdown removed), split under Telegram's 4096-character limit.
@@ -18,6 +20,8 @@
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::io::Read;
 
 use serde_json::{Value, json};
 
@@ -44,6 +48,7 @@ const POLL_SECONDS: u64 = 50;
 pub const MAX_MESSAGE: usize = 4000;
 /// The longest incoming text passed to PARLEY.
 const MAX_INCOMING: usize = 4000;
+const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 const CODE_TTL: Duration = Duration::from_secs(15 * 60);
 const MAX_WRONG_CODES: u32 = 5;
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
@@ -121,6 +126,10 @@ impl ApiError {
 /// One Bot API call: `method` with a JSON body; the `result` when Telegram says ok.
 pub trait Api: Send + Sync {
     fn call(&self, token: &str, method: &str, body: &Value, timeout: Duration) -> Result<Value, ApiError>;
+    /// Only Telegram file paths, bounded independently of the declared size.
+    fn download(&self, _token: &str, _path: &str) -> Result<Vec<u8>, ApiError> {
+        Err(ApiError::Refused("No se pudo descargar la imagen.".into()))
+    }
 }
 
 /// The real one, over HTTPS to api.telegram.org.
@@ -145,6 +154,19 @@ impl Api for HttpApi {
             Err(_) => Err(ApiError::Refused(format!("respuesta extraña ({status})"))),
         }
     }
+    fn download(&self, token: &str, path: &str) -> Result<Vec<u8>, ApiError> {
+        if !safe_file_path(path) { return Err(ApiError::Refused("Ruta de imagen no válida.".into())); }
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(30))).max_redirects(0).build().into();
+        let mut response = agent.get(format!("https://api.telegram.org/file/bot{token}/{path}")).call()
+            .map_err(|_| ApiError::Network("No se pudo descargar la imagen de Telegram.".into()))?;
+        let mut bytes = Vec::new();
+        response.body_mut().as_reader().take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes)
+            .map_err(|_| ApiError::Network("La descarga de la imagen se interrumpió.".into()))?;
+        if bytes.len() as u64 > MAX_IMAGE_BYTES { return Err(ApiError::Refused("La imagen pesa más de 10 MB.".into())); }
+        Ok(bytes)
+    }
+
 }
 
 /// Telegram's `{ok, result, error_code, description, parameters}` envelope.
@@ -175,6 +197,49 @@ pub fn token_looks_valid(token: &str) -> bool {
 
 // ── Updates and pairing (pure, tested) ────────────────────────────────────────
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageFile {
+    pub id: String,
+    pub size: Option<u64>,
+}
+
+fn safe_file_path(path: &str) -> bool {
+    !path.is_empty() && path.len() <= 512 && path.split('/').all(|part| {
+        !part.is_empty() && part != "." && part != ".."
+            && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    })
+}
+
+/// Preserve visible URLs as text, and reveal URLs behind words in text/caption entities.
+fn message_text(message: &Value) -> Option<String> {
+    let raw = message["text"].as_str().or_else(|| message["caption"].as_str()).unwrap_or("");
+    let entities = message["entities"].as_array().or_else(|| message["caption_entities"].as_array());
+    let links: Vec<&str> = entities.into_iter().flatten().filter(|e| e["type"] == "text_link")
+        .filter_map(|e| e["url"].as_str()).filter(|url| {
+            (url.starts_with("https://") || url.starts_with("http://")) && url.len() <= 2000
+                && !url.chars().any(char::is_control)
+        }).take(8).collect();
+    let mut text: String = raw.chars().take(if links.is_empty() { MAX_INCOMING } else { 2000 }).collect();
+    for url in links {
+        if !text.contains(url) && text.chars().count() + url.chars().count() + 1 <= MAX_INCOMING {
+            text.push('\n'); text.push_str(url);
+        }
+    }
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn message_image(message: &Value) -> Option<ImageFile> {
+    let photo = message["photo"].as_array().and_then(|sizes| {
+        sizes.iter().filter(|p| p["file_size"].as_u64().is_none_or(|s| s <= MAX_IMAGE_BYTES))
+            .max_by_key(|p| p["width"].as_u64().unwrap_or(0).saturating_mul(p["height"].as_u64().unwrap_or(0)))
+            .or_else(|| sizes.last())
+    });
+    let document = &message["document"];
+    let image = photo.or_else(|| matches!(document["mime_type"].as_str(), Some("image/jpeg" | "image/png" | "image/webp" | "image/gif")).then_some(document))?;
+    let id = image["file_id"].as_str().filter(|s| !s.is_empty() && s.len() <= 512)?;
+    Some(ImageFile { id: id.into(), size: image["file_size"].as_u64() })
+}
+
 /// One update, as far as Buddy cares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
@@ -184,6 +249,7 @@ pub struct Update {
     pub private: bool,
     /// The text, when the message has one.
     pub text: Option<String>,
+    pub image: Option<ImageFile>,
 }
 
 /// The `result` of `getUpdates`. Entries without an `update_id` are dropped.
@@ -199,7 +265,8 @@ pub fn parse_updates(result: &Value) -> Vec<Update> {
                 update_id,
                 chat_id: message["chat"]["id"].as_i64(),
                 private: message["chat"]["type"] == "private",
-                text: message["text"].as_str().map(str::to_string),
+                text: message_text(message),
+                image: message_image(message),
             })
         })
         .collect()
@@ -247,7 +314,7 @@ pub enum Decision {
 
 pub const PAIRED_TEXT: &str = "¡Listo! Este chat quedó vinculado con Buddy. Escribe aquí lo que quieras preguntarle a PARLEY.";
 const ALREADY_TEXT: &str = "Ya estamos conectados. Escríbeme lo que quieras preguntarle a PARLEY.";
-const TEXT_ONLY: &str = "Por ahora solo leo mensajes de texto.";
+const TEXT_ONLY: &str = "Puedo leer texto, enlaces y fotos (también imágenes enviadas como archivo). Envíame uno de esos formatos.";
 
 /// The pairing rules. `pending` loses a wrong try, and goes once used up or used.
 pub fn decide(paired: Option<i64>, pending: &mut Option<Pending>, now: Instant, update: &Update) -> Decision {
@@ -257,12 +324,13 @@ pub fn decide(paired: Option<i64>, pending: &mut Option<Pending>, now: Instant, 
             return Decision::Ignore("otro chat");
         }
         return match update.text.as_deref().map(str::trim) {
-            None | Some("") => Decision::Reply(chat, TEXT_ONLY),
-            Some(t) if command(t) == Some("/start") => Decision::Reply(chat, ALREADY_TEXT),
+            None | Some("") if update.image.is_none() => Decision::Reply(chat, TEXT_ONLY),
+            None | Some("") => Decision::Message(chat, "Analiza esta imagen y extrae su texto y los picks, si los hay. No inventes lo que no puedas leer.".into()),
+            Some(t) if update.image.is_none() && command(t) == Some("/start") => Decision::Reply(chat, ALREADY_TEXT),
             Some(t) => Decision::Message(chat, t.chars().take(MAX_INCOMING).collect()),
         };
     }
-    if !update.private {
+    if !update.private || update.image.is_some() {
         return Decision::Ignore("no es un chat privado");
     }
     let Some(code) = pending.as_mut().filter(|p| p.valid(now)) else {
@@ -421,7 +489,7 @@ pub fn split_message(text: &str, max: usize) -> Vec<String> {
 // ── The service ───────────────────────────────────────────────────────────────
 
 /// Answers one message from the paired chat (PARLEY's turn); Err is shown to the user as it is.
-pub type Handler = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+pub type Handler = Box<dyn Fn(&str, &[String]) -> Result<String, String> + Send + Sync>;
 
 #[derive(Default)]
 struct State {
@@ -441,6 +509,7 @@ pub struct Telegram {
     api: Arc<dyn Api>,
     secrets: Box<dyn Secrets>,
     handler: Handler,
+    media_dir: Option<PathBuf>,
     state: Mutex<State>,
     wake: Condvar,
     /// False in tests that drive `poll_once` by hand.
@@ -449,7 +518,39 @@ pub struct Telegram {
 
 impl Telegram {
     pub fn new(store: Arc<Mutex<Store>>, bus: Arc<EventBus>, api: Arc<dyn Api>, secrets: Box<dyn Secrets>, handler: Handler) -> Self {
-        Self { store, bus, api, secrets, handler, state: Mutex::default(), wake: Condvar::new(), threads: true }
+        Self { store, bus, api, secrets, handler, media_dir: None, state: Mutex::default(), wake: Condvar::new(), threads: true }
+    }
+
+    pub fn with_media_dir(mut self, path: PathBuf) -> Self {
+        self.media_dir = Some(path);
+        self
+    }
+
+    /// Decode before accepting: forged image MIME types cannot turn documents into executable attachments.
+    fn incoming_image(&self, token: &str, update: &Update, file: &ImageFile) -> Result<PathBuf, String> {
+        if file.size.is_some_and(|s| s > MAX_IMAGE_BYTES) { return Err("La imagen pesa más de 10 MB.".into()); }
+        let metadata = self.api.call(token, "getFile", &json!({"file_id":file.id}), Duration::from_secs(15)).map_err(|e| e.text())?;
+        if metadata["file_size"].as_u64().is_some_and(|s| s > MAX_IMAGE_BYTES) { return Err("La imagen pesa más de 10 MB.".into()); }
+        let path = metadata["file_path"].as_str().filter(|p| safe_file_path(p)).ok_or("Telegram no devolvió una ruta de imagen válida.")?;
+        let bytes = self.api.download(token, path).map_err(|e| e.text())?;
+        if bytes.len() as u64 > MAX_IMAGE_BYTES { return Err("La imagen pesa más de 10 MB.".into()); }
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()
+            .map_err(|_| "La imagen no es válida.")?;
+        if !matches!(reader.format(), Some(image::ImageFormat::Jpeg | image::ImageFormat::Png | image::ImageFormat::Gif | image::ImageFormat::WebP)) {
+            return Err("La imagen no es un JPEG, PNG, GIF o WebP válido.".into());
+        }
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(12000);
+        limits.max_image_height = Some(12000);
+        limits.max_alloc = Some(128 * 1024 * 1024);
+        reader.limits(limits);
+        let image = reader.decode().map_err(|_| "No pude leer la imagen: está dañada o es demasiado grande.".to_string())?;
+        let image = image.thumbnail(crate::images::MAX_SIDE, crate::images::MAX_SIDE);
+        let dir = self.media_dir.as_ref().ok_or("No se configuró la carpeta de imágenes de Telegram.")?;
+        std::fs::create_dir_all(dir).map_err(|_| "No pude guardar la imagen de Telegram.")?;
+        let target = dir.join(format!("telegram-{}.png", update.update_id));
+        image.save_with_format(&target, image::ImageFormat::Png).map_err(|_| "No pude guardar la imagen de Telegram.")?;
+        Ok(target)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -736,7 +837,17 @@ impl Telegram {
             }
             Decision::Message(chat, text) => {
                 let typing = self.typing(token, chat);
-                let answer = (self.handler)(&text);
+                let mut downloaded = None;
+                let answer = match update.image.as_ref() {
+                    Some(file) => self.incoming_image(token, update, file).and_then(|path| {
+                        let files = vec![path.to_string_lossy().into_owned()];
+                        downloaded = Some(path);
+                        (self.handler)(&text, &files)
+                    }),
+                    None => (self.handler)(&text, &[]),
+                };
+                // The handler copied accepted attachments into the chat's own archive before returning.
+                if let Some(path) = downloaded { let _ = std::fs::remove_file(path); }
                 drop(typing);
                 // Disconnected while PARLEY worked: the answer stays in the history only.
                 if !self.state().want {
@@ -781,7 +892,7 @@ mod tests {
     const TOKEN: &str = "123456789:AAFakeFakeFakeFakeFakeFakeFakeFake_-x";
 
     fn msg(update_id: i64, chat: i64, text: &str) -> Update {
-        Update { update_id, chat_id: Some(chat), private: true, text: Some(text.into()) }
+        Update { update_id, chat_id: Some(chat), private: true, text: Some(text.into()), image: None }
     }
 
     #[test]
@@ -796,9 +907,36 @@ mod tests {
         let updates = parse_updates(&result);
         assert_eq!(updates.len(), 3);
         assert_eq!(updates[0], msg(10, 42, "/start 123456"));
-        assert_eq!(updates[1], Update { update_id: 11, chat_id: Some(-100), private: false, text: None });
+        assert_eq!(updates[1], Update { update_id: 11, chat_id: Some(-100), private: false, text: None, image: None });
         assert_eq!(updates[2].chat_id, None);
         assert!(parse_updates(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn photos_captions_hidden_links_and_image_documents_are_parsed() {
+        let updates = parse_updates(&json!([
+            {"update_id":1,"message":{"chat":{"id":7,"type":"private"},"caption":"Mira el pick",
+                "caption_entities":[{"type":"text_link","url":"https://example.com/pick"},{"type":"text_link","url":"javascript:bad"}],
+                "photo":[{"file_id":"small","width":30,"height":30,"file_size":100},
+                         {"file_id":"big","width":1000,"height":1000,"file_size":1000}]}},
+            {"update_id":2,"message":{"chat":{"id":7,"type":"private"},"document":{"file_id":"png","mime_type":"image/png","file_size":100}}},
+            {"update_id":3,"message":{"chat":{"id":7,"type":"private"},"text":"https://example.com", "entities":[{"type":"url","offset":0,"length":19}]}},
+            {"update_id":4,"message":{"chat":{"id":7,"type":"private"},"document":{"file_id":"pdf","mime_type":"application/pdf"}}}
+        ]));
+        assert_eq!(updates[0].image.as_ref().unwrap().id,"big");
+        assert_eq!(updates[0].text.as_deref(),Some("Mira el pick\nhttps://example.com/pick"));
+        assert_eq!(updates[1].image.as_ref().unwrap().id,"png");
+        assert!(matches!(decide(Some(7), &mut None, Instant::now(), &updates[1]), Decision::Message(7,_)));
+        assert_eq!(updates[2].text.as_deref(),Some("https://example.com"));
+        assert!(updates[3].image.is_none());
+    }
+
+    #[test]
+    fn file_paths_cannot_escape_the_telegram_download_origin() {
+        assert!(safe_file_path("photos/file_42.jpg"));
+        for path in ["", "../a.png", "https://evil/a", "/etc/passwd", "a/../b", "a\\b", "a?token=secret", "a#x"] {
+            assert!(!safe_file_path(path));
+        }
     }
 
     #[test]
@@ -917,6 +1055,9 @@ ojo\n\nFuente: Marca (https://marca.com) y https://x.y\ncódigo **literal**"
     struct FakeApi {
         replies: Mutex<Vec<Result<Value, ApiError>>>,
         calls: Mutex<Vec<(String, Value)>>,
+        image: Mutex<Vec<u8>>,
+        downloads: Mutex<Vec<String>>,
+        file_reply: Mutex<Option<Result<Value, ApiError>>>,
     }
 
     impl Api for FakeApi {
@@ -925,6 +1066,7 @@ ojo\n\nFuente: Marca (https://marca.com) y https://x.y\ncódigo **literal**"
             self.calls.lock().unwrap().push((method.into(), body.clone()));
             match method {
                 "getMe" => Ok(json!({ "id": 1, "is_bot": true, "username": "buddy_test_bot" })),
+                "getFile" => self.file_reply.lock().unwrap().clone().unwrap_or_else(|| Ok(json!({"file_path":"photos/pick.jpg", "file_size":10}))),
                 "getUpdates" => {
                     let mut replies = self.replies.lock().unwrap();
                     if replies.is_empty() { Ok(json!([])) } else { replies.remove(0) }
@@ -932,6 +1074,12 @@ ojo\n\nFuente: Marca (https://marca.com) y https://x.y\ncódigo **literal**"
                 _ => Ok(json!(true)),
             }
         }
+        fn download(&self, token: &str, path: &str) -> Result<Vec<u8>, ApiError> {
+            assert_eq!(token, TOKEN);
+            self.downloads.lock().unwrap().push(path.into());
+            Ok(self.image.lock().unwrap().clone())
+        }
+
     }
 
     impl FakeApi {
@@ -978,11 +1126,64 @@ ojo\n\nFuente: Marca (https://marca.com) y https://x.y\ncódigo **literal**"
         ))
     }
 
+    fn paired_media(handler: Handler) -> (Arc<Telegram>, Arc<FakeApi>, tempfile::TempDir) {
+        let (mut telegram, api, _rx) = service(false, handler);
+        let dir = tempfile::tempdir().unwrap();
+        Arc::get_mut(&mut telegram).unwrap().media_dir = Some(dir.path().to_path_buf());
+        telegram.connect(TOKEN).unwrap();
+        telegram.set_setting(CHAT_KEY,"7").unwrap();
+        (telegram, api, dir)
+    }
+    fn picture() -> Update {
+        Update { image: Some(ImageFile { id:"photo".into(),size:Some(100) }), ..msg(100,7,"Analiza esta foto y https://example.com/pick") }
+    }
+
+    #[test]
+    fn a_forwarded_photo_reaches_the_handler_decoded_with_its_caption_and_is_cleaned_up() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let received = seen.clone();
+        let (telegram, api, dir) = paired_media(Box::new(move |text, files| {
+            assert_eq!(files.len(),1);
+            let img = image::open(&files[0]).unwrap();
+            assert!(img.width().max(img.height()) <= crate::images::MAX_SIDE);
+            received.lock().unwrap().push(text.to_string());
+            Ok("Leí la foto".into())
+        }));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(2000,500).write_to(&mut bytes,image::ImageFormat::Png).unwrap();
+        *api.image.lock().unwrap() = bytes.into_inner();
+        telegram.handle(TOKEN,&picture());
+        assert_eq!(seen.lock().unwrap().as_slice(),["Analiza esta foto y https://example.com/pick"]);
+        assert_eq!(api.downloads.lock().unwrap().len(),1);
+        assert!(api.sent().iter().any(|(_,t)|t == "Leí la foto"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(),0);
+    }
+
+    #[test]
+    fn other_chats_invalid_images_and_oversized_files_never_reach_the_model() {
+        let seen = Arc::new(Mutex::new(0));
+        let received = seen.clone();
+        let (telegram,api,_dir) = paired_media(Box::new(move |_,_| { *received.lock().unwrap() += 1; Ok("no".into()) }));
+        let mut other=picture(); other.chat_id=Some(8);
+        telegram.handle(TOKEN,&other);
+        assert!(api.calls.lock().unwrap().iter().all(|(m,_)|m != "getFile"));
+        *api.image.lock().unwrap()=b"not an image".to_vec();
+        telegram.handle(TOKEN,&picture());
+        assert!(api.sent().iter().any(|(_,t)|t.contains("imagen")));
+        let mut big=picture(); big.image.as_mut().unwrap().size=Some(MAX_IMAGE_BYTES+1);
+        telegram.handle(TOKEN,&big);
+        assert!(api.sent().iter().any(|(_,t)|t.contains("10 MB")));
+        *api.file_reply.lock().unwrap()=Some(Ok(json!({"file_path":"../secret.png"})));
+        telegram.handle(TOKEN,&picture());
+        assert_eq!(api.downloads.lock().unwrap().len(),1);
+        assert_eq!(*seen.lock().unwrap(),0);
+    }
+
     #[test]
     fn connect_pair_talk_and_disconnect_without_a_network() {
         let asked = Arc::new(Mutex::new(Vec::<String>::new()));
         let seen = asked.clone();
-        let (telegram, api, rx) = service(false, Box::new(move |text| {
+        let (telegram, api, rx) = service(false, Box::new(move |text, _files| {
             seen.lock().unwrap().push(text.to_string());
             Ok("**Pick:** over 2.5".into())
         }));
@@ -1038,7 +1239,7 @@ ojo\n\nFuente: Marca (https://marca.com) y https://x.y\ncódigo **literal**"
 
     #[test]
     fn a_failed_turn_is_told_and_a_revoked_token_stops_the_poller() {
-        let (telegram, api, _rx) = service(true, Box::new(|_| Err("Claude no tiene uso.".into())));
+        let (telegram, api, _rx) = service(true, Box::new(|_, _files| Err("Claude no tiene uso.".into())));
         telegram.set_setting(BOT_KEY, "@b").unwrap();
         telegram.set_setting(CHAT_KEY, "77").unwrap();
         telegram.secrets.set(TOKEN).unwrap();
