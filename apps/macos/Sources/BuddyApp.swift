@@ -51,6 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 chat?.handle(event)
                 notch?.handle(event)
                 if case let .mascotState(state) = event { pet?.showMascotState(state) }
+                switch event {
+                case .usageChanged, .chatDone, .chatFailed:
+                    NotificationCenter.default.post(name: .buddyUsageChanged, object: nil)
+                default: break
+                }
                 // A new «mensajito»: Buddy says the first line; the notch keeps the list.
                 if case let .briefingReady(count, headline) = event {
                     pet?.say(Self.short(headline) + (count > 1 ? " (+\(count - 1))" : ""), seconds: 8)

@@ -211,6 +211,7 @@ pub fn run() {
             hooks_preview,
             hooks_write,
             token_report,
+            token_activity,
             open_agents_folder,
             briefing_topics,
             spotify_connect,
@@ -980,6 +981,11 @@ fn hooks_write(state: State<'_, AppCore>, agent: String, install: bool, fingerpr
 #[tauri::command]
 fn token_report(state: State<'_, AppCore>, days: u32) -> Result<Vec<buddy_core::TokenReport>, String> {
     state.core.token_report(days.clamp(1, 90)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn token_activity(state: State<'_, AppCore>, days: u32) -> Result<Vec<buddy_core::TokenDay>, String> {
+    state.core.token_activity(days).map_err(|e| e.to_string())
 }
 
 /// Opens `<data_dir>/agents` in the file manager (the path is decided here, never by the page).

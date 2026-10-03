@@ -33,7 +33,7 @@ pub use events::{Event, EventBus};
 pub use folders::AuthorizedFolder;
 pub use orchestrator::Agent;
 pub use providers::{ProviderId, ProviderStatus};
-pub use store::{ChatMessage, ChatSummary, SourceLink, TokenReport};
+pub use store::{ChatMessage, ChatSummary, SourceLink, TokenReport, TokenDay};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{FaceRect, Sprite, SpriteState};
 pub use briefing::BriefingItem;
@@ -268,6 +268,10 @@ impl BuddyCore {
     /// The token meter: what each feature spent over the last `days` days.
     pub fn token_report(&self, days: u32) -> Result<Vec<TokenReport>, CoreError> {
         self.with_store(|s| s.token_report(days))
+    }
+
+    pub fn token_activity(&self, days: u32) -> Result<Vec<TokenDay>, CoreError> {
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).token_activity(days)
     }
 
     /// The briefing lines of the last day («mensajitos»), newest first.

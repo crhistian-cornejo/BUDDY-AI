@@ -83,6 +83,19 @@ pub struct TokenReport {
     pub cost_usd: f64,
 }
 
+/// Recorded activity per local calendar day and provider, for the usage calendar (no invented empty-day data).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct TokenDay {
+    pub date: String,
+    pub provider: String,
+    pub turns: i64,
+    pub input: i64,
+    pub output: i64,
+    pub cached: i64,
+}
+
 /// A web page an answer used.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
@@ -337,6 +350,19 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    pub fn token_activity(&self, days: u32) -> Result<Vec<TokenDay>, CoreError> {
+        let since = format!("-{} days", days.clamp(1, 371) - 1);
+        let mut stmt = self.conn.prepare(
+            "SELECT date(at, 'unixepoch', 'localtime'), provider, COUNT(*), SUM(input), SUM(output), SUM(cached)
+             FROM token_events WHERE at >= unixepoch('now', 'localtime', 'start of day', ?1, 'utc') AND at <= unixepoch()
+             GROUP BY date(at, 'unixepoch', 'localtime'), provider ORDER BY 1, 2",
+        )?;
+        let rows = stmt.query_map(params![since], |r| Ok(TokenDay {
+            date: r.get(0)?, provider: r.get(1)?, turns: r.get(2)?, input: r.get(3)?, output: r.get(4)?, cached: r.get(5)?,
+        }))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Removes the message `from_id` and every later one of the chat (to write an answer again).
     pub fn delete_messages_from(&self, chat_id: &str, from_id: i64) -> Result<(), CoreError> {
         self.conn.execute("DELETE FROM messages WHERE chat_id = ?1 AND id >= ?2", params![chat_id, from_id])?;
@@ -499,5 +525,27 @@ mod tests {
         assert_eq!((report[0].feature.as_str(), report[0].turns, report[0].input, report[0].output), ("chat · Buddy", 2, 150, 25));
         assert!((report[0].cost_usd - 0.02).abs() < 1e-9);
         assert_eq!(report.len(), 2);
+    }
+
+    #[test]
+    fn calendar_activity_aggregates_local_days_and_keeps_providers_separate() {
+        let store = Store::open_in_memory().unwrap();
+        let t = crate::providers::TokenCount { input: 100, output: 20, cached: 50, ..Default::default() };
+        store.record_tokens("chat", "claude", &t).unwrap();
+        store.record_tokens("briefing", "claude", &t).unwrap();
+        store.record_tokens("chat", "codex", &t).unwrap();
+        store.conn.execute(
+            "INSERT INTO token_events (at, feature, provider, input, output, cached) VALUES
+             (unixepoch('now', '-2 days'), 'chat', 'claude', 10, 2, 3),
+             (unixepoch('now', '-400 days'), 'chat', 'claude', 900, 900, 900)", [],
+        ).unwrap();
+        let today: String = store.conn.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0)).unwrap();
+        let activity = store.token_activity(1).unwrap();
+        assert_eq!(activity.len(), 2);
+        assert_eq!(activity[0], TokenDay { date: today.clone(), provider: "claude".into(), turns: 2, input: 200, output: 40, cached: 100 });
+        assert_eq!(activity[1].date, today);
+        assert_eq!(activity[1].provider, "codex");
+        assert_eq!(store.token_activity(371).unwrap().len(), 3, "old data is outside the calendar");
+        assert_eq!(store.token_activity(0).unwrap(), activity, "clamps to at least today");
     }
 }

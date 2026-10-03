@@ -6,6 +6,7 @@ import { applyTokens } from "../tokens";
 import { h } from "../chat/dom";
 import { TABLER } from "../chat/tabler";
 import { renderAgents } from "./agents";
+import { usageCalendar, type TokenDay } from "./usage-calendar";
 import { SETTINGS_ICONS } from "./icons";
 import { button, emptyRow, errorText, header, icon, iconButton, k, providerMark, row, section, settingRow } from "./ui";
 
@@ -251,7 +252,17 @@ async function renderUsage(view: HTMLElement) {
   void invoke("refresh_usage").catch(() => {});
   const plans = section("Tus planes");
   const tokens = section("Tokens de los últimos 7 días");
-  view.append(header("Uso"), plans.el, tokens.el);
+  const calendar = h("section", { class: "group" });
+  view.append(header("Uso"), calendar, plans.el, tokens.el);
+
+  async function drawCalendar() {
+    try {
+      const days = await invoke<TokenDay[]>("token_activity", { days: 371 });
+      calendar.replaceChildren(usageCalendar(days));
+    } catch {
+      calendar.replaceChildren(emptyRow("No se pudo cargar la actividad."));
+    }
+  }
 
   async function drawPlans() {
     const usage = await invoke<ProviderUsage[]>("usage").catch(() => [] as ProviderUsage[]);
@@ -279,8 +290,12 @@ async function renderUsage(view: HTMLElement) {
     }) : [emptyRow("Todavía no hay turnos medidos.")]));
   }
 
-  onCoreEvent = (e) => { if (e.type === "usageChanged") void drawPlans(); };
-  await Promise.all([drawPlans(), drawTokens()]);
+  onCoreEvent = (e) => {
+    if (["usageChanged", "chatDone", "chatFailed"].includes(e.type)) {
+      void Promise.all([drawPlans(), drawTokens(), drawCalendar()]);
+    }
+  };
+  await Promise.all([drawPlans(), drawTokens(), drawCalendar()]);
 }
 
 // MARK: Mensajitos

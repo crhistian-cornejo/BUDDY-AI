@@ -39,6 +39,11 @@ struct ComposerView: View {
         .padding(.trailing, 8)
         .padding(.vertical, 8)
         .frame(width: ChatMetrics.composerWidth)
+        .overlay {
+            RoundedRectangle(cornerRadius: ChatMetrics.composerHeight / 2, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(focused ? 0.65 : 0), lineWidth: 1.5)
+                .allowsHitTesting(false)
+        }
         .onAppear {
             focused = true
             installPasteMonitor()

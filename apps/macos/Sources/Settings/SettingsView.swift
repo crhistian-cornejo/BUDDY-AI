@@ -317,13 +317,18 @@ private struct SpotifySection: View {
     }
 }
 
-private struct UsageSettings: View {
+struct UsageSettings: View {
     let core: BuddyCore
     @State private var plans: [ProviderUsage] = []
     @State private var report: [TokenReport] = []
+    @State private var activity: [TokenDay] = []
 
     var body: some View {
         Form {
+            Section {
+                UsageCalendar(days: activity)
+                    .listRowInsets(EdgeInsets())
+            }
             Section("Tus planes") {
                 if plans.isEmpty {
                     Text("Aparecen después del primer chat con Claude o Codex.").foregroundStyle(.secondary)
@@ -358,9 +363,15 @@ private struct UsageSettings: View {
         .formStyle(.grouped)
         .onAppear {
             core.refreshUsage()
-            plans = core.usage()
-            report = (try? core.tokenReport(days: 7)) ?? []
+            reload()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .buddyUsageChanged)) { _ in reload() }
+    }
+
+    private func reload() {
+        plans = core.usage()
+        report = (try? core.tokenReport(days: 7)) ?? []
+        activity = (try? core.tokenActivity(days: 371)) ?? []
     }
 
     static func k(_ n: Int64) -> String {
@@ -442,6 +453,7 @@ private struct BriefingSettings: View {
 extension Notification.Name {
     /// Posted when the core announces new «mensajitos» (Settings refreshes its list).
     static let buddyBriefingReady = Notification.Name("buddy.briefingReady")
+    static let buddyUsageChanged = Notification.Name("buddy.usageChanged")
 }
 
 private struct AgentSettings: View {
