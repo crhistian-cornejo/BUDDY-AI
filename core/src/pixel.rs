@@ -193,12 +193,21 @@ mod tests {
     }
 
     #[test]
-    fn buddy_base_is_48px_and_breathes_in_two_frames() {
+    fn buddy_base_idle_moves_eyes_and_hands_without_moving_the_body() {
         let c = builtin("buddy-base").unwrap();
         assert_eq!(c.size, 48);
         let idle = &c.states["idle"];
-        assert_eq!(idle.frames.len(), 2);
-        assert_ne!(idle.frames[0], idle.frames[1], "the two idle frames differ (breathing)");
+        assert_eq!(idle.frames.len(), 8);
+        let base = &idle.frames[0];
+        let region = |frame: &Vec<String>, rows: std::ops::Range<usize>, cols: std::ops::Range<usize>| {
+            rows.map(|y| frame[y][cols.clone()].to_string()).collect::<Vec<_>>()
+        };
+        assert_ne!(region(base, 22..26, 18..30), region(&idle.frames[2], 22..26, 18..30), "eyes look sideways");
+        assert_ne!(region(base, 34..41, 12..15), region(&idle.frames[1], 34..41, 12..15), "left hand moves");
+        assert_ne!(region(base, 34..41, 33..37), region(&idle.frames[5], 34..41, 33..37), "right hand moves");
+        for frame in &idle.frames {
+            assert_eq!(region(base, 42..48, 0..48), region(frame, 42..48, 0..48), "feet stay still");
+        }
     }
 
     #[test]

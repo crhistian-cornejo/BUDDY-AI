@@ -43,7 +43,7 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 
 | Estado | Fotogramas | Animación | Prioridad |
 | --- | --- | --- | --- |
-| Reposo | 2 | Respira: el cuerpo sube 1 px cada pocos segundos | — |
+| Reposo | 8 | Mueve una mano cada vez, mira a los lados y parpadea; cuerpo y pies quietos | — |
 | Escuchando | 4 | Ondas de sonido junto a la cabeza; la pantalla muestra barras | 1 |
 | Pensando | 4 | Tres puntos en la pantalla de la cara | 4 |
 | Trabajando | 6 | Teclea o «busca» (lupa pixel); línea de estado en la burbuja | 4 |
@@ -69,6 +69,17 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 - **«Pasear por la pantalla»** se desactiva desde el clic derecho.
 - **Al soltarla** después de arrastrarla, `clamp_to_area` la devuelve entera dentro del área útil (bordes y esquinas, bajo la barra de menús y sobre el Dock o la barra de tareas).
 - **Entre planes no corre nada.**
+
+Actualización 2026-10-02: `idle` dura 2 s a 4 fps y alterna ojos y manos sin desplazar la ventana. Mac y Windows
+usan los mismos ocho fotogramas. Con «reducir movimiento» las interfaces muestran un fotograma fijo por estado.
+En Mac una reproducción nueva interrumpe la anterior para que el reposo no tape el estado de trabajo.
+
+### Menú y atajos locales
+
+En Mac: historial ⌘F, nuevo chat ⌘N, cerrar chat ⌘W/Esc, Ajustes ⌘,, pasear ⌘⇧P y salir ⌘Q.
+Los atajos funcionan mientras una ventana de Buddy tiene el foco. El menú incluye iconos para historial,
+novedades, pasear, Ajustes y salir. Windows usa Ctrl en lugar de ⌘ (historial/nuevo chat en el chat).
+Los iconos del menú contextual nativo de Windows quedan pendientes; conserva las etiquetas y la marca de paseo.
 
 ## Interacción
 

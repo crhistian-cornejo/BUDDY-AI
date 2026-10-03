@@ -11,6 +11,7 @@ final class PetModel {
 
     @ObservationIgnored private var states: [String: (fps: Double, frames: [CGImage])] = [:]
     @ObservationIgnored private let maxFps: Double
+    @ObservationIgnored private var playback = 0
 
     init(sprite: Sprite, maxFps: Double) {
         size = Int(sprite.size)
@@ -35,22 +36,33 @@ final class PetModel {
     /// Loops `name` for `duration` seconds (at least one pass), calling `step` once per frame. Ends on idle.
     func play(_ name: String, duration: TimeInterval, step: ((TimeInterval) -> Void)? = nil) async {
         guard let s = states[name] else { return }
+        playback += 1
+        let token = playback
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            show(name)
+            try? await Task.sleep(for: .seconds(duration))
+            if token == playback && !Task.isCancelled { show("idle") }
+            return
+        }
         let interval = 1 / s.fps
         let count = max(s.frames.count, Int((duration / interval).rounded()))
         for i in 0..<count {
-            if Task.isCancelled { return }
+            if Task.isCancelled || token != playback { return }
             show(name, frame: i)
             step?(interval)
             try? await Task.sleep(for: .seconds(interval))
         }
-        if !Task.isCancelled { show("idle") }
+        if !Task.isCancelled && token == playback { show("idle") }
     }
 
     /// Loops `name` until the task is cancelled (agent states, being dragged).
     func loop(_ name: String) async {
         guard let s = states[name] else { return }
+        playback += 1
+        let token = playback
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { show(name); return }
         var i = 0
-        while !Task.isCancelled {
+        while !Task.isCancelled && token == playback {
             show(name, frame: i)
             i += 1
             if s.frames.count == 1 { break }

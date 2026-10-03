@@ -349,3 +349,4 @@ async function renderBriefing(view: HTMLElement) {
 }
 
 show(TABS[0]!.id);
+import "../shortcuts";

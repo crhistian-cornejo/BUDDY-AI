@@ -72,6 +72,8 @@ final class PetWindowController: NSObject, NSWindowDelegate {
                 if Task.isCancelled { return }
                 if self.activity != nil { continue }
                 if plan.dx != 0 {
+                    // The chat or the menu may have disabled walks while this plan was waiting.
+                    if self.holdStill || !self.wander || self.context().reduceMotion { continue }
                     await self.walk(plan)
                 } else {
                     await self.model.play(plan.state, duration: Double(plan.durationMs) / 1000)
@@ -168,22 +170,26 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     private func menu() -> NSMenu {
         let menu = NSMenu()
-        let history = NSMenuItem(title: "Historial de chats", action: #selector(openHistory), keyEquivalent: "")
+        let history = NSMenuItem(title: "Historial de chats", action: #selector(openHistory), keyEquivalent: "f")
         history.target = self
         history.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
         menu.addItem(history)
         if let news = newsMenu() { menu.addItem(news) }
         menu.addItem(.separator())
-        let walk = NSMenuItem(title: "Pasear por la pantalla", action: #selector(toggleWander), keyEquivalent: "")
+        let walk = NSMenuItem(title: "Pasear por la pantalla", action: #selector(toggleWander), keyEquivalent: "p")
+        walk.keyEquivalentModifierMask = [.command, .shift]
+        walk.image = NSImage(systemSymbolName: "figure.walk", accessibilityDescription: nil)
         walk.target = self
         walk.state = wander ? .on : .off
         menu.addItem(walk)
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
+        settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         menu.addItem(settings)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Salir de Buddy", action: #selector(quit), keyEquivalent: "")
+        let quit = NSMenuItem(title: "Salir de Buddy", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
+        quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         menu.addItem(quit)
         return menu
     }
@@ -221,7 +227,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     @objc private func openHistory() { onHistory?() }
 
-    @objc private func toggleWander() {
+    @objc func toggleWander() {
         try? core.setSetting(key: "pet.wander", value: wander ? "false" : "true")
     }
 

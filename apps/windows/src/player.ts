@@ -6,6 +6,7 @@ export class Player {
   private ctx: CanvasRenderingContext2D;
   private token = 0;
   state = "idle";
+  private reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   constructor(canvas: HTMLCanvasElement, sprite: Sprite, maxFps: number) {
     canvas.width = sprite.size;
@@ -40,6 +41,13 @@ export class Player {
     const s = this.states.get(name);
     if (!s) return true;
     const token = ++this.token;
+    if (this.reduceMotion.matches) {
+      this.show(name);
+      await sleep(seconds * 1000);
+      if (token !== this.token) return false;
+      this.show("idle");
+      return true;
+    }
     const interval = 1 / s.fps;
     const count = Math.max(s.frames.length, Math.round(seconds / interval));
     for (let i = 0; i < count; i++) {
@@ -58,6 +66,7 @@ export class Player {
     const s = this.states.get(name);
     if (!s) return;
     const token = ++this.token;
+    if (this.reduceMotion.matches) { this.show(name); return; }
     for (let i = 0; token === this.token; i++) {
       this.show(name, i);
       if (s.frames.length === 1) return;

@@ -17,6 +17,7 @@ use super::process;
 use super::{Cancel, Failure, FailureKind, Provider, ProviderId, TokenCount, TurnEvent, TurnRequest};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub const DEFAULT_MODEL: &str = "gpt-6.1-sol";
 
 /// How a Codex answer is laid out so the chat renders it like a Claude one.
 const FORMAT: &str = "Formato: Markdown. Párrafos cortos; títulos ## solo si hay varias partes; listas con «- »; \
@@ -43,15 +44,17 @@ impl Codex {
             }
         }
         let mut session = Session::spawn(exe, &request.workspace)?;
-        session.request(
-            "initialize",
-            json!({ "clientInfo": { "name": "buddy", "title": "Buddy", "version": env!("CARGO_PKG_VERSION") } }),
-        )?;
+        session
+            .request("initialize", json!({ "clientInfo": { "name": "buddy", "title": "Buddy", "version": env!("CARGO_PKG_VERSION") } }))?;
         session.notify("initialized");
         let resumed = request
             .resume
             .as_ref()
-            .and_then(|id| session.request("thread/resume", json!({ "threadId": id })).ok())
+            .and_then(|id| {
+                let mut params = thread_params(request);
+                params["threadId"] = json!(id);
+                session.request("thread/resume", params).ok()
+            })
             .and_then(|r| r["thread"]["id"].as_str().map(str::to_string));
         session.thread_id = match resumed {
             Some(id) => id,
@@ -102,9 +105,7 @@ pub fn thread_params(request: &TurnRequest) -> Value {
         "developerInstructions": format!("{}\n\n{FORMAT}", request.system),
         "config": config,
     });
-    if let Some(model) = &request.model {
-        params["model"] = json!(model);
-    }
+    params["model"] = json!(request.model.as_deref().unwrap_or(DEFAULT_MODEL));
     params
 }
 
@@ -134,11 +135,14 @@ impl Provider for Codex {
         session.drain();
         let turn = session.request(
             "turn/start",
-            json!({ "threadId": session.thread_id, "input": turn_input(request) }),
+            json!({ "threadId": session.thread_id, "input": turn_input(request),
+                "model": request.model.as_deref().unwrap_or(DEFAULT_MODEL), "effort": request.effort }),
         );
         let turn_id = match turn.ok().and_then(|t| t["turn"]["id"].as_str().map(str::to_string)) {
             Some(id) => id,
-            None => return emit(TurnEvent::Failed(Failure::new("Codex no empezó la respuesta."))),
+            None => {
+                return emit(TurnEvent::Failed(Failure::new("Codex no empezó la respuesta.")));
+            }
         };
         let mut interrupted = false;
         loop {
@@ -192,15 +196,13 @@ pub fn turn_events(method: &str, params: &Value, turn_id: &str) -> Vec<TurnEvent
                 _ => vec![],
             }
         }
-        "turn/completed" if params["turn"]["id"].as_str() == Some(turn_id) => {
-            match params["turn"]["status"].as_str() {
-                Some("failed") => {
-                    let message = params["turn"]["error"]["message"].as_str().unwrap_or("Codex no pudo responder.");
-                    vec![TurnEvent::Failed(Failure::new(message))]
-                }
-                _ => vec![TurnEvent::Done],
+        "turn/completed" if params["turn"]["id"].as_str() == Some(turn_id) => match params["turn"]["status"].as_str() {
+            Some("failed") => {
+                let message = params["turn"]["error"]["message"].as_str().unwrap_or("Codex no pudo responder.");
+                vec![TurnEvent::Failed(Failure::new(message))]
             }
-        }
+            _ => vec![TurnEvent::Done],
+        },
         "account/rateLimits/updated" => vec![TurnEvent::Usage(params.clone())],
         "thread/tokenUsage/updated" if params["turnId"].as_str() == Some(turn_id) => {
             let last = &params["tokenUsage"]["last"];
@@ -258,7 +260,9 @@ impl Session {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
                 match (msg.get("id"), msg["method"].as_str()) {
                     (Some(id), Some(method)) => {
                         let mut out = stdin.lock().unwrap();
@@ -327,8 +331,12 @@ pub fn server_request_reply(id: Value, method: &str) -> Value {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
             json!({ "id": id, "result": { "decision": "decline" } })
         }
-        "item/permissions/requestApproval" => json!({ "id": id, "result": { "permissions": {}, "scope": "turn" } }),
-        _ => json!({ "id": id, "error": { "code": -32601, "message": "Buddy no atiende esta petición." } }),
+        "item/permissions/requestApproval" => {
+            json!({ "id": id, "result": { "permissions": {}, "scope": "turn" } })
+        }
+        _ => {
+            json!({ "id": id, "error": { "code": -32601, "message": "Buddy no atiende esta petición." } })
+        }
     }
 }
 
@@ -400,6 +408,6 @@ mod tests {
         assert_eq!(p["approvalPolicy"], "never");
         assert!(p["developerInstructions"].as_str().unwrap().starts_with("Eres Buddy"));
         assert_eq!(p["config"]["model_reasoning_effort"], "low");
-        assert!(p.get("model").is_none(), "without a model the user's Codex default applies");
+        assert_eq!(p["model"], "gpt-6.1-sol", "Buddy explicitly chooses the requested fallback model");
     }
 }

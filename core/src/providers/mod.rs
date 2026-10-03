@@ -148,6 +148,27 @@ pub struct Failure {
 }
 
 impl Failure {
+    /// Account exhaustion only: transient throttling and context limits must not rerun tools elsewhere.
+    pub fn is_no_usage(&self) -> bool {
+        let text = self.message.to_lowercase();
+        [
+            "usage limit",
+            "usage_limit",
+            "usagelimitexceeded",
+            "session limit",
+            "weekly limit",
+            "5-hour limit",
+            "quota",
+            "out of credits",
+            "insufficient credits",
+            "credit balance",
+            "hit your limit",
+            "reached your limit",
+        ]
+        .iter()
+        .any(|fragment| text.contains(fragment))
+    }
+
     pub fn new(message: impl Into<String>) -> Self {
         let message = message.into();
         Self { kind: classify(&message), message }
@@ -157,10 +178,14 @@ impl Failure {
     pub fn summary(&self, provider: ProviderId) -> String {
         let name = provider.display_name();
         match self.kind {
-            FailureKind::Auth => format!("Conecta tu cuenta de {name} (inicia sesión en su app o CLI)."),
+            FailureKind::Auth => {
+                format!("Conecta tu cuenta de {name} (inicia sesión en su app o CLI).")
+            }
             FailureKind::Limit => format!("Se acabó el uso de {name} por ahora. {}", first_line(&self.message)),
             FailureKind::Missing => format!("No encuentro {name} instalado en este equipo."),
-            FailureKind::Other => format!("{name} no pudo responder: {}", first_line(&self.message)),
+            FailureKind::Other => {
+                format!("{name} no pudo responder: {}", first_line(&self.message))
+            }
         }
     }
 }
@@ -186,8 +211,14 @@ pub enum TurnEvent {
     /// The provider's conversation id, to continue it next turn.
     Session(String),
     Delta(String),
-    Tool { name: String, summary: String },
-    Source { title: String, url: String },
+    Tool {
+        name: String,
+        summary: String,
+    },
+    Source {
+        title: String,
+        url: String,
+    },
     /// Plan figures the provider reported during the turn (Claude's `rate_limit_info`, Codex's rate limits).
     Usage(serde_json::Value),
     /// What the turn spent (for the token meter).

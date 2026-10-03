@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chatWindows: ChatWindows?
     private var notch: NotchController?
     private var briefingTimer: Timer?
+    private var shortcutMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let tokens = DesignTokens.load()
@@ -67,6 +68,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.pet = pet
             self.chat = chat
             self.chatWindows = windows
+            // Local shortcuts only, while a Buddy window has keyboard focus (no global keyboard hook).
+            shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self else { return event }
+                let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                let key = event.charactersIgnoringModifiers?.lowercased()
+                if modifiers == [.command, .shift], key == "p" {
+                    self.pet?.toggleWander()
+                    return nil
+                }
+                guard modifiers == .command else { return event }
+                switch key {
+                case "f": self.chatWindows?.showHistory()
+                case "n": self.chat?.newChat(); self.chatWindows?.open()
+                case "w":
+                    guard event.window is NSPanel else { return event }
+                    self.chatWindows?.close()
+                case ",": SettingsWindow.show()
+                case "q": NSApp.terminate(nil)
+                default: return event
+                }
+                return nil
+            }
             // Today's runs (8, 13, 19 h): once a little after launch, then on the hour. The core skips what already ran.
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) { core.briefingTick() }
             let timer = Timer(timeInterval: 3600, repeats: true) { _ in core.briefingTick() }

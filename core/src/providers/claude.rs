@@ -373,7 +373,9 @@ pub struct StreamParser {
 
 impl StreamParser {
     pub fn feed(&mut self, line: &str) -> Vec<TurnEvent> {
-        let Ok(obj) = serde_json::from_str::<Value>(line) else { return vec![] };
+        let Ok(obj) = serde_json::from_str::<Value>(line) else {
+            return vec![];
+        };
         match obj["type"].as_str() {
             Some("system") => {
                 if obj["subtype"] == "init" {
@@ -387,21 +389,19 @@ impl StreamParser {
             Some("stream_event") => {
                 let event = &obj["event"];
                 match event["type"].as_str() {
-                    Some("content_block_delta") if event["delta"]["type"] == "text_delta" => {
-                        match event["delta"]["text"].as_str() {
-                            Some(text) if !text.is_empty() => {
-                                self.saw_delta = true;
-                                let text = if std::mem::take(&mut self.break_before_text) && self.wrote_text {
-                                    format!("\n\n{text}")
-                                } else {
-                                    text.to_string()
-                                };
-                                self.wrote_text = true;
-                                vec![TurnEvent::Delta(text)]
-                            }
-                            _ => vec![],
+                    Some("content_block_delta") if event["delta"]["type"] == "text_delta" => match event["delta"]["text"].as_str() {
+                        Some(text) if !text.is_empty() => {
+                            self.saw_delta = true;
+                            let text = if std::mem::take(&mut self.break_before_text) && self.wrote_text {
+                                format!("\n\n{text}")
+                            } else {
+                                text.to_string()
+                            };
+                            self.wrote_text = true;
+                            vec![TurnEvent::Delta(text)]
                         }
-                    }
+                        _ => vec![],
+                    },
                     Some("content_block_start") if event["content_block"]["type"] == "tool_use" => {
                         self.break_before_text = true;
                         let name = event["content_block"]["name"].as_str().unwrap_or("").to_string();
@@ -412,6 +412,13 @@ impl StreamParser {
             }
             Some("assistant") => {
                 let blocks = obj["message"]["content"].as_array().cloned().unwrap_or_default();
+                // Claude emits subscription exhaustion as a synthetic assistant message, sometimes followed
+                // by a successful result. Treat the notice as a failure before it reaches the chat as text.
+                let text = blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n");
+                if obj["error"].as_str().is_some() || text.trim_start().starts_with("You've hit your ") && Failure::new(&text).is_no_usage()
+                {
+                    return vec![TurnEvent::Failed(Failure::new(text))];
+                }
                 let mut events = vec![];
                 if !self.saw_delta {
                     let text: Vec<&str> =
@@ -473,9 +480,13 @@ fn text_of(content: &Value) -> String {
 
 /// A web search answers with `Links: [{"title":…,"url":…}, …]` followed by a summary.
 pub fn search_links(text: &str) -> Vec<(String, String)> {
-    let Some(start) = text.find("Links: [").map(|i| i + "Links: ".len()) else { return vec![] };
+    let Some(start) = text.find("Links: [").map(|i| i + "Links: ".len()) else {
+        return vec![];
+    };
     let mut stream = serde_json::Deserializer::from_str(&text[start..]).into_iter::<Value>();
-    let Some(Ok(Value::Array(items))) = stream.next() else { return vec![] };
+    let Some(Ok(Value::Array(items))) = stream.next() else {
+        return vec![];
+    };
     let mut seen = std::collections::HashSet::new();
     items
         .iter()
@@ -521,8 +532,11 @@ mod tests {
 
     #[test]
     fn text_after_a_tool_starts_a_new_paragraph() {
-        let delta = |t: &str| format!(r#"{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"{t}"}}}}}}"#);
-        let tool = r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"WebSearch"}}}"#;
+        let delta = |t: &str| {
+            format!(r#"{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"{t}"}}}}}}"#)
+        };
+        let tool =
+            r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"WebSearch"}}}"#;
         let events = feed_all(&[tool, &delta("Busco."), tool, &delta("Listo"), &delta(" ya")]);
         let text: String = events.iter().filter_map(|e| if let TurnEvent::Delta(t) = e { Some(t.as_str()) } else { None }).collect();
         assert_eq!(text, "Busco.\n\nListo ya");
@@ -551,6 +565,20 @@ mod tests {
     fn errors_are_classified() {
         let events = feed_all(&[r#"{"type":"result","is_error":true,"result":"Claude AI usage limit reached"}"#]);
         assert!(matches!(&events[0], TurnEvent::Failed(f) if f.kind == FailureKind::Limit));
+    }
+
+    #[test]
+    fn session_limit_notice_is_a_failure_even_with_a_successful_result() {
+        let events = feed_all(&[
+            r#"{"type":"assistant","error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your session limit · resets 8:10pm (America/Lima)"}]}}"#,
+            r#"{"type":"result","is_error":false}"#,
+        ]);
+        assert!(matches!(&events[0], TurnEvent::Failed(f) if f.is_no_usage()));
+        assert!(!events.iter().any(|e| matches!(e, TurnEvent::Delta(_))));
+        let events = feed_all(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"You've hit your session limit · resets 8:10pm (America/Lima)"}]}}"#,
+        ]);
+        assert!(matches!(&events[0], TurnEvent::Failed(f) if f.is_no_usage()));
     }
 
     #[test]

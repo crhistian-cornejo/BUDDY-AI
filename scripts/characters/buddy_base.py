@@ -271,7 +271,9 @@ def draw_symbol(g, symbol):
 I = Pose()
 STATES = {
     # name: (fps, poses). Every state but idle is played by the app and then returns to idle.
-    "idle": (2, [I, replace(I, head=1)]),
+    "idle": (4, [I, replace(I, hands=1), replace(I, eyes="left", hands=1),
+                 replace(I, eyes="closed"), I, replace(I, eyes="right", hands=2),
+                 replace(I, hands=2), I]),
     "blink": (10, [replace(I, eyes="closed")]),
     "look": (2, [replace(I, eyes="left"), replace(I, eyes="left"), replace(I, eyes="right"), replace(I, eyes="right")]),
     "wave": (6, [

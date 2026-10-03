@@ -85,3 +85,4 @@ void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 });
 void search();
 query.focus();
+import "../shortcuts";

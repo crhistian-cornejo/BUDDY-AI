@@ -47,10 +47,7 @@ struct PetTokens {
 
 fn pet_tokens() -> PetTokens {
     let json: serde_json::Value = serde_json::from_str(TOKENS).expect("design-tokens.json es JSON válido");
-    PetTokens {
-        scale: json["pet"]["scaleNormal"].as_f64().unwrap_or(2.0),
-        margin: json["pet"]["margin"].as_f64().unwrap_or(24.0),
-    }
+    PetTokens { scale: json["pet"]["scaleNormal"].as_f64().unwrap_or(2.0), margin: json["pet"]["margin"].as_f64().unwrap_or(24.0) }
 }
 
 #[tauri::command]
@@ -67,11 +64,11 @@ fn sprite(state: State<'_, AppCore>, id: String) -> Result<Sprite, String> {
 fn show_pet_menu(window: WebviewWindow, state: State<'_, AppCore>) -> Result<(), String> {
     let app = window.app_handle();
     let e = |e: tauri::Error| e.to_string();
-    let history = MenuItem::with_id(app, "history", "Historial de chats", true, None::<&str>).map_err(e)?;
-    let settings = MenuItem::with_id(app, "settings", "Ajustes…", true, None::<&str>).map_err(e)?;
-    let walk = CheckMenuItem::with_id(app, "wander", "Pasear por la pantalla", true, wander(&state.core), None::<&str>)
-        .map_err(e)?;
-    let quit = MenuItem::with_id(app, "quit", "Salir de Buddy", true, None::<&str>).map_err(e)?;
+    let history = MenuItem::with_id(app, "history", "Historial de chats", true, Some("Ctrl+F")).map_err(e)?;
+    let settings = MenuItem::with_id(app, "settings", "Ajustes…", true, Some("Ctrl+,")).map_err(e)?;
+    let walk =
+        CheckMenuItem::with_id(app, "wander", "Pasear por la pantalla", true, wander(&state.core), Some("Ctrl+Shift+P")).map_err(e)?;
+    let quit = MenuItem::with_id(app, "quit", "Salir de Buddy", true, Some("Ctrl+Q")).map_err(e)?;
     let separator = PredefinedMenuItem::separator(app).map_err(e)?;
     let menu = Menu::with_items(app, &[&history, &settings, &walk, &separator, &quit]).map_err(e)?;
     window.popup_menu(&menu).map_err(e)
@@ -79,6 +76,11 @@ fn show_pet_menu(window: WebviewWindow, state: State<'_, AppCore>) -> Result<(),
 
 fn wander(core: &BuddyCore) -> bool {
     core.setting("pet.wander".into()).ok().flatten().as_deref() != Some("false")
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 /// The next idle move, from the core's PetBrain (the same rules as on the Mac).
@@ -160,6 +162,7 @@ pub fn run() {
             hello,
             sprite,
             show_pet_menu,
+            quit_app,
             pet_next,
             pet_step,
             pet_settle,
@@ -294,10 +297,8 @@ fn place_pet(app: &AppHandle, pet: &WebviewWindow) -> tauri::Result<()> {
 fn work_area(monitor: &Monitor, size: PhysicalSize<u32>) -> (PhysicalPosition<i32>, PhysicalPosition<i32>) {
     let area = monitor.work_area();
     let min = area.position;
-    let max = PhysicalPosition::new(
-        min.x + area.size.width as i32 - size.width as i32,
-        min.y + area.size.height as i32 - size.height as i32,
-    );
+    let max =
+        PhysicalPosition::new(min.x + area.size.width as i32 - size.width as i32, min.y + area.size.height as i32 - size.height as i32);
     (min, PhysicalPosition::new(max.x.max(min.x), max.y.max(min.y)))
 }
 
@@ -322,9 +323,15 @@ fn pet_moved(app: &AppHandle) {
         if state.moves.load(Ordering::SeqCst) != generation {
             return;
         }
-        let Some(pet) = app.get_webview_window(PET) else { return };
-        let (Ok(Some(monitor)), Ok(pos)) = (pet.current_monitor(), pet.outer_position()) else { return };
-        let Some(name) = monitor.name().cloned() else { return };
+        let Some(pet) = app.get_webview_window(PET) else {
+            return;
+        };
+        let (Ok(Some(monitor)), Ok(pos)) = (pet.current_monitor(), pet.outer_position()) else {
+            return;
+        };
+        let Some(name) = monitor.name().cloned() else {
+            return;
+        };
         let _ = state.core.set_setting("pet.monitor".into(), name.clone());
         let _ = state.core.set_setting(format!("pet.origin.{name}"), format!("{},{}", pos.x, pos.y));
     });
@@ -395,7 +402,9 @@ fn briefing(state: State<'_, AppCore>) -> Vec<buddy_core::BriefingItem> {
 
 /// Centered above Buddy, or below when there is no room above.
 fn place_bubble(app: &AppHandle, bubble: &WebviewWindow) -> tauri::Result<()> {
-    let Some(pet) = app.get_webview_window(PET) else { return Ok(()) };
+    let Some(pet) = app.get_webview_window(PET) else {
+        return Ok(());
+    };
     let (pos, size, b) = (pet.outer_position()?, pet.outer_size()?, bubble.outer_size()?);
     let mut x = pos.x + size.width as i32 / 2 - b.width as i32 / 2;
     let mut y = pos.y - b.height as i32;
@@ -412,7 +421,9 @@ fn place_bubble(app: &AppHandle, bubble: &WebviewWindow) -> tauri::Result<()> {
 /// BUDDY_DEBUG_PROMPT="…" (debug builds): opens the chat and sends it, to try the whole flow from a terminal.
 #[cfg(debug_assertions)]
 fn debug_prompt(app: &AppHandle) {
-    let Ok(prompt) = std::env::var("BUDDY_DEBUG_PROMPT") else { return };
+    let Ok(prompt) = std::env::var("BUDDY_DEBUG_PROMPT") else {
+        return;
+    };
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(1500));
@@ -447,7 +458,9 @@ fn open_bar(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn place_bar(bar: &WebviewWindow, width: f64, height: f64) -> tauri::Result<()> {
-    let Some(monitor) = bar.primary_monitor()?.or(bar.current_monitor()?) else { return Ok(()) };
+    let Some(monitor) = bar.primary_monitor()?.or(bar.current_monitor()?) else {
+        return Ok(());
+    };
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let (x, y) = (area.position.x as f64 / scale, area.position.y as f64 / scale);
@@ -458,7 +471,9 @@ fn place_bar(bar: &WebviewWindow, width: f64, height: f64) -> tauri::Result<()> 
 
 #[tauri::command]
 fn bar_resize(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
-    let Some(bar) = app.get_webview_window(BAR) else { return Ok(()) };
+    let Some(bar) = app.get_webview_window(BAR) else {
+        return Ok(());
+    };
     place_bar(&bar, width.clamp(40.0, 600.0), height.clamp(4.0, 420.0)).map_err(|e| e.to_string())
 }
 
@@ -475,7 +490,9 @@ async fn media_now_playing() -> Option<media::NowPlaying> {
 
 #[tauri::command]
 async fn media_control(action: String) -> bool {
-    let Some(action) = media::Action::parse(&action) else { return false };
+    let Some(action) = media::Action::parse(&action) else {
+        return false;
+    };
     tauri::async_runtime::spawn_blocking(move || media::control(action)).await.unwrap_or(false)
 }
 
@@ -738,7 +755,9 @@ fn chat_resize(app: AppHandle, height: f64) -> Result<(), String> {
 
 /// On the side of Buddy with more room, its bottom level with Buddy's, never past the work area.
 fn place_chat(app: &AppHandle) -> tauri::Result<()> {
-    let (Some(pet), Some(chat)) = (app.get_webview_window(PET), app.get_webview_window(CHAT)) else { return Ok(()) };
+    let (Some(pet), Some(chat)) = (app.get_webview_window(PET), app.get_webview_window(CHAT)) else {
+        return Ok(());
+    };
     let (pet_rect, area) = pet_rects(&pet)?;
     let height = (*app.state::<AppCore>().chat_height.lock().unwrap()).min(area.height - 16.0);
     let left = pet_rect.x + pet_rect.width / 2.0 > area.x + area.width / 2.0;
@@ -750,12 +769,7 @@ fn place_chat(app: &AppHandle) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn send_message(
-    state: State<'_, AppCore>,
-    chat_id: Option<String>,
-    text: String,
-    attachments: Vec<String>,
-) -> Result<String, String> {
+fn send_message(state: State<'_, AppCore>, chat_id: Option<String>, text: String, attachments: Vec<String>) -> Result<String, String> {
     state.core.send_message(chat_id, text, attachments).map_err(|e| e.to_string())
 }
 

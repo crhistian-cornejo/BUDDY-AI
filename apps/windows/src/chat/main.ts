@@ -333,3 +333,4 @@ void listen<string[]>("attach", ({ payload }) => {
 $("attach").addEventListener("click", () => void invoke<string[]>("pick_files").then(attach));
 render();
 input.focus();
+import "../shortcuts";

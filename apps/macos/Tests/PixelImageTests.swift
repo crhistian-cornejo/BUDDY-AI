@@ -30,8 +30,10 @@ final class PixelImageTests: XCTestCase {
         let sprite = try core.sprite(id: "buddy-base")
         let idle = try XCTUnwrap(sprite.states.first)
         XCTAssertEqual(idle.name, "idle")
-        XCTAssertEqual(idle.frames.count, 2)
-        XCTAssertNotNil(PixelImage.make(pixels: idle.frames[0], size: Int(sprite.size)))
+        XCTAssertEqual(idle.frames.count, 8)
+        for frame in idle.frames {
+            XCTAssertNotNil(PixelImage.make(pixels: frame, size: Int(sprite.size)))
+        }
         let names = Set(sprite.states.map(\.name))
         for state in ["blink", "look", "wave", "walk-left", "walk-right", "drag", "think", "work", "ask", "error", "done", "sleep"] {
             XCTAssertTrue(names.contains(state), "missing \(state)")

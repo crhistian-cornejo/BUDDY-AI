@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import tokens, { applyTokens } from "./tokens";
 import { type Sprite } from "./sprite";
 import { Player, sleep } from "./player";
+import "./shortcuts";
 
 applyTokens();
 
