@@ -78,9 +78,10 @@ impl Tier {
 
     fn default_choice(self) -> (&'static str, &'static str) {
         match self {
-            // Chat, writing and web search on Gemini Flash; real work on Claude and GPT; maths on Gemini Pro.
-            Tier::Light => ("antigravity:gemini-3.8-flash", "high"),
-            Tier::Normal => ("antigravity:gemini-3.8-flash", "high"),
+            // Greetings on Haiku (answers in 1–2 s, streaming); chat, writing and web search on Gemini Flash (low:
+            // agy answers in ≈4–8 s; high doubles the thinking); real work on Claude and GPT; maths on Gemini Pro.
+            Tier::Light => ("claude:haiku", "low"),
+            Tier::Normal => ("antigravity:gemini-3.8-flash", "low"),
             Tier::Deep => ("claude:opus", "high"),
             Tier::Work => ("claude:opus", "high"),
             Tier::Code => ("codex:gpt-6.1-sol", "high"),
@@ -423,7 +424,7 @@ mod tests {
         let (s, _d) = store();
         let none: &[PathBuf] = &[];
         let r = route(&s, "hola", none);
-        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Antigravity, "gemini-3.8-flash", "high"));
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Claude, "haiku", "low"));
         let r = route(&s, "analiza a fondo esta estrategia", none);
         assert_eq!((r.model.as_str(), r.effort.as_str(), r.model_name.as_str()), ("opus", "high", "Opus 5.5"));
         let r = route(&s, "arregla este bug de typescript", none);
@@ -452,7 +453,7 @@ mod tests {
         let r = route(&s, "¿qué tiempo hace en Lima?", none);
         assert_eq!((r.provider, r.effort.as_str()), (ProviderId::Antigravity, "low"));
         assert!(options().iter().any(|m| m.provider == "antigravity"));
-        assert_eq!(route(&s, "hola", none).provider, ProviderId::Antigravity, "small talk on Gemini Flash");
+        assert_eq!(route(&s, "hola", none).provider, ProviderId::Claude, "small talk on Haiku: fast");
     }
 
     #[test]

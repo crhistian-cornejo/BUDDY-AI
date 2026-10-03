@@ -14,9 +14,10 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
     let rx = core.events();
-    if std::env::var("BUDDY_PREWARM").is_ok() {
+    // BUDDY_PREWARM=<seconds> (default 4): warm the provider first, like the app while the user types.
+    if let Ok(wait) = std::env::var("BUDDY_PREWARM") {
         core.prewarm();
-        std::thread::sleep(std::time::Duration::from_secs(4));
+        std::thread::sleep(std::time::Duration::from_secs(wait.parse().unwrap_or(4)));
     }
     let start = std::time::Instant::now();
     let mut first = None;

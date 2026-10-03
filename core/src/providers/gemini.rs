@@ -1,8 +1,8 @@
 //! Gemini through the user's Google AI Pro subscription: the Antigravity CLI (`agy`), Google's successor to the
-//! Gemini CLI (whose Google-account sign-in stopped serving AI Pro on 2026-06-18). One process per turn:
-//! `agy --input-format stream-json --output-format stream-json`, one user message on stdin, then stdin closes and the
-//! CLI answers that turn as NDJSON (`init`, `step_update`…, `result`) and exits. The conversation continues next turn
-//! with `--conversation <id>`.
+//! Gemini CLI (whose Google-account sign-in stopped serving AI Pro on 2026-06-18). Warm processes, like Claude's:
+//! `agy --input-format stream-json --output-format stream-json` reads one user message per line and answers each as
+//! NDJSON (`init`, `step_update`…, `result`), keeping the conversation. The CLI's start-up (≈6 s) happens while the
+//! user types (prewarm) or once per conversation; a cold one resumes with `--conversation <id>`.
 //!
 //! Permissions live in the agent workspace's `.agents/` folder (project-level settings the CLI reads): shell commands
 //! are always denied (the CLI cannot route an approval to Buddy's card, and headless mode would soft-deny them
@@ -15,9 +15,10 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -31,13 +32,46 @@ const PRINT_TIMEOUT: &str = "20m";
 /// The folder inside the workspace with the CLI's project-level settings.
 const CONFIG_DIR: &str = ".agents";
 
+/// Warm processes kept at most; one unused this long is closed.
+const MAX_LIVE: usize = 3;
+const IDLE: Duration = Duration::from_secs(10 * 60);
+
 pub struct Gemini {
     exe: Option<PathBuf>,
+    /// Warm `agy` processes: one per conversation, plus a spare made ready while the user types.
+    pool: Arc<Mutex<Vec<Live>>>,
+    reaper: Arc<AtomicBool>,
+}
+
+/// One running `agy` in stream-json mode, waiting for its next message.
+struct Live {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: Receiver<String>,
+    stderr: Arc<Mutex<String>>,
+    /// Everything that fixes its behaviour (arguments minus the conversation, folder).
+    signature: String,
+    /// The conversation it holds (None: a fresh spare).
+    session: Option<String>,
+    used: Instant,
+}
+
+impl Live {
+    fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl Gemini {
     pub fn new() -> Self {
-        Self { exe: locate() }
+        Self { exe: locate(), pool: Arc::default(), reaper: Arc::default() }
     }
 
     /// The command line. The prompt never goes here (it travels on stdin), nor do secrets.
@@ -230,88 +264,179 @@ impl Provider for Gemini {
         self.exe.is_some()
     }
 
+    fn prewarm(&self, request: &TurnRequest) {
+        let Some(exe) = &self.exe else { return };
+        let fresh = TurnRequest { resume: None, ..request.clone() };
+        let signature = signature(&fresh);
+        if self.pool.lock().unwrap().iter().any(|l| l.session.is_none() && l.signature == signature) {
+            return;
+        }
+        if let Ok(live) = spawn_live(exe, &fresh) {
+            self.put(live);
+        }
+    }
+
     fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
         let Some(exe) = &self.exe else {
             emit(TurnEvent::Failed(Failure { kind: FailureKind::Missing, message: format!("{EXE} no está instalado") }));
             return;
         };
-        if let Err(e) = prepare(request) {
-            return emit(TurnEvent::Failed(Failure::new(format!("No se pudo preparar Gemini: {e}"))));
+        let message = user_line(request);
+        // A warm process for this conversation (or a spare), else a new one; a dead one is replaced once.
+        let mut live = None;
+        for attempt in 0..2 {
+            let mut candidate = match (attempt, self.take(request)) {
+                (0, Some(l)) => l,
+                _ => match spawn_live(exe, request) {
+                    Ok(l) => l,
+                    Err(e) => return emit(TurnEvent::Failed(Failure::new(e))),
+                },
+            };
+            if writeln!(candidate.stdin, "{message}").and_then(|_| candidate.stdin.flush()).is_ok() {
+                live = Some(candidate);
+                break;
+            }
         }
-        let mut cmd = process::command(exe);
-        cmd.args(Self::arguments(request)).current_dir(&request.workspace);
-        cmd.env(super::OWN_RUN_ENV, "1");
-        for (key, value) in request.office.iter().flat_map(|o| o.env()) {
-            cmd.env(key, value);
-        }
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => return emit(TurnEvent::Failed(Failure::new(format!("No se pudo iniciar Gemini: {e}")))),
-        };
-        // One message, then stdin closes: the CLI answers this turn and exits.
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = writeln!(stdin, "{}", user_line(request)).and_then(|_| stdin.flush());
-        }
-        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            let _ = child.kill();
+        let Some(mut live) = live else {
             return emit(TurnEvent::Failed(Failure::new("No se pudo hablar con Gemini.")));
         };
-        let (tx, lines) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let err_text = Arc::new(Mutex::new(String::new()));
-        let sink = err_text.clone();
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let _ = stderr.take(32_768).read_to_string(&mut buf);
-            *sink.lock().unwrap() = buf;
-        });
 
-        let mut parser = StreamParser::default();
+        let mut parser = StreamParser { conversation: live.session.clone(), ..StreamParser::default() };
+        let mut outcome = None;
         loop {
             if cancel.is_cancelled() {
                 // Stopped by the user: ask the CLI to stop, and make sure it goes away.
-                process::interrupt(&mut child);
+                process::interrupt(&mut live.child);
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_secs(3));
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    drop(live);
                 });
                 return emit(TurnEvent::Done);
             }
-            match lines.recv_timeout(Duration::from_millis(100)) {
+            match live.lines.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => {
                     for event in parser.feed(&line) {
-                        let end = matches!(event, TurnEvent::Done | TurnEvent::Failed(_));
-                        emit(event);
-                        if end {
-                            std::thread::spawn(move || {
-                                let _ = child.wait();
-                            });
-                            return;
+                        if let TurnEvent::Session(id) = &event {
+                            live.session = Some(id.clone());
                         }
+                        if matches!(event, TurnEvent::Done | TurnEvent::Failed(_)) {
+                            outcome = Some(matches!(event, TurnEvent::Done));
+                        }
+                        emit(event);
+                    }
+                    if outcome.is_some() {
+                        break;
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        // The CLI ended without a result: say what it printed, if anything.
-        let status = child.wait().ok();
-        // The stderr reader finishes right after the process.
-        std::thread::sleep(Duration::from_millis(50));
-        let detail = err_text.lock().unwrap().trim().to_string();
-        emit(match (status.is_some_and(|s| s.success()), detail.is_empty()) {
-            (_, false) => TurnEvent::Failed(failure(&detail)),
-            (true, true) if parser.wrote_text => TurnEvent::Done,
-            _ => TurnEvent::Failed(Failure::new("Gemini terminó sin responder.")),
+        match outcome {
+            Some(true) => {
+                live.used = Instant::now();
+                self.put(live);
+            }
+            Some(false) => {}
+            None => {
+                // The CLI ended without a result: say what it printed, if anything.
+                let status = live.child.wait().ok();
+                std::thread::sleep(Duration::from_millis(50));
+                let detail = live.stderr.lock().unwrap().trim().to_string();
+                emit(match (status.is_some_and(|s| s.success()), detail.is_empty()) {
+                    (_, false) => TurnEvent::Failed(failure(&detail)),
+                    (true, true) if parser.wrote_text => TurnEvent::Done,
+                    _ => TurnEvent::Failed(Failure::new("Gemini terminó sin responder.")),
+                });
+            }
+        }
+    }
+}
+
+impl Gemini {
+    /// The warm process for this request: its conversation's, or a spare when it starts a new one.
+    fn take(&self, request: &TurnRequest) -> Option<Live> {
+        let signature = signature(request);
+        let wanted = request.resume.clone().filter(|r| !r.is_empty());
+        let mut pool = self.pool.lock().unwrap();
+        pool.retain_mut(Live::alive);
+        let index = pool.iter().position(|l| l.signature == signature && l.session == wanted)?;
+        Some(pool.remove(index))
+    }
+
+    fn put(&self, live: Live) {
+        let mut pool = self.pool.lock().unwrap();
+        pool.push(live);
+        if pool.len() > MAX_LIVE {
+            pool.sort_by_key(|l| std::cmp::Reverse(l.used));
+            pool.truncate(MAX_LIVE);
+        }
+        drop(pool);
+        self.ensure_reaper();
+    }
+
+    /// Closes idle processes; runs only while there are some.
+    fn ensure_reaper(&self) {
+        if self.reaper.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (pool, running) = (self.pool.clone(), self.reaper.clone());
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            let mut p = pool.lock().unwrap();
+            p.retain_mut(|l| l.used.elapsed() < IDLE && l.alive());
+            if p.is_empty() {
+                running.store(false, Ordering::SeqCst);
+                return;
+            }
         });
     }
+}
+
+/// What makes two requests answerable by the same process: everything but the conversation and the message.
+fn signature(request: &TurnRequest) -> String {
+    let fresh = TurnRequest { resume: None, prompt: String::new(), ..request.clone() };
+    let env: Vec<String> = request.office.iter().flat_map(|o| o.env()).map(|(k, v)| format!("{k}={v}")).collect();
+    format!("{}\u{1f}{}\u{1f}{}", Gemini::arguments(&fresh).join("\u{1f}"), request.workspace.display(), env.join("\u{1f}"))
+}
+
+/// Starts `agy` reading messages as stream-json (its project settings written first), with readers for its output.
+fn spawn_live(exe: &Path, request: &TurnRequest) -> Result<Live, String> {
+    prepare(request).map_err(|e| format!("No se pudo preparar Gemini: {e}"))?;
+    let mut cmd = process::command(exe);
+    cmd.args(Gemini::arguments(request)).current_dir(&request.workspace);
+    cmd.env(super::OWN_RUN_ENV, "1");
+    for (key, value) in request.office.iter().flat_map(|o| o.env()) {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("No se pudo iniciar Gemini: {e}"))?;
+    let stdin = child.stdin.take().ok_or("sin stdin")?;
+    let stdout = child.stdout.take().ok_or("sin stdout")?;
+    let stderr = child.stderr.take().ok_or("sin stderr")?;
+    let (tx, lines) = channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let err_text = Arc::new(Mutex::new(String::new()));
+    let sink = err_text.clone();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stderr.take(32_768).read_to_string(&mut buf);
+        *sink.lock().unwrap() = buf;
+    });
+    Ok(Live {
+        child,
+        stdin,
+        lines,
+        stderr: err_text,
+        signature: signature(request),
+        session: request.resume.clone().filter(|r| !r.is_empty()),
+        used: Instant::now(),
+    })
 }
 
 /// Turns the CLI's `--output-format stream-json` lines into turn events. Thinking and tool arguments are never
