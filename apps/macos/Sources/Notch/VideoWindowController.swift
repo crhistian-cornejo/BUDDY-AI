@@ -5,17 +5,23 @@ import SwiftUI
 /// Buddy goes, and when the chat opens it moves out of its way without leaving Buddy's side.
 enum VideoPlacement {
     static let pictureSize = CGSize(width: 384, height: 216)
-    /// The soft edge around the picture, inside the window: the picture fades out over it instead of ending in a border.
-    static let edge: CGFloat = 18
+    /// Nothing around the picture: the window is the picture, with round corners and no border, haze or shadow.
+    static let edge: CGFloat = 0
+    static let cornerRadius: CGFloat = 16
     static let gap: CGFloat = 6
+    /// How high the chat next to Buddy can get (composer, gap and the tallest chat): its whole column is kept free,
+    /// so the video does not have to jump aside when an answer makes the chat grow.
+    static let chatReach: CGFloat = 460
     static var windowSize: CGSize { CGSize(width: pictureSize.width + edge * 2, height: pictureSize.height + edge * 2) }
 
     /// The picture inside the video window's frame.
     static func picture(in frame: NSRect) -> NSRect { frame.insetBy(dx: edge, dy: edge) }
 
     /// The window's frame for a pet at `pet`, with the chat (composer and messages) taking `chat` when it is open,
-    /// inside `area`. Above Buddy when that is free; otherwise the first place by Buddy that covers neither Buddy
-    /// nor the chat.
+    /// inside `area`.
+    ///
+    /// Without a chat: above Buddy. With one: a place by Buddy that the chat's column never reaches, and when there
+    /// is none (Buddy in a corner), right on top of the chat, at its edge by Buddy, climbing as the chat grows.
     static func frame(pet: NSRect, chat: NSRect?, area: NSRect) -> NSRect {
         let (w, h) = (pictureSize.width, pictureSize.height)
         func window(_ x: CGFloat, _ y: CGFloat) -> NSRect {
@@ -23,32 +29,35 @@ enum VideoPlacement {
             return NSRect(x: min(max(x - edge, area.minX), max(area.minX, area.maxX - size.width)),
                           y: min(max(y - edge, area.minY), max(area.minY, area.maxY - size.height)), width: size.width, height: size.height)
         }
-        let above = window(pet.midX - w / 2, pet.maxY + gap)
-        let below = window(pet.midX - w / 2, pet.minY - gap - h)
-        let left = window(pet.minX - gap - w, pet.minY)
-        let right = window(pet.maxX + gap, pet.minY)
-        var places: [NSRect]
-        if let chat {
-            let chatAtLeft = chat.midX < pet.midX
-            // Above Buddy, pushed clear of the chat's column; then Buddy's other side; then on top of the chat.
-            let clear = window(chatAtLeft ? max(pet.midX - w / 2, chat.maxX + gap) : min(pet.midX - w / 2, chat.minX - gap - w), pet.maxY + gap)
-            let overChat = window(chatAtLeft ? chat.maxX - w : chat.minX, chat.maxY + gap)
-            places = [above, clear, chatAtLeft ? right : left, overChat, chatAtLeft ? left : right, below]
-        } else {
-            places = [above, below] + (area.maxX - pet.maxX >= pet.minX - area.minX ? [right, left] : [left, right])
-        }
-        let taken = [pet] + (chat.map { [$0] } ?? [])
-        func covered(_ frame: NSRect) -> CGFloat {
+        func covered(_ frame: NSRect, by taken: [NSRect]) -> CGFloat {
             taken.reduce(0) { sum, rect in
                 let overlap = picture(in: frame).intersection(rect)
                 return sum + (overlap.isNull ? 0 : overlap.width * overlap.height)
             }
         }
-        return places.first { covered($0) == 0 } ?? places.min { covered($0) < covered($1) } ?? above
+        let above = window(pet.midX - w / 2, pet.maxY + gap)
+        let below = window(pet.midX - w / 2, pet.minY - gap - h)
+        let left = window(pet.minX - gap - w, pet.minY)
+        let right = window(pet.maxX + gap, pet.minY)
+        guard let chat else {
+            let places = [above, below] + (area.maxX - pet.maxX >= pet.minX - area.minX ? [right, left] : [left, right])
+            return places.first { covered($0, by: [pet]) == 0 } ?? places.min { covered($0, by: [pet]) < covered($1, by: [pet]) } ?? above
+        }
+        let chatAtLeft = chat.midX < pet.midX
+        // Everything the chat may come to take: where it is now, up to its full height.
+        let column = NSRect(x: chat.minX, y: chat.minY, width: chat.width, height: min(max(chat.height, chatReach), area.maxY - chat.minY))
+        // Above Buddy (pushed clear of the chat's column when it is in the way), or at Buddy's other side.
+        let clear = window(chatAtLeft ? max(pet.midX - w / 2, chat.maxX + gap) : min(pet.midX - w / 2, chat.minX - gap - w), pet.maxY + gap)
+        let steady = [above, clear, chatAtLeft ? right : left]
+        if let place = steady.first(where: { covered($0, by: [pet, column]) == 0 }) { return place }
+        // On top of the chat, at its edge by Buddy.
+        let onChat = window(chatAtLeft ? chat.maxX - w : chat.minX, chat.maxY + gap)
+        let places = [onChat] + steady + [chatAtLeft ? left : right, below]
+        return places.first { covered($0, by: [pet, chat]) == 0 } ?? places.min { covered($0, by: [pet, chat]) < covered($1, by: [pet, chat]) } ?? onChat
     }
 }
 
-/// The video next to Buddy: a window with no title, border or footer, only the picture with its edge fading out.
+/// The video next to Buddy: a window with no title, border, footer or shadow: only the picture, round at its corners.
 /// Independent of the chat and the notch: closing either does not close it.
 @MainActor
 final class VideoWindowController {
@@ -72,9 +81,9 @@ final class VideoWindowController {
         let window = panel ?? Self.makePanel()
         let host = NSHostingView(rootView: VideoCompanionView(core: core, video: video, onAsk: onAsk))
         host.frame = NSRect(origin: .zero, size: VideoPlacement.windowSize)
-        // The whole content fades out towards the window's edge: no border, no shadow, a soft cloud.
+        // Only the picture, cut to its round corners: no border, no haze, no shadow around it.
         host.wantsLayer = true
-        host.layer?.mask = Self.softMask(size: VideoPlacement.windowSize, scale: window.backingScaleFactor)
+        host.layer?.mask = Self.roundMask(size: VideoPlacement.windowSize)
         window.contentView = host
         let isNew = panel == nil
         panel = window; key = next
@@ -139,45 +148,35 @@ final class VideoWindowController {
         panel.hidesOnDeactivate = false
         // It moves with Buddy, never by itself.
         panel.isMovable = false
+        // No frame to read it from: VoiceOver gets the window's name here.
+        panel.title = "Video junto a Buddy"
+        panel.setAccessibilityLabel("Video junto a Buddy")
         return panel
     }
 
-    /// A mask that is solid over the picture and fades to nothing over `VideoPlacement.edge`: a rounded rectangle
-    /// drawn with a blurred shadow of itself.
-    static func softMask(size: CGSize, scale: CGFloat) -> CALayer {
-        let mask = CALayer()
+    /// The picture's shape: a rectangle with round corners.
+    static func roundMask(size: CGSize) -> CALayer {
+        let mask = CAShapeLayer()
         mask.frame = CGRect(origin: .zero, size: size)
-        mask.contentsScale = scale
-        let (width, height) = (Int(size.width * scale), Int(size.height * scale))
-        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            mask.backgroundColor = NSColor.black.cgColor
-            return mask
-        }
-        context.scaleBy(x: scale, y: scale)
-        let edge = VideoPlacement.edge
-        let solid = CGRect(origin: .zero, size: size).insetBy(dx: edge, dy: edge)
-        context.setShadow(offset: .zero, blur: edge * 0.9, color: NSColor.black.cgColor)
-        context.setFillColor(NSColor.black.cgColor)
-        context.addPath(CGPath(roundedRect: solid, cornerWidth: 20, cornerHeight: 20, transform: nil))
-        context.fillPath()
-        mask.contents = context.makeImage()
+        let picture = VideoPlacement.picture(in: mask.frame)
+        mask.path = CGPath(roundedRect: picture, cornerWidth: VideoPlacement.cornerRadius, cornerHeight: VideoPlacement.cornerRadius, transform: nil)
         return mask
     }
 }
 
-/// The player filling the window (its outer band is what fades out), with Buddy's few actions over it only while
-/// the pointer is on the video.
+/// The player filling the window, with Buddy's few actions over it while the pointer is on the video (and for a
+/// moment when it appears, so they are found). They stay reachable for VoiceOver and the keyboard at all times.
 private struct VideoCompanionView: View {
     let core: BuddyCore
     let video: YouTubeVideo
     let onAsk: () -> Void
     @State private var error = ""
     @State private var hovering = false
+    @State private var introduced = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
-            // Behind the player and under the soft edge: the fade ends in a dark haze, not in the desktop's colours.
             Color.black
             YouTubeWebPlayer(video: video) { type, code in
                 if type == "playing" { core.youtubeStarted(sourceId: video.sourceId, videoId: video.videoId); error = "" }
@@ -185,41 +184,49 @@ private struct VideoCompanionView: View {
                 if type == "error" { error = "Este video no permite reproducción aquí. Ábrelo en YouTube." }
                 if type == "blocked" { error = "Pulsa reproducir en el video." }
             }
-            .padding(VideoPlacement.edge - 6)
+            .accessibilityLabel("Video: \(video.title)")
             VStack(spacing: 0) {
                 HStack(spacing: 2) {
                     action("sparkles", "Preguntar a Gemini sobre este video", onAsk)
-                    action("rectangle.topthird.inset.filled", "Pasar al notch") { try? core.youtubeMove(destination: "notch") }
+                    action("rectangle.topthird.inset.filled", "Pasar el video al notch") { try? core.youtubeMove(destination: "notch") }
                     action("arrow.up.right", "Abrir en YouTube") { if let url = URL(string: video.url) { NSWorkspace.shared.open(url) } }
                     action("xmark", "Cerrar el video") { core.youtubeClose() }
                 }
-                .padding(4)
-                .background(.black.opacity(0.55), in: Capsule())
+                .padding(3)
+                .background(.black.opacity(0.7), in: Capsule())
                 .fixedSize()
                 .frame(maxWidth: .infinity, alignment: .trailing)
-                .opacity(hovering ? 1 : 0)
+                .opacity(hovering || !introduced || !error.isEmpty ? 1 : 0)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Acciones del video")
                 Spacer()
                 if !error.isEmpty {
                     Text(error)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.black.opacity(0.6), in: Capsule())
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.black.opacity(0.75), in: Capsule())
                         .padding(.bottom, 46)
                 }
             }
-            .padding(VideoPlacement.edge + 6)
+            .padding(VideoPlacement.edge + 8)
         }
         .frame(width: VideoPlacement.windowSize.width, height: VideoPlacement.windowSize.height)
-        .onHover { inside in withAnimation(.easeOut(duration: 0.15)) { hovering = inside } }
+        .onHover { inside in withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { hovering = inside } }
+        .task {
+            // Shown for a moment when the video appears, then only under the pointer.
+            try? await Task.sleep(for: .seconds(4))
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { introduced = true }
+        }
     }
 
+    /// A round button of at least 28 points, named for VoiceOver and with its name as help.
     private func action(_ symbol: String, _ help: String, _ run: @escaping () -> Void) -> some View {
         Button(action: run) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 24, height: 22)
+                .frame(width: 30, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

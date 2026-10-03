@@ -67,6 +67,28 @@ final class YouTubeNotchTests: XCTestCase {
         // Closing the chat brings it back over Buddy.
         XCTAssertEqual(VideoPlacement.frame(pet: middle, chat: nil, area: screen).midX, middle.midX, accuracy: 1)
     }
+    /// While the chat grows the video rides on top of it: it climbs, it never jumps from side to side.
+    func testTheVideoKeepsItsColumnWhileTheChatGrows() {
+        let screen = NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let pet = NSRect(x: 1100, y: 40, width: 128, height: 128)
+        var last: NSRect?
+        for height in stride(from: 44, through: 452, by: 68) {
+            let chat = NSRect(x: 652, y: 46, width: 440, height: CGFloat(height))
+            let frame = VideoPlacement.frame(pet: pet, chat: chat, area: screen)
+            XCTAssertFalse(frame.intersects(chat), "\(height)"); XCTAssertFalse(frame.intersects(pet), "\(height)")
+            XCTAssertEqual(frame.minY, chat.maxY + VideoPlacement.gap, accuracy: 0.5, "right on top of the chat: \(height)")
+            if let last { XCTAssertEqual(frame.minX, last.minX, accuracy: 0.5, "same column: \(height)") }
+            last = frame
+        }
+        // Next to Buddy: its edge is the chat's edge by the pet.
+        XCTAssertEqual(last?.maxX ?? 0, 1092, accuracy: 0.5)
+    }
+    /// The window is the picture: nothing around it to draw a border or a shadow with.
+    func testTheVideoWindowIsOnlyThePicture() {
+        XCTAssertEqual(VideoPlacement.windowSize, VideoPlacement.pictureSize)
+        let frame = NSRect(origin: .zero, size: VideoPlacement.windowSize)
+        XCTAssertEqual(VideoPlacement.picture(in: frame), frame)
+    }
     /// With the notch closed, a new playback position alone changes nothing on screen.
     func testOnlyThePositionChangingIsNotNewsForAClosedNotch() {
         let video = { (seconds: Double, playing: Bool) in YouTubeVideo(sourceId: "test", tabId: 7, videoId: "abcdefghijk", title: "Demo", browser: "Chrome", seconds: seconds, duration: 120, playing: playing, caption: "", service: "youtube", url: "https://www.youtube.com/watch?v=abcdefghijk") }
