@@ -25,6 +25,7 @@ pub mod spotify;
 pub mod sessions;
 pub mod store;
 pub mod telegram;
+mod telegram_account;
 pub mod tools;
 pub mod usage;
 pub mod voice;
@@ -99,6 +100,7 @@ pub struct BuddyCore {
     sessions: Arc<SessionHub>,
     spotify: Arc<spotify::Spotify>,
     telegram: Arc<telegram::Telegram>,
+    telegram_account: telegram_account::Account,
 }
 
 impl BuddyCore {
@@ -163,7 +165,8 @@ impl BuddyCore {
                 })
             }),
         ));
-        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram })
+        let telegram_account = telegram_account::Account::new(store.clone(), data_dir.clone());
+        Ok(Self { telegram_account, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -437,7 +440,17 @@ impl BuddyCore {
         self.with_store(spotify::client_id).ok().flatten().unwrap_or_default()
     }
 
-    /// Telegram for Settings: connected bot, paired chat, the pairing code to show. While connected and not
+    /// Personal account actions from Settings. Secrets only enter the OS vault, never the history.
+    pub fn telegram_account_request(&self, action: String, value: String) -> Result<String, CoreError> {
+        if action == "analyze" {
+            let (prompt, files) = self.telegram_account.context().map_err(CoreError::Hooks)?;
+            let answer = self.chat.run_direct_with_attachments("telegram-groups", "Telegram · Grupos", "parley", &prompt, true, &files)?;
+            return Ok(serde_json::json!({"analysis":answer}).to_string());
+        }
+        self.telegram_account.request(&action, &value).map_err(CoreError::Hooks)
+    }
+
+    /// Telegram for Settings: connected bot, paired chat and pairing code. While connected and not
     /// paired it makes a code (if none is valid) and starts listening for its `/start`.
     pub fn telegram_status(&self) -> TelegramStatus {
         self.telegram.status()

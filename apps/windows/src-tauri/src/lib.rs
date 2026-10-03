@@ -261,6 +261,7 @@ pub fn run() {
             connectors,
             set_connector_enabled,
             set_connector_key,
+            telegram_account_request,
             telegram_status,
             telegram_connect,
             telegram_disconnect,
@@ -1316,4 +1317,13 @@ mod tests {
     fn tokens_have_a_pet_scale() {
         assert_eq!(pet_tokens().scale, 2.0);
     }
+}
+
+/// Personal-account operations run away from the window thread.
+#[tauri::command]
+async fn telegram_account_request(app: AppHandle, action: String, value: String) -> Result<String, String> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.telegram_account_request(action, value))
+        .await.map_err(|_| "La conexión con Telegram se interrumpió.".to_string())?
+        .map_err(|e| e.to_string())
 }

@@ -92,11 +92,13 @@ struct ProviderMark: View {
             mark(.claude, "Escrito con Claude")
         case "codex":
             mark(.openai, "Escrito con Codex (ChatGPT)")
-        case "antigravity":
-            Image(systemName: "sparkles")
-                .font(.system(size: size - 1, weight: .semibold))
-                .foregroundStyle(.blue)
-                .tip("Escrito con Gemini")
+        case "antigravity", "gemini":
+            if let image = GeminiMark.image {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(width: size, height: size)
+                    .tip("Escrito con Gemini")
+                    .accessibilityLabel("Escrito con Gemini")
+            }
         default:
             EmptyView()
         }
@@ -109,4 +111,9 @@ struct ProviderMark: View {
             .tip(help)
             .accessibilityLabel(help)
     }
+}
+
+@MainActor
+private enum GeminiMark {
+    static let image: NSImage? = Bundle.main.url(forResource: "gemini", withExtension: "svg").flatMap { NSImage(contentsOf: $0) }
 }

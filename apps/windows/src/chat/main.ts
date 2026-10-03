@@ -1,3 +1,4 @@
+import geminiMarkUrl from "../../../../assets/gemini.svg?url";
 // The chat window next to Buddy (Windows): the composer at the bottom and, once there is an answer, the messages above
 // it. The core does the work; this draws its events. Twin of Sources/Chat on the Mac.
 import { invoke } from "@tauri-apps/api/core";
@@ -174,7 +175,9 @@ function setMark(actions: HTMLElement, provider?: string | null, model?: string 
   if (!mark) return;
   const tip = model ? `${mark.label}\n${model}` : mark.label;
   actions.append(h("span", { class: "provider", title: tip, "aria-label": tip, style: mark.color ? `color:${mark.color}` : "" },
-    svg(mark.path, 12, { fill: "currentColor" })));
+    provider === "antigravity" || provider === "gemini"
+      ? h("img", { src: geminiMarkUrl, width: "12", height: "12", alt: "Gemini" })
+      : svg(mark.path, 12, { fill: "currentColor" })));
 }
 
 /** Copy (and, on the last answer, write again) under an answer. */

@@ -6,8 +6,9 @@ import { applyTokens } from "../tokens";
 import { h } from "../chat/dom";
 import { TABLER } from "../chat/tabler";
 import { renderAgents } from "./agents";
-import { renderConnectors } from "./connectors";
 import { usageCalendar, type TokenDay } from "./usage-calendar";
+import { renderTelegramAccount } from "./telegram-account";
+import { renderConnectors } from "./connectors";
 import { SETTINGS_ICONS } from "./icons";
 import { button, emptyRow, errorText, header, icon, iconButton, k, providerMark, row, section, settingRow } from "./ui";
 
@@ -228,7 +229,7 @@ async function renderConnections(view: HTMLElement) {
   const message = h("p", { class: "muted small", role: "status" });
   const { el, card } = section("Avisos de tus sesiones");
   const dialog = h("dialog", { class: "confirm", "aria-labelledby": "confirm-title" });
-  view.append(header("Conexiones"), el, message, dialog, renderSpotify(), renderTelegram(), renderConnectors());
+  view.append(header("Conexiones"), el, message, dialog, renderSpotify(), renderTelegram(), renderTelegramAccount(), renderConnectors());
 
   async function draw() {
     const status = await invoke<HookStatusInfo[]>("hooks_status").catch(() => [] as HookStatusInfo[]);

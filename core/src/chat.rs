@@ -731,6 +731,9 @@ impl ChatEngine {
         let saved_text = match (&answer.failure, answer.text.trim().is_empty()) { (Some(f), true) => f.clone(), _ => answer.text.clone() };
         let saved = self.lock().add_message(NewMessage { chat_id, role: "assistant", agent: &agent.id, provider: Some(answer.provider.as_str()),
             text: &saved_text, sources: &answer.sources, failed, attachments: &[] });
+        if let Ok(id) = &saved {
+            if !answer.model.is_empty() { let _ = self.lock().set_message_model(*id, &answer.model); }
+        }
         match (&saved, &answer.failure) {
             (Ok(message_id), None) => {
                 self.emit(Event::ChatDone { chat_id: chat_id.into(), message_id: *message_id });
@@ -1283,6 +1286,7 @@ mod tests {
         let messages = engine.lock().messages("telegram-groups").unwrap();
         assert_eq!(messages[0].attachments.len(), 1);
         assert!(PathBuf::from(&messages[0].attachments[0]).exists());
+        assert!(messages[1].model.as_deref().is_some_and(|m| m.contains("GPT")));
         assert!(sighted.prompts.lock().unwrap()[0].1.contains("no puedes ejecutar comandos"));
     }
 

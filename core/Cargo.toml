@@ -16,6 +16,8 @@ name = "buddy_core"
 ffi = ["dep:uniffi"]
 
 [dependencies]
+buddy-telegram = { path = "../telegram" }
+tokio = { version = "1", features = ["rt", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
