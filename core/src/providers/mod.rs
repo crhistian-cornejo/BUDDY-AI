@@ -73,15 +73,43 @@ pub struct TurnRequest {
 pub struct Office {
     pub relay: PathBuf,
     pub dir: PathBuf,
+    /// `<data>/skills`, read by the `use_skill` tool.
+    pub skills: PathBuf,
+    /// How the music tools reach the app (none: they are not offered).
+    pub link: Option<Link>,
+}
+
+/// This run's secret and Buddy's data folder (where the relay finds the socket), handed to the MCP server through
+/// its environment, never its command line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Link {
+    pub token: String,
+    pub data_dir: PathBuf,
 }
 
 impl Office {
-    /// The tool names as Claude Code exposes them.
-    pub const TOOLS: [&'static str; 3] =
-        ["mcp__buddy__create_document", "mcp__buddy__create_spreadsheet", "mcp__buddy__create_presentation"];
+    /// The tool names as Claude Code exposes them (Office, music, skills).
+    pub const TOOLS: [&'static str; 8] = [
+        "mcp__buddy__create_document",
+        "mcp__buddy__create_spreadsheet",
+        "mcp__buddy__create_presentation",
+        "mcp__buddy__media_control",
+        "mcp__buddy__media_play",
+        "mcp__buddy__media_search",
+        "mcp__buddy__now_playing",
+        "mcp__buddy__use_skill",
+    ];
 
     pub fn server(&self) -> serde_json::Value {
-        serde_json::json!({ "command": self.relay, "args": ["--mcp", "--out", self.dir] })
+        serde_json::json!({ "command": self.relay, "args": ["--mcp", "--out", self.dir, "--skills", self.skills] })
+    }
+
+    /// The variables the MCP server needs for the music tools.
+    pub fn env(&self) -> Vec<(&'static str, String)> {
+        match &self.link {
+            Some(link) => vec![("BUDDY_GATE_TOKEN", link.token.clone()), ("BUDDY_DATA_DIR", link.data_dir.to_string_lossy().into())],
+            None => vec![],
+        }
     }
 }
 

@@ -61,10 +61,27 @@ impl ChatEngine {
         })
     }
 
-    /// Buddy's Office tools, when the relay that serves them is in place.
+    /// Buddy's own tools (Office, music, skills), when the relay that serves them is in place. The music tools
+    /// also need the server running, to reach the app.
     fn office(&self) -> Option<crate::providers::Office> {
-        let relay = self.gate.as_ref()?.relay_path();
-        relay.exists().then(|| crate::providers::Office { relay, dir: self.data_dir.join("documentos") })
+        let hub = self.gate.as_ref()?;
+        let relay = hub.relay_path();
+        relay.exists().then(|| crate::providers::Office {
+            relay,
+            dir: self.data_dir.join("documentos"),
+            skills: crate::skills::dir(&self.data_dir),
+            link: hub
+                .is_started()
+                .then(|| crate::providers::Link { token: hub.gate_token().to_string(), data_dir: self.data_dir.clone() }),
+        })
+    }
+
+    /// What the agents are told about those tools: where documents go, and the skills index.
+    fn tools_note(&self) -> String {
+        match self.office() {
+            Some(o) => crate::folders::office_note(&o.dir) + &crate::skills::prompt_note(&crate::skills::list(&self.data_dir)),
+            None => String::new(),
+        }
     }
 
     /// Plan figures reported during turns go here.
@@ -195,7 +212,7 @@ impl ChatEngine {
                     buddy.prompt,
                     orchestrator::roster_prompt(&agents),
                     crate::folders::prompt_note(&folders),
-                    engine.office().map(|o| crate::folders::office_note(&o.dir)).unwrap_or_default()
+                    engine.tools_note()
                 ),
                 workspace: orchestrator::workspace(&engine.data_dir, &buddy.id),
                 folders,
@@ -257,7 +274,7 @@ impl ChatEngine {
         prompt.push_str(&attachments_note(files));
         prompt.push_str(question);
         let folders = crate::folders::list(&self.lock()).unwrap_or_default();
-        let office = self.office().map(|o| crate::folders::office_note(&o.dir)).unwrap_or_default();
+        let office = self.tools_note();
         let system = format!("{}{}{}{office}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders));
         // Small talk goes to the light model (router); a hand-off still works from there.
         let router_on = self.lock().setting(crate::router::SETTING).ok().flatten().as_deref() != Some("false");

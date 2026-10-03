@@ -1,5 +1,6 @@
-//! `buddy-hook --mcp --out <dir>` — the Office tools as a stdio MCP server, so Claude Code and Codex (run as CLIs
-//! by Buddy) can create Word, Excel and PowerPoint files.
+//! `buddy-hook --mcp --out <dir> [--skills <dir>]` — Buddy's tools as a stdio MCP server, so Claude Code and Codex
+//! (run as CLIs by Buddy) can create Word, Excel and PowerPoint files, use the music player and load skills
+//! (see `tools`).
 //!
 //! Transport: JSON-RPC 2.0, one JSON object per line on stdin, one reply per line on stdout (the MCP stdio
 //! transport). stdout carries nothing else. We answer `initialize`, `ping`, `tools/list` and `tools/call`; every
@@ -15,6 +16,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::office;
+use crate::tools::Extra;
 
 /// What we answer when the client asks for a version we do not know.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -30,49 +32,52 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
-/// `[--out <dir>]` (also `--out=<dir>`) → the absolute documents folder. A relative folder is taken from `cwd`.
-pub fn parse_args(args: &[String], cwd: &Path) -> Result<PathBuf, String> {
-    let mut out: Option<PathBuf> = None;
+/// `[--out <dir>] [--skills <dir>]` (also `--flag=<dir>`) → the absolute documents folder and skills folder. A
+/// relative folder is taken from `cwd`.
+pub fn parse_args(args: &[String], cwd: &Path) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let (mut out, mut skills): (Option<PathBuf>, Option<PathBuf>) = (None, None);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        let value = match arg.as_str() {
-            "--out" => it.next().cloned(),
-            other => match other.strip_prefix("--out=") {
-                Some(v) => Some(v.to_string()),
-                None => return Err(format!("argumento desconocido: {other}")),
+        let (flag, value) = match arg.as_str() {
+            "--out" | "--skills" => (arg.as_str(), it.next().cloned()),
+            other => match other.split_once('=') {
+                Some((flag @ ("--out" | "--skills"), v)) => (flag, Some(v.to_string())),
+                _ => return Err(format!("argumento desconocido: {other}")),
             },
         };
-        match value.filter(|v| !v.is_empty()) {
-            Some(v) => out = Some(PathBuf::from(v)),
-            None => return Err("falta la carpeta después de --out".into()),
-        }
+        let Some(v) = value.filter(|v| !v.is_empty()) else { return Err(format!("falta la carpeta después de {flag}")) };
+        let dir = PathBuf::from(v);
+        let dir = if dir.is_absolute() { dir } else { cwd.join(dir) };
+        if flag == "--out" { out = Some(dir) } else { skills = Some(dir) }
     }
-    let dir = out.unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER));
-    Ok(if dir.is_absolute() { dir } else { cwd.join(dir) })
+    Ok((out.unwrap_or_else(|| cwd.join(DEFAULT_FOLDER)), skills))
 }
 
 /// Entry point for `buddy-hook --mcp …` (`args` without `--mcp`). Returns the process exit code.
 pub fn main(args: &[String]) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let dir = match parse_args(args, &cwd) {
-        Ok(dir) => dir,
+    let (dir, skills) = match parse_args(args, &cwd) {
+        Ok(parsed) => parsed,
         Err(err) => {
-            eprintln!("buddy-hook --mcp: {err}. Uso: buddy-hook --mcp [--out <carpeta>]");
+            eprintln!("buddy-hook --mcp: {err}. Uso: buddy-hook --mcp [--out <carpeta>] [--skills <carpeta>]");
             return 2;
         }
     };
+    // The music tools exist only when Buddy started us with this run's secret.
+    let token = std::env::var("BUDDY_GATE_TOKEN").ok().filter(|t| !t.trim().is_empty());
+    let extra = Extra { skills, token };
     // Made now so the folder is there to open; if it fails, each tool call says so instead.
     let _ = office::ensure_dir(&dir);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    match serve(stdin.lock(), stdout.lock(), &dir) {
+    match serve(stdin.lock(), stdout.lock(), &dir, &extra) {
         Ok(()) => 0,
         Err(_) => 1,
     }
 }
 
 /// Reads requests until EOF and answers each on its own line. Returns only on EOF or a broken stream.
-pub fn serve<R: BufRead, W: Write>(mut reader: R, mut writer: W, dir: &Path) -> std::io::Result<()> {
+pub fn serve<R: BufRead, W: Write>(mut reader: R, mut writer: W, dir: &Path, extra: &Extra) -> std::io::Result<()> {
     loop {
         let mut line = Vec::new();
         let read = Read::take(&mut reader, MAX_LINE as u64 + 1).read_until(b'\n', &mut line)?;
@@ -83,7 +88,7 @@ pub fn serve<R: BufRead, W: Write>(mut reader: R, mut writer: W, dir: &Path) -> 
             skip_line(&mut reader)?;
             Some(error(Value::Null, INVALID_REQUEST, "Mensaje demasiado grande."))
         } else {
-            handle_line(&line, dir)
+            handle_line(&line, dir, extra)
         };
         if let Some(reply) = reply {
             serde_json::to_writer(&mut writer, &reply)?;
@@ -118,7 +123,7 @@ fn result(id: Value, result: Value) -> Value {
 }
 
 /// One line in, at most one reply out.
-fn handle_line(line: &[u8], dir: &Path) -> Option<Value> {
+fn handle_line(line: &[u8], dir: &Path, extra: &Extra) -> Option<Value> {
     let mut line = line;
     if line.starts_with(&[0xEF, 0xBB, 0xBF]) {
         line = &line[3..];
@@ -145,8 +150,8 @@ fn handle_line(line: &[u8], dir: &Path) -> Option<Value> {
     Some(match method {
         "initialize" => result(id, initialize(&params, dir)),
         "ping" => result(id, json!({})),
-        "tools/list" => result(id, json!({ "tools": office::specs() })),
-        "tools/call" => match call_tool(&params, dir) {
+        "tools/list" => result(id, json!({ "tools": office::specs().into_iter().chain(extra.specs()).collect::<Vec<_>>() })),
+        "tools/call" => match call_tool(&params, dir, extra) {
             Ok(value) => result(id, value),
             Err(message) => error(id, INVALID_PARAMS, &message),
         },
@@ -170,9 +175,10 @@ fn initialize(params: &Value, dir: &Path) -> Value {
 
 /// `tools/call`: an unknown tool or a call without a name is a protocol error (`Err`); everything that goes wrong
 /// inside a known tool is a result with `isError`, so the agent reads the reason and can try again.
-fn call_tool(params: &Value, dir: &Path) -> Result<Value, String> {
+fn call_tool(params: &Value, dir: &Path, extra: &Extra) -> Result<Value, String> {
     let Some(name) = params["name"].as_str() else { return Err("Falta el nombre de la herramienta.".into()) };
-    if !office::NAMES.contains(&name) {
+    let is_extra = extra.names().contains(&name);
+    if !office::NAMES.contains(&name) && !is_extra {
         return Err(format!("Herramienta desconocida: {name}"));
     }
     let empty = Value::Object(Default::default());
@@ -181,6 +187,12 @@ fn call_tool(params: &Value, dir: &Path) -> Result<Value, String> {
         args @ Value::Object(_) => args,
         _ => return Ok(tool_error("Los argumentos deben ser un objeto JSON.")),
     };
+    if is_extra {
+        return Ok(match extra.run(name, args) {
+            Ok(text) => json!({ "content": [{ "type": "text", "text": text }], "isError": false }),
+            Err(err) => tool_error(&err),
+        });
+    }
     // The writers do not panic on any input we know of; if one ever did, the agent gets an error, not a dead server.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| office::run(name, args, dir)));
     Ok(match outcome {
@@ -209,21 +221,24 @@ mod tests {
     /// Feeds `input` to the server and returns every reply line, parsed.
     fn exchange(input: &str, dir: &Path) -> Vec<Value> {
         let mut out = Vec::new();
-        serve(input.as_bytes(), &mut out, dir).unwrap();
+        serve(input.as_bytes(), &mut out, dir, &Extra::default()).unwrap();
         String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
     }
 
     #[test]
     fn the_out_folder_comes_from_argv_or_defaults_to_documentos() {
         let cwd = Path::new("/home/a/proyecto");
-        assert_eq!(parse_args(&[], cwd).unwrap(), cwd.join("documentos"));
-        assert_eq!(parse_args(&args(&["--out", "salida"]), cwd).unwrap(), cwd.join("salida"));
-        assert_eq!(parse_args(&args(&["--out=salida"]), cwd).unwrap(), cwd.join("salida"));
+        assert_eq!(parse_args(&[], cwd).unwrap().0, cwd.join("documentos"));
+        assert_eq!(parse_args(&args(&["--out", "salida"]), cwd).unwrap().0, cwd.join("salida"));
+        assert_eq!(parse_args(&args(&["--out=salida"]), cwd).unwrap().0, cwd.join("salida"));
         let abs = std::env::temp_dir().join("docs");
-        assert_eq!(parse_args(&args(&["--out", &abs.to_string_lossy()]), cwd).unwrap(), abs);
+        assert_eq!(parse_args(&args(&["--out", &abs.to_string_lossy()]), cwd).unwrap().0, abs);
         assert!(parse_args(&args(&["--out"]), cwd).is_err());
         assert!(parse_args(&args(&["--out", ""]), cwd).is_err());
         assert!(parse_args(&args(&["--verbose"]), cwd).is_err());
+        assert_eq!(parse_args(&args(&["--skills", "habilidades"]), cwd).unwrap().1, Some(cwd.join("habilidades")));
+        assert_eq!(parse_args(&[], cwd).unwrap().1, None);
+        assert!(parse_args(&args(&["--skills"]), cwd).is_err());
     }
 
     #[test]

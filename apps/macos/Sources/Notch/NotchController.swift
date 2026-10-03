@@ -95,6 +95,8 @@ final class NotchController {
             model.usage = core.usage()
         case .briefingReady:
             model.briefing = core.briefing()
+        case let .mediaCommand(action, uri):
+            runMediaCommand(action: action, uri: uri)
         case let .usageLow(provider, label, leftPct):
             let name = provider == "codex" ? "Codex" : "Claude"
             model.show(.init(kind: .waiting, agent: provider, title: "Te queda \(leftPct) % de \(name)",
@@ -251,6 +253,7 @@ final class NotchController {
                 MainActor.assumeIsolated {
                     self?.model.earTrack = state.isEmpty || state == "Stopped" ? nil
                         : NotchModel.EarTrack(title: title, artist: artist, app: app, playing: state == "Playing")
+                    self?.reportNowPlaying()
                 }
             }
         }
@@ -262,7 +265,46 @@ final class NotchController {
                 guard let self, self.model.earTrack == nil, let reading else { return }
                 self.model.earTrack = .init(title: reading.title, artist: reading.artist, app: reading.app,
                                             playing: reading.status == .playing)
+                self.reportNowPlaying()
             }
+        }
+    }
+
+    // MARK: Music for Buddy's agents
+
+    /// The core answers the agents' `now_playing` with this.
+    private func reportNowPlaying() {
+        core.setNowPlaying(now: model.earTrack.map {
+            NowPlayingInfo(title: $0.title, artist: $0.artist, app: $0.app, playing: $0.playing)
+        })
+    }
+
+    /// An agent's request, already checked by the core: a button, or a clean `spotify:<kind>:<id>` to play.
+    private func runMediaCommand(action: String, uri: String) {
+        let playing = model.earTrack?.app == "Música" ? MediaPlayer.music : MediaPlayer.spotify
+        let running = MediaControl.runningPlayers()
+        let player = running.contains(playing) ? playing : running.first ?? .spotify
+        let script: String
+        switch action {
+        case "search":
+            // `spotify:search:<percent-encoded>` from the core: Spotify shows the results, the user presses play.
+            if let url = URL(string: uri), url.scheme == "spotify" { NSWorkspace.shared.open(url) }
+            return
+        case "open":
+            // The core only lets through `spotify:<kind>:<22 letters/digits>`, so this string is safe to embed.
+            script = "tell application id \"\(MediaPlayer.spotify.bundleID)\" to play track \"\(uri)\""
+        case "play", "pause":
+            script = "tell application id \"\(player.bundleID)\" to \(action)"
+        case "toggle", "next", "previous":
+            let command = ["toggle": MediaAction.playPause, "next": .next, "previous": .previous][action]!.command
+            script = "tell application id \"\(player.bundleID)\" to \(command)"
+        default:
+            return
+        }
+        // A button never launches a closed player; playing a link may open Spotify (the user asked for it).
+        guard action == "open" || running.contains(player) else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = MediaControl.runScript(script)
         }
     }
 

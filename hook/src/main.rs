@@ -28,6 +28,7 @@ use std::time::Duration;
 
 mod mcp;
 mod office;
+mod tools;
 mod transport;
 #[cfg(windows)]
 mod win;
@@ -197,6 +198,7 @@ fn prepare(mut raw: Vec<u8>, agent: Agent, arg_event: String) -> Option<(String,
     // Only the relay may say a payload was cut, and only gate mode may carry a secret.
     map.remove("_truncated");
     map.remove("_gate");
+    map.remove("_app");
 
     for field in DROPPED_FIELDS {
         map.remove(*field);
@@ -268,7 +270,7 @@ fn truncate_strings(value: &mut serde_json::Value, key: &str, cut: &mut bool) {
 }
 
 /// Connect, send, and — for a permission request — wait for Buddy's word.
-fn talk(payload: &str, waits_for_answer: bool) -> Option<String> {
+pub(crate) fn talk(payload: &str, waits_for_answer: bool) -> Option<String> {
     let mut conn = transport::connect()?;
 
     if conn.write_all(payload.as_bytes()).is_err() {
@@ -449,7 +451,7 @@ mod tests {
 
     #[test]
     fn a_forwarded_payload_never_carries_a_secret() {
-        let (line, _) = prepare(br#"{"hook_event_name":"Stop","_gate":"robado"}"#.to_vec(), Agent::Claude, String::new()).unwrap();
+        let (line, _) = prepare(br#"{"hook_event_name":"Stop","_gate":"robado","_app":"robado"}"#.to_vec(), Agent::Claude, String::new()).unwrap();
         assert!(!line.contains("robado"));
     }
 }

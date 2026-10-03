@@ -79,7 +79,13 @@ impl Default for Codex {
 pub fn thread_params(request: &TurnRequest) -> Value {
     let mut config = json!({ "web_search": "live" });
     if let Some(office) = &request.office {
-        config["mcp_servers"] = json!({ "buddy": office.server() });
+        let mut server = office.server();
+        // Codex hands MCP servers a bare environment: the music tools' variables go in the config (over stdin).
+        let env: serde_json::Map<String, Value> = office.env().into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        if !env.is_empty() {
+            server["env"] = Value::Object(env);
+        }
+        config["mcp_servers"] = json!({ "buddy": server });
     }
     if let Some(effort) = &request.effort {
         config["model_reasoning_effort"] = json!(effort);
@@ -335,6 +341,23 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buddys_mcp_server_gets_its_variables_in_the_config() {
+        let request = TurnRequest {
+            office: Some(crate::providers::Office {
+                relay: "/d/buddy-hook".into(),
+                dir: "/d/documentos".into(),
+                skills: "/d/skills".into(),
+                link: Some(crate::providers::Link { token: "secreto".into(), data_dir: "/d".into() }),
+            }),
+            ..Default::default()
+        };
+        let server = &thread_params(&request)["config"]["mcp_servers"]["buddy"];
+        assert_eq!(server["env"]["BUDDY_GATE_TOKEN"], "secreto");
+        assert_eq!(server["env"]["BUDDY_DATA_DIR"], "/d");
+        assert!(server["args"].to_string().contains("/d/skills"));
+    }
 
     #[test]
     fn notifications_become_turn_events() {

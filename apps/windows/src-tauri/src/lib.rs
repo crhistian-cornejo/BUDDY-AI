@@ -640,10 +640,53 @@ fn forward_events(app: &AppHandle, core: &BuddyCore) {
                     let more = if *count > 1 { format!(" (+{})", count - 1) } else { String::new() };
                     say(&app, format!("{}{more}", short(headline, 72)));
                 }
+                if let buddy_core::Event::MediaCommand { action, uri } = &event {
+                    run_media_command(&app, action.clone(), uri.clone());
+                }
                 let _ = app.emit("core-event", &event);
             }
         })
         .expect("events thread");
+}
+
+/// An agent's music request, already checked by the core: a button, a clean `spotify:<kind>:<id>` to play, or a
+/// `spotify:search:…` to show. Windows has no "play this URI": Spotify opens it, and if it only shows the item we
+/// press play once.
+fn run_media_command(app: &AppHandle, action: String, uri: String) {
+    use tauri_plugin_opener::OpenerExt;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let playing = || media::now_playing().is_some_and(|n| n.status == "playing");
+        match action.as_str() {
+            "open" | "search" => {
+                if !uri.starts_with("spotify:") || app.opener().open_url(&uri, None::<&str>).is_err() {
+                    return;
+                }
+                if action == "open" {
+                    std::thread::sleep(Duration::from_millis(2500));
+                    if !playing() {
+                        media::control(media::Action::PlayPause);
+                    }
+                }
+            }
+            "play" if !playing() => {
+                media::control(media::Action::PlayPause);
+            }
+            "pause" if playing() => {
+                media::control(media::Action::PlayPause);
+            }
+            "toggle" => {
+                media::control(media::Action::PlayPause);
+            }
+            "next" => {
+                media::control(media::Action::Next);
+            }
+            "previous" => {
+                media::control(media::Action::Previous);
+            }
+            _ => {}
+        }
+    });
 }
 
 #[tauri::command]

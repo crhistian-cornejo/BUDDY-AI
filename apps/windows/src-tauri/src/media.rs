@@ -390,6 +390,15 @@ mod win {
                 for label in owners.lock().unwrap().iter() {
                     let _ = app.emit_to(label.as_str(), EVENT, now.clone());
                 }
+                // The core answers the agents' `now_playing` with this.
+                if let Some(state) = app.try_state::<crate::AppCore>() {
+                    state.core.set_now_playing(now.as_ref().map(|n| buddy_core::NowPlayingInfo {
+                        title: n.title.clone(),
+                        artist: n.artist.clone(),
+                        app: n.app.clone(),
+                        playing: n.status == "playing",
+                    }));
+                }
                 last = Some(now);
             }
 

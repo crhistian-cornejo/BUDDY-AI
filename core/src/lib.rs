@@ -9,6 +9,7 @@ pub mod events;
 pub mod folders;
 pub mod images;
 pub mod log;
+pub mod media;
 pub mod orchestrator;
 pub mod parley;
 pub mod paths;
@@ -16,6 +17,7 @@ pub mod pet;
 pub mod pixel;
 pub mod providers;
 pub mod router;
+pub mod skills;
 pub mod sessions;
 pub mod store;
 pub mod tools;
@@ -34,6 +36,8 @@ pub use store::{ChatMessage, ChatSummary, SourceLink, TokenReport};
 pub use pet::{PetBrain, PetContext, PetPlan, PetRect, clamp_to_area};
 pub use pixel::{FaceRect, Sprite, SpriteState};
 pub use briefing::BriefingItem;
+pub use media::NowPlayingInfo;
+pub use skills::Skill;
 pub use tools::{FocusStatus, Shortcut};
 pub use usage::{ProviderUsage, UsageWindow};
 pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
@@ -263,6 +267,21 @@ impl BuddyCore {
     pub fn briefing_tick(&self) {
         let (hour, today) = briefing::local_now();
         self.briefing.tick(hour, &today);
+    }
+
+    /// The app tells what its player plays (on every change), for the agents' `now_playing` tool.
+    pub fn set_now_playing(&self, now: Option<NowPlayingInfo>) {
+        self.sessions.set_now_playing(now);
+    }
+
+    /// Buddy's skills (`<data>/skills/<name>/SKILL.md`), seeding the built-in ones.
+    pub fn skills(&self) -> Vec<Skill> {
+        skills::list(&self.data_dir)
+    }
+
+    /// The folder where the user can drop skills (shown in Settings).
+    pub fn skills_dir(&self) -> String {
+        skills::dir(&self.data_dir).to_string_lossy().into()
     }
 
     /// What the briefing looks for (the defaults until the user writes their own).

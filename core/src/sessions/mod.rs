@@ -149,6 +149,8 @@ pub struct SessionHub {
     /// Secret of this run of the app: only `claude` processes Buddy starts get it (BUDDY_GATE_TOKEN), and only a
     /// gate request carrying it can ever be allowed.
     gate_token: String,
+    /// What the player plays, as the app last told us (for the agents' `now_playing`).
+    now_playing: Mutex<Option<crate::media::NowPlayingInfo>>,
 }
 
 impl SessionHub {
@@ -166,7 +168,13 @@ impl SessionHub {
             next_id: AtomicU64::new(1),
             decision_timeout,
             gate_token: random_token(),
+            now_playing: Mutex::new(None),
         }
+    }
+
+    /// The app reports what plays (on each change of its player).
+    pub fn set_now_playing(&self, now: Option<crate::media::NowPlayingInfo>) {
+        *self.now_playing.lock().unwrap_or_else(|p| p.into_inner()) = now;
     }
 
     /// The secret Buddy's own agents carry to ask for a command (see `gate`).
@@ -368,6 +376,44 @@ impl server::Sink for SessionHub {
         }
         self.ask(&payload, "buddy", "buddy".into(), "Buddy".into(), closed).unwrap_or("deny")
     }
+
+    /// The music player for Buddy's agents: no click needed (it only presses play/pause/next or opens a Spotify
+    /// item), but only with this run's secret and only clean Spotify links.
+    fn app(&self, payload: Value) -> String {
+        let reply = |ok: bool, text: &str| serde_json::json!({ "ok": ok, "text": text }).to_string();
+        if payload.get("_app").and_then(Value::as_str) != Some(self.gate_token.as_str()) {
+            log::line("herramientas: petición sin el secreto de esta sesión, rechazada");
+            return reply(false, "Petición rechazada.");
+        }
+        match text(&payload, "request") {
+            "now_playing" => {
+                let now = self.now_playing.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                reply(true, &crate::media::describe(now.as_ref()))
+            }
+            "media" => {
+                let action = text(&payload, "action");
+                let uri = if action == "open" {
+                    match crate::media::spotify_uri(text(&payload, "uri")) {
+                        Some(uri) => uri,
+                        None => return reply(false, "Ese enlace no es de Spotify (usa https://open.spotify.com/… o spotify:…)."),
+                    }
+                } else if action == "search" {
+                    match crate::media::search_uri(text(&payload, "query")) {
+                        Some(uri) => uri,
+                        None => return reply(false, "Falta qué buscar."),
+                    }
+                } else if crate::media::ACTIONS.contains(&action) {
+                    String::new()
+                } else {
+                    return reply(false, "Acción desconocida.");
+                };
+                log::line(format!("música: {action} {uri}"));
+                self.bus.publish(Event::MediaCommand { action: action.into(), uri });
+                reply(true, crate::media::done_text(action))
+            }
+            _ => reply(false, "Petición desconocida."),
+        }
+    }
 }
 
 impl SessionHub {
@@ -482,6 +528,26 @@ mod tests {
     use crate::sessions::server::Sink;
     use serde_json::json;
     use std::sync::mpsc::Receiver;
+
+    #[test]
+    fn the_music_player_needs_the_secret_and_a_clean_spotify_link() {
+        let (hub, rx, _dir) = hub(Duration::from_secs(1));
+        let token = hub.gate_token().to_string();
+        let ask = |v: Value| serde_json::from_str::<Value>(&Sink::app(&*hub, v)).unwrap();
+        assert_eq!(ask(json!({ "_app": "robado", "request": "media", "action": "next" }))["ok"], false);
+        assert!(rx.try_recv().is_err(), "nothing announced without the secret");
+        assert_eq!(ask(json!({ "_app": token, "request": "media", "action": "rm" }))["ok"], false);
+        assert_eq!(ask(json!({ "_app": token, "request": "media", "action": "open", "uri": "https://evil.example/x" }))["ok"], false);
+        assert_eq!(ask(json!({ "_app": token, "request": "media", "action": "next" }))["ok"], true);
+        assert_eq!(rx.try_recv().unwrap(), Event::MediaCommand { action: "next".into(), uri: String::new() });
+        let link = "https://open.spotify.com/track/7hQJA50XrCWABAu5v6QZ4i?si=1";
+        assert_eq!(ask(json!({ "_app": token, "request": "media", "action": "open", "uri": link }))["ok"], true);
+        assert_eq!(rx.try_recv().unwrap(), Event::MediaCommand { action: "open".into(), uri: "spotify:track:7hQJA50XrCWABAu5v6QZ4i".into() });
+        assert_eq!(ask(json!({ "_app": token, "request": "media", "action": "search", "query": "Crisco" }))["ok"], true);
+        assert_eq!(rx.try_recv().unwrap(), Event::MediaCommand { action: "search".into(), uri: "spotify:search:Crisco".into() });
+        hub.set_now_playing(Some(crate::media::NowPlayingInfo { title: "Creep".into(), artist: "Radiohead".into(), app: "Spotify".into(), playing: true }));
+        assert_eq!(ask(json!({ "_app": token, "request": "now_playing" }))["text"], "«Creep» de Radiohead en Spotify (sonando).");
+    }
 
     fn hub(timeout: Duration) -> (Arc<SessionHub>, Receiver<Event>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
