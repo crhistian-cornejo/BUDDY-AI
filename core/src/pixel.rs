@@ -12,8 +12,12 @@ use crate::CoreError;
 /// The characters that ship with Buddy, by id.
 const BUILTIN: &[(&str, &str)] = &[("buddy-base", include_str!("../characters/buddy-base.json"))];
 
-/// At most this many visible colors per character.
-pub const MAX_COLORS: usize = 16;
+/// At most this many visible colors per character: 16 for the character itself, a few more for its props (the
+/// laptop's silver and the screen's glow).
+pub const MAX_COLORS: usize = 24;
+/// buddy-base's laptop keys (silver, sheen, hinge shade, screen glow; its outline is `k`): only the laptop states
+/// use them, and agent looks never recolour them.
+pub const LAPTOP_KEYS: &str = "Xxhe";
 pub const MAX_FPS: u32 = 30;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -242,16 +246,56 @@ mod tests {
     fn buddy_base_puts_on_glasses_and_works_at_a_laptop() {
         let c = builtin("buddy-base").unwrap();
         let frames = |name: &str| &c.states.get(name).unwrap_or_else(|| panic!("missing {name}")).frames;
+        let laptop = |frame: &Vec<String>| -> Vec<(usize, usize)> {
+            frame
+                .iter()
+                .enumerate()
+                .flat_map(|(y, row)| row.chars().enumerate().filter(|(_, ch)| "Xxh".contains(*ch)).map(move |(x, _)| (x, y)))
+                .collect()
+        };
         for name in ["laptop-on", "laptop-off", "laptop-type", "laptop-think"] {
             for frame in frames(name) {
                 assert_eq!(frame.len(), 48, "{name}");
                 assert!(frame.iter().all(|row| row.chars().count() == 48), "{name}");
             }
         }
-        // Opening ends on the first typing frame (the apps hold it as the rest frame), and the loops keep moving.
+        // The open laptop is whole inside the canvas: a margin at the sides, its dark base on the last rows.
+        for name in ["laptop-type", "laptop-think"] {
+            assert!((4..=6).contains(&frames(name).len()), "{name}: a short loop");
+            for frame in frames(name) {
+                let px = laptop(frame);
+                assert!(px.len() > 150, "{name}: the lid is there");
+                let (min_x, max_x) = (px.iter().map(|p| p.0).min().unwrap(), px.iter().map(|p| p.0).max().unwrap());
+                let max_y = px.iter().map(|p| p.1).max().unwrap();
+                assert!(min_x >= 2 && max_x <= 45 && max_y < 47, "{name}: laptop at x {min_x}…{max_x}, y ≤ {max_y}");
+                assert!(frame[max_y + 1][min_x..=max_x].chars().all(|ch| ch == 'k'), "{name}: the base's dark edge");
+                assert!(frame.iter().any(|row| row.contains('e')), "{name}: the screen lights the face");
+            }
+        }
+        assert!((6..=8).contains(&c.states["laptop-type"].fps) && c.states["laptop-think"].fps < c.states["laptop-type"].fps);
+        // No other state draws the laptop (only the laptop states use its colours).
+        for (name, state) in &c.states {
+            if !name.starts_with("laptop") {
+                assert!(state.frames.iter().flatten().all(|row| !row.contains(|ch| LAPTOP_KEYS.contains(ch))), "{name}");
+            }
+        }
+        // Opening ends on the first typing frame (the apps hold it as the rest frame, and as the still frame with
+        // reduced motion); the lid rises over the opening and drops over the closing.
         assert_eq!(frames("laptop-on").last(), Some(&frames("laptop-type")[0]), "opening ends where typing starts");
+        let lid = |f: &Vec<String>| laptop(f).len();
+        assert!(frames("laptop-on")[1..].windows(2).all(|w| lid(&w[0]) < lid(&w[1])), "the lid opens");
+        assert!(frames("laptop-off")[..2].windows(2).all(|w| lid(&w[0]) > lid(&w[1])), "the lid closes");
+        assert_eq!(lid(frames("laptop-off").last().unwrap()), 0, "and goes away");
+        // The loops keep moving: typing paws alternate; thinking pulses the glow and the dots.
         assert!(frames("laptop-type").windows(2).all(|w| w[0] != w[1]), "typing keeps moving");
         assert!(frames("laptop-think").iter().any(|f| f != &frames("laptop-think")[0]), "the dots animate");
+        // No logo on the lid: the lid's inside is only silver, sheen and shade.
+        let open = &frames("laptop-type")[0];
+        let top = open.iter().position(|row| row.contains('X')).unwrap();
+        for row in &open[top..top + 6] {
+            let lid: String = row.chars().filter(|ch| *ch != '.').collect();
+            assert!(!lid.contains(['y', 'w', 'r']), "a mark on the lid: {row}");
+        }
     }
 
     #[test]
@@ -287,7 +331,7 @@ mod tests {
     #[test]
     fn rejects_bad_hex_and_too_many_colors() {
         assert!(Character::parse(&tiny(r#"[["kr",".k"]]"#).replace("#FF0000", "red")).is_err());
-        let palette: Vec<String> = (0..17).map(|i| format!(r##""{}":"#00000{}""##, (b'a' + i) as char, i % 10)).collect();
+        let palette: Vec<String> = (0..=MAX_COLORS as u8).map(|i| format!(r##""{}":"#00000{}""##, (b'a' + i) as char, i % 10)).collect();
         let json = format!(
             r#"{{"id":"t","name":"T","size":1,"palette":{{{}}},"states":{{"idle":{{"fps":1,"frames":[["a"]]}}}}}}"#,
             palette.join(",")

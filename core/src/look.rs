@@ -669,6 +669,38 @@ mod tests {
     }
 
     #[test]
+    fn every_look_leaves_the_laptop_alone() {
+        // The laptop (silver lid, its outline, the screen's glow on the face) keeps its own colours in every look:
+        // hood colours, accessories and eye styles only touch Buddy.
+        let base = crate::pixel::builtin("buddy-base").unwrap();
+        let plain = base.rasterize();
+        let mut checked = 0;
+        for (i, (accessory, _)) in ACCESSORIES.iter().enumerate() {
+            for (c, (color, ..)) in COLORS.iter().enumerate() {
+                let eyes = EYES[(i + c) % EYES.len()].0;
+                let dressed = sprite(&look(color, accessory, eyes), "x", "").unwrap();
+                for state in plain.states.iter().filter(|s| s.name.starts_with("laptop")) {
+                    let other = dressed.states.iter().find(|s| s.name == state.name).unwrap();
+                    for ((rows, a), b) in base.states[&state.name].frames.iter().zip(&state.frames).zip(&other.frames) {
+                        let keys: Vec<char> = rows.iter().flat_map(|r| r.chars()).collect();
+                        for (p, key) in keys.iter().enumerate() {
+                            // The lid and base (their outline is `k` around the silver keys) and the glow on the chin.
+                            // (A glasses accessory redraws the lenses, screen-lit glints included: those are Buddy's.)
+                            let lid = (crate::pixel::LAPTOP_KEYS.contains(*key) && p / 48 >= 30)
+                                || (*key == 'k' && p / 48 >= 34);
+                            if lid {
+                                assert_eq!(a[p], b[p], "{} {color}/{accessory}: «{key}» at {},{}", state.name, p % 48, p / 48);
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked}");
+    }
+
+    #[test]
     fn accessories_stay_inside_the_canvas_and_the_avatar() {
         let base = crate::pixel::builtin("buddy-base").unwrap();
         let face = base.face.unwrap();

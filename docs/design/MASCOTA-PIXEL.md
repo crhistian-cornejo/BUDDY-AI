@@ -22,7 +22,7 @@
 
 - **Cuadrícula base:** 48 × 48 píxeles por fotograma (el formato admite otros tamaños; el núcleo los valida).
 - **Tamaños en pantalla:** pequeño 72 pt (×1,5, nítido en Retina), normal 96 pt (×2), grande 144 pt (×3). Están en `assets/design-tokens.json`.
-- **Paleta:** como mucho 16 colores por personaje. Buddy usa 16: contorno verde oscuro, 4 tonos de menta, 2 de piel, ojos, brillo, rubor, boca y 3 de hoja.
+- **Paleta:** como mucho 16 colores para el personaje, y hasta 24 contando sus objetos. Buddy usa 16 (contorno verde oscuro, 4 tonos de menta, 2 de piel, ojos, brillo, rubor, boca y 3 de hoja) más 4 de la laptop (plata, brillo, sombra de la bisagra y la luz de la pantalla en la cara: `X x h e`).
 - **Cómo se dibuja:** `scripts/characters/buddy_base.py` genera `core/characters/buddy-base.json` (lo que se distribuye) y vistas previas en PNG. Los estados nuevos se añaden ahí.
 
 ## Los personajes («trajes»)
@@ -83,11 +83,22 @@ Sentado y aburrido: `sit-down` (3), `sit` (1, fijo), `sit-blink` (2), `sit-look`
 Cuando Buddy piensa o trabaja (el chat respondiendo, una tarea de un agente) se pone lentes, se sienta, saca una
 laptop plateada y teclea; al terminar la cierra, se quita los lentes y se levanta (y reacciona si hay `done`/`error`).
 
-- Estados: `laptop-on` (10 fotogramas), `laptop-type` (4, `work`), `laptop-think` (4, `think`: ojos arriba y tres
-  puntos) y `laptop-off` (10). Las apps traducen `think`/`work` a estos; `ask` y `listen` siguen igual y primero
-  guardan la laptop.
-- Se dibuja con los mismos 16 colores (lentes y tapa en `k`/`w`/`l`, logo encendido en `y`). Con «reducir
-  movimiento» se muestra el fotograma fijo sin transiciones.
+- Estados: `laptop-on` (4 fotogramas a 8 fps: se agacha con lentes, aparece la laptop cerrada, la tapa a medias, y
+  termina en el primer fotograma de `laptop-type`), `laptop-type` (6 a 6 fps, `work`), `laptop-think` (4 a 3 fps,
+  `think`) y `laptop-off` (3 a 8 fps: tapa a medias, cerrada, se levanta). Las apps traducen `think`/`work` a estos;
+  `ask` y `listen` siguen igual y primero guardan la laptop.
+- **La laptop (2026-10-03):** de frente, Buddy sentado detrás de una laptop estilo MacBook vista por detrás: tapa
+  plateada de 18 × 11 con esquinas redondeadas, brillo arriba y a la izquierda, un destello en diagonal, bisagra más
+  oscura y una base fina un píxel más ancha. **La tapa va lisa: sin manzana, sin logo, sin punto.** Las patitas se
+  ven a los lados de la tapa (la que teclea sube una fila); al pensar, una patita sostiene la barbilla.
+- **Luz de pantalla:** la parte baja de la cara toma un azul frío (`e`): una fila normalmente, dos cuando parpadea
+  la pantalla (`laptop-type`, fotograma 3) o pulsa (`laptop-think`); con dos, también los brillos de los lentes.
+- Teclear: patitas alternadas, un cabeceo de un píxel, un parpadeo de la luz y una pausa con los ojos entornados.
+- Se probó también una vista de perfil (Buddy de lado, pantalla en ángulo): a 96 pt la laptop queda en una cuña de
+  15 columnas que no se lee, y un perfil de verdad pide otra cabeza, que rompe el ancla de la cara de `look.rs`
+  (lentes, sombreros, ojos). Se quedó la vista de frente.
+- Las caras de los agentes (`look.rs`) no tocan los colores de la laptop (hay prueba). Con «reducir movimiento» se
+  muestra el fotograma fijo de teclear, sin transiciones; fuera de `think`/`work` no corre nada.
 
 ### Vida en reposo (núcleo: `core/src/pet.rs`)
 

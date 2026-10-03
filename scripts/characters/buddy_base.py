@@ -30,6 +30,12 @@ PAL = {
     "L": "#C8F29E",  # leaf light
     "y": "#FFD45C",  # symbols: ? and star
     "r": "#FF5D6C",  # symbols: !
+    # The laptop (a prop, never recoloured by an agent's look): silver lid, its sheen and hinge shade, and the
+    # screen's cool light on Buddy's face. No logo on the lid.
+    "X": "#C3C9D2",  # silver
+    "x": "#E6EAF0",  # silver sheen
+    "h": "#8D95A1",  # silver shade, hinge
+    "e": "#D2E8FF",  # screen glow on the skin
 }
 
 
@@ -50,7 +56,9 @@ class Pose:
     dangle: bool = False  # legs hang (being dragged)
     sit: int = 0  # 0 standing, 1 crouching (sitting down / getting up), 2 sitting with the feet forward
     glasses: int = 0  # 1 round glasses over the eyes
-    laptop: int = 0  # on the lap (sitting only): 1 closed, 2-4 the lid rising, 5 open with the logo lit
+    laptop: int = 0  # in front, seen from behind (sitting only): 1 closed, 2 lid half up, 3 open
+    glow: int = 0  # the open screen lights the face: 1 soft, 2 brighter (flicker, thinking pulse)
+    chin: bool = False  # at the laptop: the right hand rests on the chin (thinking)
     symbol: str = ""  # dots1 dots2 dots3 question question2 exclaim star
 
 
@@ -120,9 +128,9 @@ def draw(p: Pose):
               lambda x, y: ("S" if y >= y1 - 1 else "s") if y >= y1 - 2
               else ("B" if (x == ax + 3 if ax > 20 else x == ax + 1) else "b"))
 
-    if p.left_arm == "down":
+    if p.left_arm == "down" and not p.laptop:
         side_arm(12, 1 if p.hands == 1 else 0)
-    if p.right_arm == "down":
+    if p.right_arm == "down" and not p.laptop:
         side_arm(32, 1 if p.hands == 2 else 0)
 
     # body (mint onesie) with a cream belly
@@ -135,13 +143,6 @@ def draw(p: Pose):
                 g[y][x] = "S" if (y >= 37 + bd or x >= 27) else "s"
     if p.sit == 2:
         seated_feet(g, p.left_leg, p.right_leg)
-        if p.laptop:
-            draw_laptop(g, p.laptop, bd)
-            # the hands rest on the sides of the keyboard, in front of it
-            if p.left_arm == "down":
-                side_arm(12, 1 if p.hands == 1 else 0)
-            if p.right_arm == "down":
-                side_arm(32, 1 if p.hands == 2 else 0)
 
     # hood (head), over the body; `head` bobs it down
     def hood(x, y):
@@ -192,6 +193,9 @@ def draw(p: Pose):
     else:  # flat
         g[ey + 5][22] = g[ey + 5][23] = g[ey + 5][24] = g[ey + 5][25] = "m"
 
+    if p.laptop:
+        laptop_front(g, p, F)
+
     # raised arms go outside the hood
     if p.left_arm == "up":
         raised_arm(g, 4, 20 + dy, mirror=True)
@@ -235,25 +239,61 @@ def draw_glasses(g, ey):
     g[ey + 1][16] = g[ey + 1][31] = "k"
 
 
-def draw_laptop(g, stage, bd):
-    """A silver laptop on the lap seen from the back: a slab for the base, a lid that rises, a small lit logo."""
-    base = 40 + bd  # the two base rows end at the bottom of the figure
-    for y in (base, base + 1):
-        for x in range(13, 35):
-            g[y][x] = "k" if (y == base + 1 or x in (13, 34)) else "l"
-    for x in range(15, 33):
-        g[base - 1][x] = "k"
-    if stage >= 2:
-        top = base - 1 - {2: 2, 3: 5, 4: 7, 5: 7}[stage]
-        for y in range(top, base):
-            for x in range(15, 33):
-                edge = y == top or x in (15, 32)
-                g[y][x] = "k" if edge else ("w" if y < base - 3 else "l")
-        if stage >= 4:
-            mid = (top + base) // 2
-            logo = "y" if stage == 5 else "l"
-            for x, y in ((23, mid), (24, mid), (23, mid + 1), (24, mid + 1)):
-                g[y][x] = logo
+LID_TOP = {1: 40, 2: 37, 3: 32}  # the lid's top row (before the figure's offset) for each laptop stage
+LID_X = (15, 32)  # 18 × 11 when open: a laptop's proportions
+
+
+def laptop_front(g, p, F):
+    """A MacBook-style laptop in front of seated Buddy, seen from behind: a thin silver lid with rounded top
+    corners, a sheen and a darker hinge, on a thin base. Blank lid: no logo, no mark. The paws reach the keys from
+    both sides of the lid (a typing paw rises a row); the open screen lights the bottom of the face."""
+    top = LID_TOP[p.laptop]
+    x0, x1 = LID_X
+    if p.laptop == 3 and p.glow:
+        # The screen's cool light on the chin (two rows when it flickers brighter), and on the glasses' glints.
+        for y in range(F[3] - p.glow, F[3]):  # the rows above the face window's rim
+            for x in range(F[0], F[2] + 1):
+                if g[y][x] in "sS":
+                    g[y][x] = "e"
+        if p.glasses and p.glow == 2:
+            for y in range(F[1], F[3]):
+                for x in range(F[0], F[2] + 1):
+                    if g[y][x] == "w":
+                        g[y][x] = "e"
+    # arms: mint sleeves down the sides, cream paws at the lid's edges (the lid hides the inner half)
+    for i, ax in enumerate((11, 32)):
+        if i == 1 and p.chin:
+            continue
+        up = 1 if (p.hands == 1 and i == 0) or (p.hands == 2 and i == 1) else 0
+        y0, y1 = 35 - up, 41 - up
+        shape(g, lambda x, y, ax=ax, y0=y0, y1=y1: rr(x, y, ax, y0, ax + 5, y1, 2),
+              lambda x, y, ax=ax, y1=y1: ("S" if y >= y1 - 1 else "s") if y >= y1 - 3
+              else ("B" if x == (ax + 1 if i == 0 else ax + 4) else "b"))
+    if p.chin:  # the right paw props the chin; its sleeve goes down behind the lid
+        shape(g, lambda x, y: rr(x, y, 28, F[3] - 1, 33, top + 2, 2),
+              lambda x, y: "B" if x >= 32 else "b")
+        shape(g, lambda x, y: rr(x, y, 25, F[3] - 4, 30, F[3], 2),
+              lambda x, y: "S" if (x == 29 or y == F[3] - 1) else "s")
+    # the lid
+    for y in range(top, 43):
+        for x in range(x0, x1 + 1):
+            if y == top and x in (x0, x1):
+                continue  # rounded top corners
+            if y in (top, 42) or x in (x0, x1):
+                g[y][x] = "k"
+            elif y == 41 and top < 40:
+                g[y][x] = "h"  # hinge
+            elif y == top + 1 or x == x0 + 1 or (p.laptop == 3 and (x - x0) + (y - top) in (5, 6) and y <= top + 5):
+                g[y][x] = "x"  # sheen along the top and left, and a diagonal glint
+            elif x == x1 - 1:
+                g[y][x] = "h"
+            else:
+                g[y][x] = "X"
+    # the base: a thin slab, a pixel wider than the lid on each side
+    for x in range(x0 - 1, x1 + 2):
+        g[43][x] = "k" if x in (x0 - 1, x1 + 1) else "h"
+        g[44][x] = "k"
+    g[44][x0 - 1] = g[44][x1 + 1] = "."
 
 
 def raised_arm(g, ax, ay, mirror=False):
@@ -423,25 +463,26 @@ STATES = {
                      replace(SIT, eyes="closed", mouth="o")]),
     "sit-swing": (6, [replace(SIT, right_leg=1), replace(SIT, right_leg=2), replace(SIT, right_leg=1), SIT,
                       replace(SIT, right_leg=1), replace(SIT, right_leg=2), replace(SIT, right_leg=1)]),
-    # Working at the laptop: glasses on, sits down, opens the laptop and types; leaving reverses it.
-    "laptop-on": (8, [replace(I, eyes="happy", right_arm="up"),
-                      replace(I, eyes="happy", right_arm="up", glasses=1),
-                      replace(I, glasses=1),
-                      replace(I, glasses=1, sit=1, mouth="flat"),
-                      replace(LAP, laptop=0, head=1),
-                      replace(LAP, laptop=1), replace(LAP, laptop=2), replace(LAP, laptop=3),
-                      replace(LAP, laptop=4), replace(LAP, laptop=5, hands=1)]),
-    "laptop-off": (8, [replace(LAP, laptop=5, hands=2), replace(LAP, laptop=4), replace(LAP, laptop=3),
-                       replace(LAP, laptop=2), replace(LAP, laptop=1), replace(LAP, laptop=0, head=1),
-                       replace(I, glasses=1, sit=1, mouth="flat"), replace(I, glasses=1),
-                       replace(I, eyes="happy", right_arm="up", glasses=1),
-                       replace(I, eyes="happy", right_arm="up")]),
-    "laptop-type": (6, [replace(LAP, laptop=5, hands=1), replace(LAP, laptop=5, eyes="half", hands=0),
-                        replace(LAP, laptop=5, hands=2), replace(LAP, laptop=4, hands=0)]),
-    "laptop-think": (3, [replace(LAP, laptop=5, eyes="up", symbol="dots1"),
-                         replace(LAP, laptop=5, eyes="up", symbol="dots2"),
-                         replace(LAP, laptop=5, eyes="up", symbol="dots3"),
-                         replace(LAP, laptop=5, eyes="up")]),
+    # Working at the laptop: glasses on, sits down behind a silver laptop, opens it and types (6 fps: alternating
+    # paws, a small nod, the screen's light flickering on the face); thinking rests a paw on the chin while the
+    # glow pulses. Opening and closing take two frames each.
+    "laptop-on": (8, [replace(I, glasses=1, sit=1, mouth="flat"),
+                      replace(LAP, laptop=1, head=1),
+                      replace(LAP, laptop=2),
+                      replace(LAP, laptop=3, glow=1, hands=1)]),
+    "laptop-off": (8, [replace(LAP, laptop=2, eyes="open"),
+                       replace(LAP, laptop=1, eyes="open", head=1),
+                       replace(I, glasses=1, sit=1, mouth="flat")]),
+    "laptop-type": (6, [replace(LAP, laptop=3, glow=1, hands=1),
+                        replace(LAP, laptop=3, glow=1, hands=2),
+                        replace(LAP, laptop=3, glow=2, hands=1, head=1),
+                        replace(LAP, laptop=3, glow=1, hands=2, head=1),
+                        replace(LAP, laptop=3, glow=1, hands=1, eyes="half"),
+                        replace(LAP, laptop=3, glow=1)]),
+    "laptop-think": (3, [replace(LAP, laptop=3, glow=1, chin=True, eyes="up", symbol="dots1"),
+                         replace(LAP, laptop=3, glow=2, chin=True, eyes="up", symbol="dots2"),
+                         replace(LAP, laptop=3, glow=2, chin=True, eyes="up", symbol="dots3"),
+                         replace(LAP, laptop=3, glow=1, chin=True, eyes="up")]),
     "sleep": (1, [
         replace(SIT, eyes="closed"),
         replace(SIT, eyes="closed", head=1),
