@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json.workspace = true
+# Pure-Rust DEFLATE (already in the lockfile through flate2/png): reading the ZIP inside .docx/.xlsx/.pptx and the
+# FlateDecode streams of a PDF, and compressing the XML of the files we write. No C, no network.
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 
 # Who is on the other end of the socket (getpeereid / SO_PEERCRED).
 [target.'cfg(unix)'.dependencies]

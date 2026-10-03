@@ -428,6 +428,7 @@ name = "buddy-hook"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "miniz_oxide 0.9.1",
  "serde_json",
  "windows 0.61.3",
 ]
