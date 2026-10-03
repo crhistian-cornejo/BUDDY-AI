@@ -617,14 +617,22 @@ impl ChatEngine {
                     if let Some(usage) = &self.usage {
                         match provider.id() {
                             ProviderId::Codex => usage.record_codex(&info),
-                            // The Antigravity CLI reports no plan figures (only tokens).
+                            // agy's plan figures come from `/usage` (usage.rs refreshes them), not from turns.
                             ProviderId::Antigravity => {}
                             _ => usage.record_claude(&info),
                         }
                     }
                 }
                 TurnEvent::Done => {}
-                TurnEvent::Failed(f) => failure = Some(f),
+                TurnEvent::Failed(f) => {
+                    // Gemini's plan ran out: the meter says so (with when it comes back) until `/usage` refreshes.
+                    if provider.id() == ProviderId::Antigravity && f.is_no_usage() {
+                        if let Some(usage) = &self.usage {
+                            usage.antigravity_exhausted(&f.message);
+                        }
+                    }
+                    failure = Some(f)
+                }
             });
             match failure {
                 // Not installed, or an answer that never came (Missing), or no usage left before any tool ran: the

@@ -1,4 +1,4 @@
-//! Sessions: what Claude Code and Codex are doing outside Buddy, from their own hooks.
+//! Sessions: what Claude Code, Codex and the Antigravity CLI (Gemini) are doing outside Buddy, from their own hooks.
 //!
 //! The agents run `buddy-hook` (the `hook/` crate) on every hook event; the relay hands each event to the local
 //! server here (`server`: a Unix socket on Mac, a named pipe on Windows). `SessionHub` turns events into
@@ -6,6 +6,7 @@
 //! (`answer_approval`) goes back to the waiting agent. The hooks are written into the agents' config files only
 //! after the user saw the diff and clicked (`hooks_preview` → `hooks_write`; see `hook_file`).
 
+pub mod antigravity_hooks;
 pub mod claude_hooks;
 pub mod codex_hooks;
 pub mod format;
@@ -41,13 +42,13 @@ const STALE_AFTER_SECS: i64 = 24 * 3600;
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct HookStatusInfo {
-    /// `claude` or `codex`.
+    /// `claude`, `codex` or `antigravity`.
     pub agent: String,
-    /// `Claude Code` or `Codex`.
+    /// `Claude Code`, `Codex` or `Gemini (Antigravity)`.
     pub name: String,
     /// Buddy's hooks are in the agent's config file.
     pub installed: bool,
-    /// The agent's config folder exists (`~/.claude`, `$CODEX_HOME` or `~/.codex`).
+    /// The agent's config folder exists (`~/.claude`, `$CODEX_HOME` or `~/.codex`, `~/.gemini/config`).
     pub available: bool,
     /// The relay the hooks run (`<data_dir>/bin/buddy-hook`) is in place.
     pub relay_ready: bool,
@@ -59,7 +60,7 @@ pub struct HookStatusInfo {
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SessionInfo {
     pub session_id: String,
-    /// `claude` or `codex`.
+    /// `claude`, `codex` or `antigravity`.
     pub agent: String,
     /// The folder name of the session's working directory.
     pub project: String,
@@ -74,6 +75,8 @@ pub(crate) fn state_for(event: &str) -> Option<&'static str> {
     Some(match event {
         "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
         | "SubagentStart" | "SubagentStop" => "working",
+        // Antigravity: before each model call.
+        "PreInvocation" => "working",
         // Claude Code's Notification: it needs the user (a question, the idle prompt).
         "Notification" | "PermissionRequest" => "waiting",
         "Stop" => "done",
@@ -85,10 +88,12 @@ pub(crate) fn state_for(event: &str) -> Option<&'static str> {
     })
 }
 
-/// `claude` or `codex`, from the relay's `_agent` tag (anything else is Claude Code, the relay's default).
+/// `claude`, `codex` or `antigravity`, from the relay's `_agent` tag (anything else is Claude Code, the relay's
+/// default).
 fn agent_of(payload: &Value) -> &'static str {
     match payload.get("_agent").and_then(Value::as_str) {
         Some("codex") => "codex",
+        Some("antigravity") => "antigravity",
         _ => "claude",
     }
 }
@@ -327,6 +332,7 @@ impl SessionHub {
         vec![
             status("claude", "Claude Code", claude_hooks::config_dir(), claude_hooks::file(&relay)),
             status("codex", "Codex", codex_hooks::config_dir(), codex_hooks::file(&relay)),
+            status("antigravity", "Gemini (Antigravity)", antigravity_hooks::config_dir(), antigravity_hooks::file(&relay)),
         ]
     }
 
@@ -335,6 +341,7 @@ impl SessionHub {
         match agent {
             "claude" => claude_hooks::file(&relay),
             "codex" => codex_hooks::file(&relay),
+            "antigravity" => antigravity_hooks::file(&relay),
             other => return Err(CoreError::Hooks(format!("Agente desconocido: {other}"))),
         }
         .map_err(CoreError::Hooks)
@@ -381,9 +388,16 @@ impl SessionHub {
     /// Records the session's new state; emits `SessionUpdate` only when something shown changed.
     /// A hook from one of Buddy's own turns (its agents work in `<data>/agents/<id>/workspace`), not a session of
     /// the user's: the notch must not show it.
+    /// Antigravity also lists every folder of the session (`workspace_paths`): Buddy's turns put the agent's own
+    /// workspace first, and add the user's folders after it.
     fn is_own_run(&self, payload: &Value) -> bool {
-        let cwd = text(payload, "cwd");
-        !cwd.is_empty() && Path::new(cwd).starts_with(self.data_dir.join("agents"))
+        let agents = self.data_dir.join("agents");
+        let real = std::fs::canonicalize(&agents).ok();
+        let own = |dir: &str| {
+            !dir.is_empty() && (Path::new(dir).starts_with(&agents) || real.as_ref().is_some_and(|r| Path::new(dir).starts_with(r)))
+        };
+        own(text(payload, "cwd"))
+            || payload.get("workspace_paths").and_then(Value::as_array).is_some_and(|dirs| dirs.iter().filter_map(Value::as_str).any(own))
     }
 
     fn update_session(&self, agent: &str, session_id: &str, project: &str, state: &str, place: &Place) {
@@ -795,6 +809,53 @@ mod tests {
         let left = hub.sessions();
         assert_eq!(left.len(), 1);
         assert_eq!((left[0].agent.as_str(), left[0].state.as_str()), ("codex", "working"));
+    }
+
+    /// What `buddy-hook --antigravity` forwards for an `agy` session (see hook/src/main.rs `antigravity_payload`).
+    #[test]
+    fn an_antigravity_session_is_its_own_agent() {
+        let (hub, rx, dir) = hub(DECISION_TIMEOUT);
+        let ev = |name: &str| json!({
+            "hook_event_name": name, "_agent": "antigravity", "session_id": "c-1",
+            "cwd": "/Users/u/web", "workspace_paths": ["/Users/u/web"]
+        });
+        hub.event(ev("PreInvocation"));
+        hub.event(ev("PostToolUse"));
+        hub.event(ev("PreInvocation"));
+        hub.event(ev("Stop"));
+        hub.event(ev("PreInvocation"));
+        hub.event(ev("StopFailure"));
+        assert_eq!(
+            drain(&rx),
+            vec![
+                update("c-1", "antigravity", "web", "working"),
+                update("c-1", "antigravity", "web", "done"),
+                update("c-1", "antigravity", "web", "working"),
+                update("c-1", "antigravity", "web", "error"),
+            ]
+        );
+
+        // Buddy's own Gemini turn: its workspace comes first, the user's folders after it.
+        let own = dir.path().join("agents/investigador/workspace");
+        hub.event(json!({
+            "hook_event_name": "PreInvocation", "_agent": "antigravity", "session_id": "b-1",
+            "cwd": own, "workspace_paths": [own, "/Users/u/web"]
+        }));
+        hub.event(json!({
+            "hook_event_name": "Stop", "_agent": "antigravity", "session_id": "b-2",
+            "cwd": "", "workspace_paths": [own]
+        }));
+        assert!(rx.try_recv().is_err(), "Buddy's own Gemini turns never reach the notch");
+        assert_eq!(hub.sessions().len(), 1);
+    }
+
+    #[test]
+    fn the_settings_list_gemini_next_to_claude_and_codex() {
+        let (hub, _rx, _dir) = hub(DECISION_TIMEOUT);
+        let status = hub.hooks_status();
+        let agents: Vec<(&str, &str)> = status.iter().map(|s| (s.agent.as_str(), s.name.as_str())).collect();
+        assert_eq!(agents, [("claude", "Claude Code"), ("codex", "Codex"), ("antigravity", "Gemini (Antigravity)")]);
+        assert!(hub.hook_file("gemini-cli").is_err());
     }
 
     #[test]

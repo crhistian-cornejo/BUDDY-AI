@@ -1,5 +1,5 @@
 // Ported from MIKA (MIT, revision d050bc5): apps/windows/hook/src/main.rs
-//! buddy-hook — the relay Claude Code and Codex run on every hook event.
+//! buddy-hook — the relay Claude Code, Codex and the Antigravity CLI (`agy`, Gemini) run on every hook event.
 //!
 //! Reads the hook JSON on stdin, adds a little terminal context, and hands it to Buddy: over the Unix socket
 //! `<data_dir>/hooks.sock` on Mac (and other Unix), over the named pipe `\\.\pipe\buddy-<sid>` on Windows.
@@ -12,9 +12,14 @@
 //! * Only `PermissionRequest` waits for an answer, because approving from the notch is the whole point. No answer
 //!   means empty stdout, and the agent asks in the terminal exactly as if Buddy were not installed.
 //!
-//! Usage: `buddy-hook <EventName>` (Claude Code) or `buddy-hook --codex <EventName>` (Codex). The name is also read
-//! from the JSON. Every payload leaves tagged `_agent: "claude" | "codex"` so Buddy knows whose session it is: the
-//! JSON itself can't say, because both agents send the same field names.
+//! Usage: `buddy-hook <EventName>` (Claude Code), `buddy-hook --codex <EventName>` (Codex) or
+//! `buddy-hook --antigravity <EventName>` (agy). The name is also read from the JSON. Every payload leaves tagged
+//! `_agent: "claude" | "codex" | "antigravity"` so Buddy knows whose session it is: the JSON itself can't say,
+//! because Claude Code and Codex send the same field names.
+//!
+//! Antigravity speaks its own dialect (camelCase, `conversationId`, `workspacePaths`, no event name in the JSON), so
+//! its payload is put into the shape Buddy reads (`antigravity_fields`), and agy, which reads a JSON object from
+//! every hook's stdout, always gets the neutral `{}` back — Buddy never answers for an agy tool.
 //!
 //! Wire protocol: one JSON line from us; for `PermissionRequest` the server answers one line (`allow` or `deny`)
 //! on the same connection.
@@ -40,7 +45,8 @@ const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 const DECISION_BUDGET: Duration = Duration::from_secs(110);
 
 /// Fields that are pointless to forward and can be enormous (a whole file read, a full command output).
-const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path", "agent_transcript_path"];
+const DROPPED_FIELDS: &[&str] =
+    &["tool_response", "transcript_path", "agent_transcript_path", "transcriptPath", "artifactDirectoryPath"];
 /// Longest string forwarded for an ordinary field (a file being written, a search pattern…). Buddy never needs
 /// more than a preview of those.
 const MAX_FIELD_LEN: usize = 2_000;
@@ -56,6 +62,8 @@ enum Agent {
     Claude,
     /// `buddy-hook --codex <Event>`, from `~/.codex/hooks.json`.
     Codex,
+    /// `buddy-hook --antigravity <Event>`, from `~/.gemini/config/hooks.json`.
+    Antigravity,
 }
 
 impl Agent {
@@ -64,14 +72,16 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Antigravity => "antigravity",
         }
     }
 }
 
-/// `[--codex] <Event>` → who ran us, and the event name argv carries (may be empty).
+/// `[--codex | --antigravity] <Event>` → who ran us, and the event name argv carries (may be empty).
 fn parse_args(args: &[String]) -> (Agent, String) {
     match args.first().map(String::as_str) {
         Some("--codex") => (Agent::Codex, args.get(1).cloned().unwrap_or_default()),
+        Some("--antigravity") => (Agent::Antigravity, args.get(1).cloned().unwrap_or_default()),
         _ => (Agent::Claude, args.first().cloned().unwrap_or_default()),
     }
 }
@@ -84,13 +94,15 @@ fn main() {
     if args.first().map(String::as_str) == Some("--gate") {
         run_gate();
     }
-    // A hook of one of Buddy's own turns (Buddy started that Claude/Codex): not a session of the user's.
+    let (agent, _) = parse_args(&args);
+    // A hook of one of Buddy's own turns (Buddy started that Claude/Codex/agy): not a session of the user's.
     if std::env::var_os("BUDDY_OWN_RUN").is_some() {
-        std::process::exit(0);
+        finish(agent);
     }
-    let Some((payload, event)) = read_event(&args) else { std::process::exit(0) };
+    let Some((payload, event)) = read_event(&args) else { finish(agent) };
 
-    let waits_for_answer = event == "PermissionRequest";
+    // agy has no permission event: whatever its JSON says, an Antigravity hook never waits.
+    let waits_for_answer = event == "PermissionRequest" && agent != Agent::Antigravity;
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
 
     // The worker owns every blocking call. If it overruns the budget we simply stop listening and exit: the
@@ -101,6 +113,7 @@ fn main() {
     });
 
     if let Ok(Some(decision)) = rx.recv_timeout(budget)
+        && waits_for_answer
         && let Some(json) = decision_json(&decision)
     {
         let mut out = std::io::stdout();
@@ -108,7 +121,24 @@ fn main() {
         let _ = out.flush();
     }
     // Nothing printed: the agent asks in the terminal, as if we were not here.
-    std::process::exit(0);
+    finish(agent);
+}
+
+/// What an agent reads on stdout when Buddy has nothing to say. Claude Code and Codex: nothing. agy reads a JSON
+/// object from every hook (hooks.md, "Input/Output Contract"); `{}` changes nothing for PreInvocation, PostToolUse
+/// and Stop, the only events Buddy installs for it.
+fn silence(agent: Agent) -> &'static str {
+    if agent == Agent::Antigravity { "{}" } else { "" }
+}
+
+fn finish(agent: Agent) -> ! {
+    let text = silence(agent);
+    if !text.is_empty() {
+        let mut out = std::io::stdout();
+        let _ = writeln!(out, "{text}");
+        let _ = out.flush();
+    }
+    std::process::exit(0)
 }
 
 /// The PreToolUse output of the gate (Buddy's own agents, `buddy-hook --gate PreToolUse`). Here silence is not
@@ -190,13 +220,16 @@ fn prepare(mut raw: Vec<u8>, agent: Agent, arg_event: String) -> Option<(String,
     let map = payload.as_object_mut()?;
 
     // The event name is passed on argv by the hook command; the JSON usually carries it too. Trust argv when the
-    // JSON is missing it.
-    let event = map
-        .get("hook_event_name")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(arg_event);
+    // JSON is missing it. agy's JSON never carries it: argv decides, after the mapping.
+    let event = if agent == Agent::Antigravity {
+        antigravity_fields(map, &arg_event)
+    } else {
+        map.get("hook_event_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(arg_event)
+    };
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
     // Always overwritten: whatever the agent sent under this name, argv decides.
     map.insert("_agent".into(), serde_json::Value::String(agent.tag().into()));
@@ -209,8 +242,9 @@ fn prepare(mut raw: Vec<u8>, agent: Agent, arg_event: String) -> Option<(String,
         map.remove(*field);
     }
 
+    // agy runs its hooks in the folder of hooks.json, which says nothing about the session.
     let cwd_missing = map.get("cwd").and_then(|v| v.as_str()).map(str::is_empty).unwrap_or(true);
-    if cwd_missing && let Ok(cwd) = std::env::current_dir() {
+    if cwd_missing && agent != Agent::Antigravity && let Ok(cwd) = std::env::current_dir() {
         map.insert("cwd".into(), serde_json::Value::String(cwd.to_string_lossy().to_string()));
     }
 
@@ -226,7 +260,7 @@ fn prepare(mut raw: Vec<u8>, agent: Agent, arg_event: String) -> Option<(String,
     ] {
         // Claude Code's own variable says nothing about a Codex session (and would be plain wrong for Codex started
         // from a Claude Code terminal).
-        if agent == Agent::Codex && key == "session_pid" {
+        if agent != Agent::Claude && key == "session_pid" {
             continue;
         }
         if !map.contains_key(key) {
@@ -245,6 +279,33 @@ fn prepare(mut raw: Vec<u8>, agent: Agent, arg_event: String) -> Option<(String,
     let mut line = payload.to_string();
     line.push('\n');
     Some((line, event))
+}
+
+/// agy's payload (hooks.md: camelCase, `conversationId`, `workspacePaths`, `toolCall`) in the fields Buddy reads:
+/// `session_id`, `cwd` (the first workspace folder), `workspace_paths`, `tool_name`/`tool_input`, and the event
+/// name. A `Stop` that carries an error becomes `StopFailure`. Returns the event.
+fn antigravity_fields(map: &mut serde_json::Map<String, serde_json::Value>, arg_event: &str) -> String {
+    use serde_json::Value;
+    let text = |v: Option<&Value>| v.and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if let Some(id) = map.remove("conversationId").and_then(|v| v.as_str().map(str::to_string)) {
+        map.entry("session_id").or_insert(Value::String(id));
+    }
+    if let Some(dirs) = map.remove("workspacePaths").filter(Value::is_array) {
+        if let Some(first) = dirs.as_array().and_then(|d| d.first()).and_then(Value::as_str) {
+            map.entry("cwd").or_insert(Value::String(first.to_string()));
+        }
+        map.insert("workspace_paths".into(), dirs);
+    }
+    if let Some(call) = map.remove("toolCall") {
+        map.insert("tool_name".into(), Value::String(text(call.get("name"))));
+        map.insert("tool_input".into(), call.get("args").cloned().unwrap_or(Value::Null));
+    }
+    let reason = text(map.remove("terminationReason").as_ref());
+    let failed = !text(map.get("error")).is_empty() || reason.to_ascii_lowercase().contains("error");
+    if !reason.is_empty() {
+        map.insert("termination_reason".into(), Value::String(reason));
+    }
+    if arg_event == "Stop" && failed { "StopFailure".into() } else { arg_event.to_string() }
 }
 
 fn limit_for(key: &str) -> usize {
@@ -452,6 +513,70 @@ mod tests {
         for answer in [Some("deny"), Some("maybe"), None] {
             assert!(gate_json(answer).contains(r#""permissionDecision":"deny""#), "{answer:?}");
         }
+    }
+
+    /// Payloads as agy 1.2.15 sent them to a hook (trimmed paths), see core/src/sessions/antigravity_hooks.rs.
+    const AGY_POST_TOOL: &str = r#"{"artifactDirectoryPath":"/Users/u/.gemini/antigravity-cli/brain/c-1","conversationId":"c-1","error":"","modelName":"gemini-3.8-flash-low","stepIdx":2,"toolCall":{"args":{"AbsolutePath":"/Users/u/web/note.txt","toolAction":"Viewing note file","toolSummary":"View note.txt"},"name":"view_file"},"transcriptPath":"/Users/u/.gemini/antigravity-cli/brain/c-1/.system_generated/logs/transcript_full.jsonl","workspacePaths":["/Users/u/web","/Users/u/docs"]}"#;
+    const AGY_STOP: &str = r#"{"conversationId":"c-1","error":"","executionNum":0,"fullyIdle":true,"modelName":"gemini-3.8-flash-low","terminationReason":"NO_TOOL_CALL","workspacePaths":["/Users/u/web"]}"#;
+
+    #[test]
+    fn argv_says_when_agy_ran_us() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_args(&args(&["--antigravity", "Stop"])), (Agent::Antigravity, "Stop".into()));
+        assert_eq!(Agent::Antigravity.tag(), "antigravity");
+    }
+
+    #[test]
+    fn an_agy_payload_is_put_in_the_shape_buddy_reads() {
+        let (line, event) = prepare(AGY_POST_TOOL.as_bytes().to_vec(), Agent::Antigravity, "PostToolUse".into()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(event, "PostToolUse");
+        assert_eq!(v["hook_event_name"], "PostToolUse");
+        assert_eq!(v["_agent"], "antigravity");
+        assert_eq!(v["session_id"], "c-1");
+        assert_eq!(v["cwd"], "/Users/u/web", "the first workspace folder, never the folder of hooks.json");
+        assert_eq!(v["workspace_paths"], serde_json::json!(["/Users/u/web", "/Users/u/docs"]));
+        assert_eq!(v["tool_name"], "view_file");
+        assert_eq!(v["tool_input"]["AbsolutePath"], "/Users/u/web/note.txt");
+        for gone in ["conversationId", "workspacePaths", "toolCall", "transcriptPath", "artifactDirectoryPath", "session_pid"] {
+            assert!(v.get(gone).is_none(), "{gone} must not be forwarded");
+        }
+        assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
+    }
+
+    #[test]
+    fn an_agy_stop_is_done_unless_it_carries_an_error() {
+        let (line, event) = prepare(AGY_STOP.as_bytes().to_vec(), Agent::Antigravity, "Stop".into()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!((event.as_str(), v["termination_reason"].as_str()), ("Stop", Some("NO_TOOL_CALL")));
+        let failed = AGY_STOP.replace(r#""error":"""#, r#""error":"RESOURCE_EXHAUSTED: quota""#);
+        assert_eq!(prepare(failed.into_bytes(), Agent::Antigravity, "Stop".into()).unwrap().1, "StopFailure");
+        let failed = AGY_STOP.replace("NO_TOOL_CALL", "error");
+        assert_eq!(prepare(failed.into_bytes(), Agent::Antigravity, "Stop".into()).unwrap().1, "StopFailure");
+    }
+
+    #[test]
+    fn an_agy_payload_cannot_pretend_to_ask_for_permission() {
+        // argv decides the event for agy, and the relay never waits for an Antigravity hook.
+        let raw = br#"{"hook_event_name":"PermissionRequest","conversationId":"c"}"#.to_vec();
+        let (line, event) = prepare(raw, Agent::Antigravity, "PreInvocation".into()).unwrap();
+        assert_eq!(event, "PreInvocation");
+        assert!(line.contains(r#""hook_event_name":"PreInvocation""#));
+    }
+
+    #[test]
+    fn an_agy_payload_without_folders_gets_no_made_up_cwd() {
+        let (line, _) = prepare(br#"{"conversationId":"c"}"#.to_vec(), Agent::Antigravity, "Stop".into()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(v.get("cwd").is_none());
+    }
+
+    #[test]
+    fn agy_always_reads_a_json_object_and_the_others_silence() {
+        assert_eq!(silence(Agent::Antigravity), "{}");
+        assert!(serde_json::from_str::<serde_json::Value>(silence(Agent::Antigravity)).unwrap().is_object());
+        assert_eq!(silence(Agent::Claude), "");
+        assert_eq!(silence(Agent::Codex), "");
     }
 
     #[test]

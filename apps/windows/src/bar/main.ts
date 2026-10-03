@@ -65,10 +65,13 @@ let usage: ProviderUsage[] = [];
 let news: BriefingItem[] = [];
 const pendingApproval = new Map<string, string>();
 
-const agentName = (agent: string) => (agent === "codex" ? "Codex" : agent === "buddy" ? "Buddy" : "Claude Code");
+const agentName = (agent: string) =>
+  agent === "codex" ? "Codex" : agent === "antigravity" ? "Gemini" : agent === "buddy" ? "Buddy" : "Claude Code";
+/** A plan's name, as the Mac's AgentNames.plan. */
+const planName = (provider: string) => (provider === "codex" ? "Codex" : provider === "antigravity" ? "Gemini" : "Claude");
 
 function providerMark(agent: string, size: number): Element {
-  const mark = PROVIDER_MARKS[agent === "codex" ? "codex" : "claude"]!;
+  const mark = PROVIDER_MARKS[agent === "codex" || agent === "antigravity" ? agent : "claude"]!;
   const el = h("span", { title: mark.label, style: `display:inline-grid;color:${mark.color ?? "#fafafa"}` });
   el.append(svg(mark.path, size, { fill: "currentColor" }));
   return el;
@@ -249,7 +252,7 @@ function drawAgents() {
   const rows: Node[] = sessions.slice(0, 3).map((s) =>
     h("div", { class: "session", title: stateText(s.state) }, providerMark(s.agent, 11), h("span", { class: "label", text: s.project }), h("span", { class: `dot ${s.state}` })));
   if (!sessions.length) {
-    rows.push(h("span", { class: "muted", text: hooksConnected ? "Sin sesiones abiertas" : "Claude Code y Codex" }));
+    rows.push(h("span", { class: "muted", text: hooksConnected ? "Sin sesiones abiertas" : "Claude, Codex y Gemini" }));
     if (!hooksConnected) {
       rows.push(h("div", { class: "row-btns" },
         h("button", { class: "pill primary", type: "button", title: "Muestra qué cambia en su configuración antes de hacerlo",
@@ -386,7 +389,7 @@ function onCore(e: CoreEvent) {
       break;
     case "usageLow": {
       const u = e as Extract<CoreEvent, { type: "usageLow" }>;
-      const name = u.provider === "codex" ? "Codex" : "Claude";
+      const name = planName(u.provider);
       show({ kind: "waiting", agent: u.provider, title: `Te queda ${u.leftPct} % de ${name}`, detail: `Ventana: ${u.label}. Buddy usará el otro proveedor si se acaba.` });
       break;
     }

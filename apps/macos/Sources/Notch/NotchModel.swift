@@ -146,5 +146,32 @@ final class NotchModel {
 extension NotchModel.Notice {
     var isApproval: Bool { if case .approval = kind { return true } else { return false } }
 
-    var agentName: String { agent == "codex" ? "Codex" : agent == "buddy" ? "Buddy" : "Claude Code" }
+    var agentName: String { agent == "buddy" ? "Buddy" : AgentNames.name(agent) }
+}
+
+/// How the notch and the settings name a coding agent of the user's (the core's `agent` / `provider` ids) and which
+/// provider mark they show for it.
+enum AgentNames {
+    /// A session's agent: "Claude Code", "Codex", "Gemini".
+    static func name(_ agent: String) -> String {
+        switch agent {
+        case "codex": return "Codex"
+        case "antigravity": return "Gemini"
+        default: return "Claude Code"
+        }
+    }
+
+    /// A plan's provider: "Claude", "Codex", "Gemini".
+    static func plan(_ provider: String) -> String {
+        switch provider {
+        case "codex": return "Codex"
+        case "antigravity": return "Gemini"
+        default: return "Claude"
+        }
+    }
+
+    /// The `ProviderMark` id for an agent.
+    static func mark(_ agent: String) -> String {
+        agent == "codex" || agent == "antigravity" ? agent : "claude"
+    }
 }

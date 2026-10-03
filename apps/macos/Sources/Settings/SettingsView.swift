@@ -265,7 +265,7 @@ private struct ConnectionSettings: View {
             Section("Avisos de tus sesiones") {
                 ForEach(status, id: \.agent) { item in
                     HStack {
-                        ProviderMark(provider: item.agent == "codex" ? "codex" : "claude", size: 14)
+                        ProviderMark(provider: AgentNames.mark(item.agent), size: 14)
                             .padding(6)
                             .background(.black, in: RoundedRectangle(cornerRadius: 6))
                         VStack(alignment: .leading, spacing: 2) {
@@ -404,7 +404,7 @@ struct UsageSettings: View {
             }
             Section("Tus planes") {
                 if plans.isEmpty {
-                    Text("Aparecen después del primer chat con Claude o Codex.").foregroundStyle(.secondary)
+                    Text("Aparecen después del primer chat con Claude, Codex o Gemini.").foregroundStyle(.secondary)
                 }
                 ForEach(plans, id: \.provider) { plan in
                     ForEach(plan.windows, id: \.label) { window in

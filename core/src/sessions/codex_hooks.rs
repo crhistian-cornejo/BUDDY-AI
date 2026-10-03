@@ -83,7 +83,7 @@ fn handler(relay: &Path, event: &str, timeout: u64) -> Value {
 
 /// Codex's hooks.json at `path` as a `HookFile` running `relay`.
 pub(crate) fn spec(path: PathBuf, relay: PathBuf) -> HookFile {
-    HookFile { path, relay, events: HOOK_EVENTS, handler }
+    HookFile { path, relay, events: HOOK_EVENTS, handler, layout: hook_file::Layout::Hooks }
 }
 
 pub(crate) fn file(relay: &Path) -> Result<HookFile, String> {

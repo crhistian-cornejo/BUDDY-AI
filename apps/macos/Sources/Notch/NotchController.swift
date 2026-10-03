@@ -83,7 +83,7 @@ final class NotchController {
         switch event {
         case let .approvalRequest(requestId, sessionId, agent, project, title, summary, detail, canAllow):
             approvalSessions[requestId] = sessionId
-            let name = agent == "codex" ? "Codex" : "Claude Code"
+            let name = AgentNames.name(agent)
             model.show(.init(kind: .approval(requestID: requestId, canAllow: canAllow), agent: agent,
                              title: agent == "buddy" ? "Buddy quiere \(title.prefix(1).lowercased() + title.dropFirst())" : "\(name) pide permiso en \(project)",
                              detail: "\(title): \(summary)", command: detail))
@@ -102,7 +102,7 @@ final class NotchController {
         case let .mediaCommand(action, uri):
             runMediaCommand(action: action, uri: uri)
         case let .usageLow(provider, label, leftPct):
-            let name = provider == "codex" ? "Codex" : "Claude"
+            let name = AgentNames.plan(provider)
             model.show(.init(kind: .waiting, agent: provider, title: "Te queda \(leftPct) % de \(name)",
                              detail: "Ventana: \(label). Buddy usará el otro proveedor si se acaba."))
         case let .mascotState(state):
@@ -119,11 +119,12 @@ final class NotchController {
             let previous = model.sessions.first { $0.id == sessionId }?.state
             model.update(session: sessionId, agent: agent, project: project, state: state)
             guard previous != state else { break }
-            let name = agent == "codex" ? "Codex" : "Claude Code"
+            let name = AgentNames.name(agent)
             let place = cwd.isEmpty && terminal.isEmpty ? nil : NotchModel.Place(cwd: cwd, terminal: terminal)
             switch state {
             case "done":
-                // What it said last when the agent tells us (Claude Code and Codex send it on Stop), else the project.
+                // What it said last when the agent tells us (Claude Code and Codex send it on Stop; agy does not), else
+                // the project.
                 model.show(.init(kind: .finished, agent: agent, title: "\(name) terminó en \(project)",
                                  detail: summary.isEmpty ? "Toca para volver a la sesión." : summary, place: place))
             // A permission request also puts the session in "waiting": its own card says it better.
@@ -408,7 +409,7 @@ final class NotchController {
         model.setHovering(false)
         let available = core.hooksStatus().filter { $0.available && !$0.installed }
         guard !available.isEmpty else {
-            alert("No encontré Claude Code ni Codex", "Instala uno de los dos y vuelve a intentarlo.")
+            alert("No encontré Claude Code, Codex ni Gemini", "Instala uno de ellos y vuelve a intentarlo.")
             return
         }
         for status in available {

@@ -407,7 +407,7 @@ async function renderUsage(view: HTMLElement) {
         h("i", { class: level, style: `width:${pct}%` }));
       return row(title, reset, meter, h("span", { class: "pct", text: `${pct} %` }));
     }));
-    plans.card.replaceChildren(...(rows.length ? rows : [emptyRow("Aparecen después del primer chat con Claude o Codex.")]));
+    plans.card.replaceChildren(...(rows.length ? rows : [emptyRow("Aparecen después del primer chat con Claude, Codex o Gemini.")]));
   }
 
   async function drawTokens() {

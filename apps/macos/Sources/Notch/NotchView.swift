@@ -211,9 +211,9 @@ struct NotchView: View {
         case .none:
             EmptyView()
         case let .session(session):
-            earPair(left: AnyView(ProviderMark(provider: session.agent == "codex" ? "codex" : "claude", size: 14)),
+            earPair(left: AnyView(ProviderMark(provider: AgentNames.mark(session.agent), size: 14)),
                     right: AnyView(StateDot(state: session.state)),
-                    tip: "\(session.agent == "codex" ? "Codex" : "Claude Code") · \(session.project) · \(SessionsTile.stateText(session.state))")
+                    tip: "\(AgentNames.name(session.agent)) · \(session.project) · \(SessionsTile.stateText(session.state))")
         case .buddy:
             earPair(left: AnyView(AvatarView(size: 18)),
                     right: AnyView(Group {
@@ -408,7 +408,7 @@ private struct NoticeCard: View {
                     if notice.agent == "buddy" {
                         AvatarView(size: 24)
                     } else {
-                        ProviderMark(provider: notice.agent == "codex" ? "codex" : "claude", size: 18)
+                        ProviderMark(provider: AgentNames.mark(notice.agent), size: 18)
                     }
                 }
                     .frame(width: 34, height: 34)
@@ -719,7 +719,7 @@ struct SessionsTile: View {
     var body: some View {
         Tile(title: "Agentes", symbol: "terminal") {
             if sessions.isEmpty {
-                Text(connected ? "Sin sesiones abiertas" : "Claude Code y Codex")
+                Text(connected ? "Sin sesiones abiertas" : "Claude, Codex y Gemini")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -732,7 +732,7 @@ struct SessionsTile: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(sessions.prefix(3)) { session in
                         HStack(spacing: 6) {
-                            ProviderMark(provider: session.agent == "codex" ? "codex" : "claude", size: 11)
+                            ProviderMark(provider: AgentNames.mark(session.agent), size: 11)
                             Text(session.project).font(.system(size: 12, weight: .medium)).lineLimit(1)
                             Spacer(minLength: 2)
                             StateDot(state: session.state)

@@ -43,6 +43,19 @@ pub(crate) struct HookFile {
     pub events: &'static [(&'static str, u64)],
     /// Buddy's handler object for one event: `{"type":"command","command":…,…}`.
     pub handler: fn(relay: &Path, event: &str, timeout: u64) -> Value,
+    /// How the file nests its events.
+    pub layout: Layout,
+}
+
+/// How an agent's hooks file nests events and handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// Claude Code and Codex: `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [handler…] } ] } }`.
+    Hooks,
+    /// Antigravity: `{ "<hook name>": { "enabled"?, "<Event>": [ … ] } }`, one named hook per tool. Buddy's lives
+    /// under `name`. Tool events (`grouped`) hold `{ "matcher", "hooks": [handler…] }` groups; every other event
+    /// holds the handlers themselves.
+    Named { name: &'static str, grouped: &'static [&'static str] },
 }
 
 /// The user's home folder (`HOME` on Unix, `USERPROFILE` on Windows). There is deliberately no fallback: guessing
@@ -92,37 +105,55 @@ impl HookFile {
     /// The file with Buddy's hooks added; everything else is left untouched. Our entries go last in each event's
     /// list, so the position of every other tool's entry stays what it was.
     pub(crate) fn merged(&self, existing: &Value) -> Value {
-        let mut root = existing.as_object().cloned().unwrap_or_default();
-        let mut hooks = root.get("hooks").and_then(Value::as_object).cloned().unwrap_or_else(Map::new);
+        let (key, grouped): (&str, &[&str]) = match self.layout {
+            Layout::Hooks => ("hooks", &[]),
+            Layout::Named { name, grouped } => (name, grouped),
+        };
+        // A named layout may hold a copy of ours under another name (the user renamed it): one set of hooks only.
+        let base = if self.layout == Layout::Hooks { existing.clone() } else { self.cleaned(existing) };
+        let mut root = base.as_object().cloned().unwrap_or_default();
+        let mut hooks = root.get(key).and_then(Value::as_object).cloned().unwrap_or_else(Map::new);
 
         for (event, timeout) in self.events {
             let mut list = hooks.get(*event).and_then(Value::as_array).cloned().unwrap_or_default();
-            list = list.iter().filter_map(without_our_hooks).collect();
-            list.push(json!({ "hooks": [(self.handler)(&self.relay, event, *timeout)] }));
+            list = list.iter().filter_map(without_ours_in).collect();
+            let handler = (self.handler)(&self.relay, event, *timeout);
+            list.push(match self.layout {
+                Layout::Hooks => json!({ "hooks": [handler] }),
+                Layout::Named { .. } if grouped.contains(event) => json!({ "matcher": "*", "hooks": [handler] }),
+                Layout::Named { .. } => handler,
+            });
             hooks.insert((*event).to_string(), Value::Array(list));
         }
 
-        root.insert("hooks".into(), Value::Object(hooks));
+        root.insert(key.into(), Value::Object(hooks));
         Value::Object(root)
+    }
+
+    /// The file with every Buddy entry removed, and nothing else changed.
+    pub(crate) fn cleaned(&self, existing: &Value) -> Value {
+        match self.layout {
+            Layout::Hooks => without_ours(existing),
+            Layout::Named { .. } => without_ours_named(existing),
+        }
     }
 
     /// True when the file holds at least one of Buddy's hooks. Never fails: an unreadable file counts as "not
     /// installed" here (anything that writes uses `read()` and surfaces the error instead).
     pub fn installed(&self) -> bool {
-        self.read()
-            .ok()
-            .and_then(|current| {
-                current
-                    .get("hooks")
-                    .and_then(Value::as_object)
-                    .map(|hooks| hooks.values().filter_map(Value::as_array).flatten().any(entry_is_ours))
-            })
-            .unwrap_or(false)
+        let Ok(current) = self.read() else { return false };
+        let ours = |events: &Value| {
+            events.as_object().is_some_and(|m| m.values().filter_map(Value::as_array).flatten().any(is_ours_in))
+        };
+        match self.layout {
+            Layout::Hooks => current.get("hooks").is_some_and(ours),
+            Layout::Named { .. } => current.as_object().is_some_and(|root| root.values().any(ours)),
+        }
     }
 
     pub fn preview(&self, install: bool) -> Result<HookPreview, String> {
         let current = self.read()?;
-        let next = if install { self.merged(&current) } else { without_ours(&current) };
+        let next = if install { self.merged(&current) } else { self.cleaned(&current) };
         Ok(HookPreview {
             path: self.path.to_string_lossy().to_string(),
             diff: unified_diff(&pretty(&current), &pretty(&next)),
@@ -157,7 +188,7 @@ impl HookFile {
             backup = target.to_string_lossy().to_string();
         }
 
-        let next = if install { self.merged(&current) } else { without_ours(&current) };
+        let next = if install { self.merged(&current) } else { self.cleaned(&current) };
         let mut text = pretty(&next);
         text.push('\n');
 
@@ -250,6 +281,56 @@ fn without_our_hooks(entry: &Value) -> Option<Value> {
     let mut entry = entry.clone();
     entry["hooks"] = Value::Array(remaining);
     Some(entry)
+}
+
+/// True when one item of an event's list is ours: a group holding our handler, or (Antigravity's flat events) our
+/// handler itself.
+fn is_ours_in(item: &Value) -> bool {
+    hook_is_ours(item) || entry_is_ours(item)
+}
+
+/// One item of an event's list without our handlers; `None` when nothing else is left of it.
+fn without_ours_in(item: &Value) -> Option<Value> {
+    if hook_is_ours(item) {
+        return None;
+    }
+    without_our_hooks(item)
+}
+
+/// Antigravity's file (`{ "<hook name>": { "<Event>": [ … ] } }`) with every Buddy handler removed, under whatever
+/// name it sits. A named hook we emptied goes away whole (its `enabled` flag included); everything else stays as
+/// it was.
+pub(crate) fn without_ours_named(existing: &Value) -> Value {
+    let Some(root) = existing.as_object() else { return existing.clone() };
+    let mut out = Map::new();
+    for (name, hook) in root {
+        let Some(events) = hook.as_object() else {
+            out.insert(name.clone(), hook.clone());
+            continue;
+        };
+        let mut kept = Map::new();
+        let mut removed = false;
+        for (key, value) in events {
+            match value.as_array() {
+                Some(list) => {
+                    let left: Vec<Value> = list.iter().filter_map(without_ours_in).collect();
+                    let changed = left.as_slice() != list.as_slice();
+                    removed |= changed;
+                    if !(changed && left.is_empty()) {
+                        kept.insert(key.clone(), Value::Array(left));
+                    }
+                }
+                None => {
+                    kept.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        if removed && !kept.values().any(Value::is_array) {
+            continue;
+        }
+        out.insert(name.clone(), Value::Object(kept));
+    }
+    Value::Object(out)
 }
 
 /// The file with every Buddy entry removed, and nothing else changed.
@@ -408,6 +489,7 @@ mod tests {
             handler: |relay, event, timeout| {
                 json!({ "type": "command", "command": format!("{} {event}", quoted(&relay.to_string_lossy())), "timeout": timeout })
             },
+            layout: Layout::Hooks,
         }
     }
 
