@@ -14,6 +14,15 @@ TypeScript (Workers, Durable Objects, vitest).
 
 **Especificación:** `docs/phases/10-iphone.md`.
 
+## Estado (2026-10-03)
+
+Hechas las ocho tareas. `cargo test --workspace` pasa; la prueba de extremo a extremo corre contra un relé en
+proceso y, a mano, contra el relé real en local (`npx wrangler dev`, prueba `the_real_relay_speaks_the_same_contract`).
+Pendiente de la aceptación: desplegar el relé en Cloudflare y emparejar desde Ajustes › iPhone en una Mac y una PC
+reales (el cliente de consola es `cargo run -p buddy-core --example telefono`). Dos diferencias con lo planeado: el
+cliente de consola vive en `core/examples/` (necesita el transporte del núcleo), y `register_push` no es una llamada:
+el teléfono entrega sus identificadores de avisos al relé con el sobre `token`.
+
 ## Restricciones globales
 
 - Secretos solo en Llavero / Credential Manager; nunca en SQLite, registros ni eventos.
@@ -81,9 +90,9 @@ Un segundo socket con el mismo papel sustituye al primero (cierre `4001`). Trama
 (`buddy://pair?d=<base64url(json)>`); `Offer::parse(uri) -> Result<Offer>`; `hello(offer, phone_public, name) -> Hello`;
 `Offer::verify(&Hello, now) -> Result<Peer, PairError>`; `ack(offer, &Peer) -> String`; `check_ack(offer, …) -> bool`.
 
-- [ ] Pruebas: ida y vuelta del URI; saludo correcto verifica; secreto equivocado → `BadProof`; caducado → `Expired`;
+- [x] Pruebas: ida y vuelta del URI; saludo correcto verifica; secreto equivocado → `BadProof`; caducado → `Expired`;
       nombre con saltos de línea queda en una línea de 60 caracteres; URI truncado o de otra versión → error.
-- [ ] Implementar; `cargo test -p buddy-remote pairing`.
+- [x] Implementar; `cargo test -p buddy-remote pairing`.
 
 ### Tarea 2: canal y avisos (`remote/src/channel.rs`, `remote/src/push.rs`)
 
@@ -93,16 +102,16 @@ Un segundo socket con el mismo papel sustituye al primero (cierre `4001`). Trama
 `push::key(&Keys, their_public, secret, room) -> [u8; 32]`; `push::seal(key, counter, now, &Value) -> Vec<u8>`;
 `push::open(key, bytes, last_counter, now) -> Result<(u64, Value)>`.
 
-- [ ] Pruebas: saludo completo y mensaje en ambos sentidos; mensaje de 300 KB troceado y recompuesto; clave fija
+- [x] Pruebas: saludo completo y mensaje en ambos sentidos; mensaje de 300 KB troceado y recompuesto; clave fija
       equivocada → el saludo falla; trama repetida o alterada → error; ambas partes derivan la misma clave de avisos;
       aviso con contador repetido o de hace más de 48 h → error.
-- [ ] Implementar; `cargo test -p buddy-remote`.
+- [x] Implementar; `cargo test -p buddy-remote`.
 
 ### Tarea 3: sobres y tramas (`remote/src/wire.rs`)
 
 **Produce:** `Envelope { t, d }` con `Envelope::parse(&str)` / `to_text()`; `Frame::{Call{id,call,args}, Reply{id,ok,err}, Event{event}}`.
 
-- [ ] Pruebas: forma JSON exacta de cada sobre del contrato; trama desconocida → error; sobre de más de 256 KB → error.
+- [x] Pruebas: forma JSON exacta de cada sobre del contrato; trama desconocida → error; sobre de más de 256 KB → error.
 
 ### Tarea 4: sesión, llamadas y avisos (`core/src/remote/{session,rpc,push}.rs`)
 
@@ -111,13 +120,13 @@ Un segundo socket con el mismo papel sustituye al primero (cierre `4001`). Trama
 llamada de la lista blanca; `rpc::dispatch(&dyn Host, call, args, opts) -> Result<Value, String>`;
 `push::decide(&Event, &Context) -> Option<Notice>`.
 
-- [ ] Pruebas con un teléfono simulado (usa `buddy-remote`) y un `Host` falso: `hello` y `chats` responden;
+- [x] Pruebas con un teléfono simulado (usa `buddy-remote`) y un `Host` falso: `hello` y `chats` responden;
       `set_setting` y cualquier llamada desconocida se rechazan y se anotan; `chat_id` con `..`, `/` o `\` se rechaza;
       `answer_approval(allow)` se rechaza con el interruptor apagado y «rechazar» siempre pasa; `ScreenshotRequest`,
       `SettingChanged`, `MediaCommand` no se reenvían; diez `ChatDelta` en 100 ms salen como una trama; sin teléfono
       conectado `on_event` no envía eventos y sí un aviso para `ApprovalRequest`; el aviso 31 de la hora no sale;
       trama cifrada repetida corta la sesión; cinco `pair` falsos anulan la oferta.
-- [ ] Implementar; `cargo test -p buddy-core remote`.
+- [x] Implementar; `cargo test -p buddy-core remote`.
 
 ### Tarea 5: transporte y servicio (`core/src/remote/{link,mod}.rs`, `core/src/lib.rs`, `core/src/store.rs`)
 
@@ -125,27 +134,27 @@ llamada de la lista blanca; `rpc::dispatch(&dyn Host, call, args, opts) -> Resul
 `remote_set_relay(url, owner_key)`, `remote_pair() -> PairOffer {uri, qr_size, qr_cells, expires_at}`, `remote_forget()`,
 `remote_set_approvals(bool)`, `remote_log() -> Vec<RemoteAction>`; evento `RemoteChanged`.
 
-- [ ] Pruebas con un relé en proceso (servidor WebSocket local en la prueba): crear sala, emparejar, saludo, `hello`
+- [x] Pruebas con un relé en proceso (servidor WebSocket local en la prueba): crear sala, emparejar, saludo, `hello`
       de extremo a extremo; el relé cae → reintento con espera; `remote_forget` borra claves y pide borrar la sala;
       `set_setting` rechaza las claves `remote.*`, `folders.*`, `agent.*.permisos`, `commands.enabled`, `telegram.chat`.
-- [ ] Implementar; `cargo test --workspace`.
+- [x] Implementar; `cargo test --workspace`.
 
 ### Tarea 6: relé (`relay/`)
 
-- [ ] Pruebas (vitest con el entorno de Workers): crear sala sin clave de dueño → 401; llave incorrecta → 401; sala
+- [x] Pruebas (vitest con el entorno de Workers): crear sala sin clave de dueño → 401; llave incorrecta → 401; sala
       desconocida → 404; reenvío entre papeles; presencia al conectar y desconectar; sustitución de socket (4001);
       trama de más de 256 KB → `too-big`; tope de tramas → `rate`; `push` sin claves → `no-apns`; `push` con claves
       llama a APNs con el cuerpo esperado (fetch simulado); `DELETE` borra y cierra.
-- [ ] Implementar; `npm test` en `relay/`. `relay/README.md` con el despliegue (`npx wrangler deploy`, secretos).
+- [x] Implementar; `npm test` en `relay/`. `relay/README.md` con el despliegue (`npx wrangler deploy`, secretos).
 
 ### Tarea 7: cliente de consola (`remote/examples/telefono.rs`)
 
-- [ ] `cargo run -p buddy-remote --example telefono -- '<buddy://pair?...>'`: se empareja, saluda, llama a `hello` y
+- [x] `cargo run -p buddy-remote --example telefono -- '<buddy://pair?...>'`: se empareja, saluda, llama a `hello` y
       `chats`, envía un mensaje e imprime los eventos. Se usa en la aceptación de la etapa.
 
 ### Tarea 8: Ajustes → iPhone (Mac y Windows)
 
-- [ ] Sección con: dirección y clave del relé, «Emparejar» (QR pintado desde `qr_cells`), estado, «Olvidar iPhone»,
+- [x] Sección con: dirección y clave del relé, «Emparejar» (QR pintado desde `qr_cells`), estado, «Olvidar iPhone»,
       interruptor «Aprobar permisos desde el iPhone», registro de acciones. Mismo aspecto en las dos.
 
 ## Aceptación de la etapa

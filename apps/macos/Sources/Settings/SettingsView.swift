@@ -359,6 +359,7 @@ private struct ConnectionSettings: View {
             YouTubeSection(core: core)
             SpotifySection(core: core)
             TelegramSection(core: core)
+            PhoneSection(core: core)
             TelegramAccountSection(core: core)
             ParleyOddsSection(core: core)
             ConnectorsSection(core: core)

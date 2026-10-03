@@ -9,6 +9,7 @@ import { TABLER } from "../chat/tabler";
 import { renderAgents } from "./agents";
 import { usageCalendar, type TokenDay } from "./usage-calendar";
 import { renderTelegramAccount } from "./telegram-account";
+import { renderPhone } from "./phone";
 import { renderConnectors } from "./connectors";
 import { renderParleyOdds } from "./parley";
 import { SETTINGS_ICONS } from "./icons";
@@ -232,8 +233,12 @@ async function renderConnections(view: HTMLElement) {
   const { el, card } = section("Avisos de tus sesiones");
   const dialog = h("dialog", { class: "confirm", "aria-labelledby": "confirm-title" });
   const youtube = renderYouTube();
-  onCoreEvent = event => { if (event.type === "youTubeChanged") void youtube.refresh(); };
-  view.append(header("Conexiones"), el, message, dialog, youtube.element, renderSpotify(), renderTelegram(), renderTelegramAccount(), renderParleyOdds(), renderConnectors());
+  const phone = renderPhone();
+  onCoreEvent = event => {
+    if (event.type === "youTubeChanged") void youtube.refresh();
+    if (event.type === "remoteChanged") void phone.refresh();
+  };
+  view.append(header("Conexiones"), el, message, dialog, youtube.element, renderSpotify(), renderTelegram(), phone.element, renderTelegramAccount(), renderParleyOdds(), renderConnectors());
 
   async function draw() {
     const status = await invoke<HookStatusInfo[]>("hooks_status").catch(() => [] as HookStatusInfo[]);

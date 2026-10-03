@@ -21,7 +21,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// A ping this often shows a dead connection (a router that forgot it) without waiting for the next event.
 const PING_EVERY: Duration = Duration::from_secs(240);
 
-type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+pub type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 pub enum Command {
     Event(Event),
@@ -48,7 +48,7 @@ pub trait Report: Send + Sync {
 
 /// The socket address for a relay: `https://…` becomes `wss://…`. Plain `http://` is taken only for this machine
 /// (a relay under test), never for the network.
-pub fn ws_url(relay: &str, room: &str) -> Result<String, String> {
+pub fn ws_url(relay: &str, room: &str, role: &str) -> Result<String, String> {
     let relay = relay.trim().trim_end_matches('/');
     let base = if let Some(rest) = relay.strip_prefix("https://") {
         format!("wss://{rest}")
@@ -57,7 +57,7 @@ pub fn ws_url(relay: &str, room: &str) -> Result<String, String> {
     } else {
         return Err("La dirección del relé debe empezar por https://".into());
     };
-    Ok(format!("{base}/rooms/{room}/ws?role=desktop"))
+    Ok(format!("{base}/rooms/{room}/ws?role={role}"))
 }
 
 fn is_local(host_and_path: &str) -> bool {
@@ -169,9 +169,14 @@ async fn pump(socket: &mut Socket, session: &mut Session, rx: &mut UnboundedRece
 }
 
 async fn connect(config: &Config) -> Result<Socket, String> {
-    let url = ws_url(&config.relay, &config.room)?;
+    open(&config.relay, &config.room, &config.room_key, "desktop").await
+}
+
+/// Opens a room's socket at the relay as `role` (`desktop`; `phone` for the console client that stands in for one).
+pub async fn open(relay: &str, room: &str, room_key: &str, role: &str) -> Result<Socket, String> {
+    let url = ws_url(relay, room, role)?;
     let mut request = url.as_str().into_client_request().map_err(|_| "La dirección del relé no es válida.".to_string())?;
-    let bearer = format!("Bearer {}", config.room_key).parse().map_err(|_| "La llave de la sala no es válida.".to_string())?;
+    let bearer = format!("Bearer {room_key}").parse().map_err(|_| "La llave de la sala no es válida.".to_string())?;
     request.headers_mut().insert("Authorization", bearer);
     let connector = if url.starts_with("wss://") {
         let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
@@ -203,14 +208,14 @@ mod tests {
 
     #[test]
     fn a_relay_address_becomes_its_socket_address() {
-        assert_eq!(ws_url("https://buddy-relay.example.workers.dev/", "r1").unwrap(), "wss://buddy-relay.example.workers.dev/rooms/r1/ws?role=desktop");
-        assert_eq!(ws_url("http://127.0.0.1:8787", "r1").unwrap(), "ws://127.0.0.1:8787/rooms/r1/ws?role=desktop");
-        assert_eq!(ws_url("http://localhost:8787", "r1").unwrap(), "ws://localhost:8787/rooms/r1/ws?role=desktop");
+        assert_eq!(ws_url("https://buddy-relay.example.workers.dev/", "r1", "desktop").unwrap(), "wss://buddy-relay.example.workers.dev/rooms/r1/ws?role=desktop");
+        assert_eq!(ws_url("http://127.0.0.1:8787", "r1", "desktop").unwrap(), "ws://127.0.0.1:8787/rooms/r1/ws?role=desktop");
+        assert_eq!(ws_url("http://localhost:8787", "r1", "desktop").unwrap(), "ws://localhost:8787/rooms/r1/ws?role=desktop");
         // Never in the clear over the network.
-        assert!(ws_url("http://buddy-relay.example.workers.dev", "r1").is_err());
-        assert!(ws_url("http://127.0.0.1.evil.example", "r1").is_err());
-        assert!(ws_url("ws://x", "r1").is_err());
-        assert!(ws_url("", "r1").is_err());
+        assert!(ws_url("http://buddy-relay.example.workers.dev", "r1", "desktop").is_err());
+        assert!(ws_url("http://127.0.0.1.evil.example", "r1", "desktop").is_err());
+        assert!(ws_url("ws://x", "r1", "desktop").is_err());
+        assert!(ws_url("", "r1", "desktop").is_err());
     }
 
     #[test]

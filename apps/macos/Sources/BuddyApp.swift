@@ -96,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if case .telegramChanged = event {
                     NotificationCenter.default.post(name: .buddyTelegramChanged, object: nil)
                 }
+                if case .remoteChanged = event {
+                    NotificationCenter.default.post(name: .buddyRemoteChanged, object: nil)
+                }
                 if case .nikoChanged = event {
                     NotificationCenter.default.post(name: .buddyNikoChanged, object: nil)
                 }

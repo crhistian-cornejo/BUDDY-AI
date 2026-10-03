@@ -275,7 +275,7 @@ impl Remote {
     /// relay: forget it first.
     pub fn set_relay(&self, url: &str, owner_key: &str) -> Result<(), CoreError> {
         let url = url.trim().trim_end_matches('/').to_string();
-        link::ws_url(&url, "x").map_err(CoreError::Io)?;
+        link::ws_url(&url, "x", "desktop").map_err(CoreError::Io)?;
         if !self.shared.setting(ROOM).is_empty() && self.shared.setting(RELAY) != url {
             return Err(CoreError::Io("Olvida el iPhone antes de cambiar de relé.".into()));
         }
@@ -449,4 +449,237 @@ pub fn machine_name() -> String {
 
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session::tests::FakeHost;
+    use super::*;
+    use buddy_remote::Channel;
+    use buddy_remote::wire::{Envelope, Frame, unpack};
+    use futures_util::{SinkExt, StreamExt};
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    use tokio_tungstenite::tungstenite::Message;
+
+    #[derive(Default)]
+    struct MemoryVault(Mutex<HashMap<String, String>>);
+
+    impl Vault for Arc<MemoryVault> {
+        fn get(&self, name: &str) -> Option<String> {
+            self.0.lock().unwrap().get(name).cloned()
+        }
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            self.0.lock().unwrap().insert(name.into(), value.into());
+            Ok(())
+        }
+        fn delete(&self, name: &str) {
+            self.0.lock().unwrap().remove(name);
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeRooms {
+        deleted: Mutex<Vec<String>>,
+    }
+
+    impl Rooms for Arc<FakeRooms> {
+        fn create(&self, _relay: &str, owner_key: &str) -> Result<(String, String), String> {
+            if owner_key != "dueño" {
+                return Err("El relé no reconoce esa clave de dueño.".into());
+            }
+            Ok(("00112233445566778899aabbccddeeff".into(), "ab".repeat(32)))
+        }
+        fn delete(&self, _relay: &str, room: &str, _room_key: &str) -> Result<(), String> {
+            self.deleted.lock().unwrap().push(room.into());
+            Ok(())
+        }
+    }
+
+    /// A relay as the contract describes it, in this process: it forwards text frames between the two roles of one
+    /// room and tells each whether the other is there. Returns its port.
+    fn relay() -> u16 {
+        let (port_tx, port_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+                type Peers = Arc<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<String>>>>;
+                let peers: Peers = Arc::default();
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else { break };
+                    let peers = peers.clone();
+                    tokio::spawn(async move {
+                        let mut role = String::new();
+                        let callback = |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                            role = request.uri().query().and_then(|q| q.strip_prefix("role=")).unwrap_or("").to_string();
+                            Ok(response)
+                        };
+                        let Ok(socket) = tokio_tungstenite::accept_hdr_async(stream, callback).await else { return };
+                        let other = if role == "desktop" { "phone" } else { "desktop" };
+                        let (mut sink, mut source) = socket.split();
+                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                        let present = peers.lock().unwrap().get(other).cloned();
+                        let _ = tx.send(Envelope::Peer { on: present.is_some() }.to_text());
+                        if let Some(there) = &present {
+                            let _ = there.send(Envelope::Peer { on: true }.to_text());
+                        }
+                        peers.lock().unwrap().insert(role.clone(), tx);
+                        loop {
+                            tokio::select! {
+                                out = rx.recv() => match out {
+                                    Some(text) => if sink.send(Message::text(text)).await.is_err() { break },
+                                    None => break,
+                                },
+                                frame = source.next() => match frame {
+                                    Some(Ok(Message::Text(text))) => {
+                                        let there = peers.lock().unwrap().get(other).cloned();
+                                        if let Some(there) = there { let _ = there.send(text.as_str().to_string()); }
+                                    }
+                                    Some(Ok(_)) => {}
+                                    _ => break,
+                                },
+                            }
+                        }
+                        peers.lock().unwrap().remove(&role);
+                        let there = peers.lock().unwrap().get(other).cloned();
+                        if let Some(there) = there { let _ = there.send(Envelope::Peer { on: false }.to_text()); }
+                    });
+                }
+            });
+        });
+        port_rx.recv_timeout(Duration::from_secs(5)).unwrap()
+    }
+
+    /// What a phone does with a scanned code: pairs, opens the channel, calls `hello`, and leaves. Returns the reply.
+    fn phone_says_hello(scanned: &Offer, phone: &Keys) -> Frame {
+        let desktop_public = scanned.desktop_public().unwrap();
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let mut socket = link::open(&scanned.relay, &scanned.room, &scanned.key, "phone").await.unwrap();
+            async fn next(socket: &mut link::Socket, want: impl Fn(&Envelope) -> bool) -> Envelope {
+                loop {
+                    let frame = tokio::time::timeout(Duration::from_secs(10), socket.next()).await.expect("the relay answers").unwrap().unwrap();
+                    if let Message::Text(text) = frame
+                        && let Ok(envelope) = Envelope::parse(text.as_str())
+                        && want(&envelope)
+                    {
+                        return envelope;
+                    }
+                }
+            }
+            let hello = buddy_remote::pairing::hello(scanned, &phone.public, "iPhone de prueba");
+            socket.send(Message::text(Envelope::Pair { d: serde_json::to_string(&hello).unwrap() }.to_text())).await.unwrap();
+            let Envelope::Paired { d } = next(&mut socket, |e| matches!(e, Envelope::Paired { .. })).await else { unreachable!() };
+            assert!(scanned.check_ack(&phone.public, &d), "the desktop proved it holds the code's secret");
+
+            let (hand, hs1) = Channel::initiator(phone, &desktop_public, &scanned.room).unwrap();
+            socket.send(Message::text(Envelope::hs1(&hs1).to_text())).await.unwrap();
+            let Envelope::Hs2 { d } = next(&mut socket, |e| matches!(e, Envelope::Hs2 { .. })).await else { unreachable!() };
+            let mut channel = hand.finish(&unpack(&d).unwrap()).unwrap();
+
+            let call = Frame::Call { id: 1, call: "hello".into(), args: serde_json::Value::Null };
+            for piece in channel.seal(&call.to_bytes()).unwrap() {
+                socket.send(Message::text(Envelope::msg(&piece).to_text())).await.unwrap();
+            }
+            let Envelope::Msg { d } = next(&mut socket, |e| matches!(e, Envelope::Msg { .. })).await else { unreachable!() };
+            let reply = Frame::parse(&channel.open(&unpack(&d).unwrap()).unwrap().unwrap()).unwrap();
+            socket.close(None).await.ok();
+            reply
+        })
+    }
+
+    /// The same, against a real relay (`relay/`, run with `npx wrangler dev`): room creation, the keys in the
+    /// header, forwarding and deletion as the Worker does them.
+    ///   BUDDY_RELAY=http://127.0.0.1:8787 BUDDY_RELAY_OWNER=<OWNER_KEY> cargo test -p buddy-core --lib real_relay -- --ignored
+    #[test]
+    #[ignore = "needs a relay running: see the comment"]
+    fn the_real_relay_speaks_the_same_contract() {
+        let (relay, owner) = (std::env::var("BUDDY_RELAY").unwrap(), std::env::var("BUDDY_RELAY_OWNER").unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(Store::open(&dir.path().join("buddy.sqlite")).unwrap()));
+        let vault = Arc::new(MemoryVault::default());
+        let remote = Remote::new(store, Arc::new(EventBus::default()), Box::new(vault.clone()), Box::new(HttpRooms), Arc::new(FakeHost::default()));
+        // A wrong owner key creates nothing.
+        remote.set_relay(&relay, "no-es-la-clave").unwrap();
+        assert!(remote.pair().is_err());
+        remote.set_relay(&relay, &owner).unwrap();
+        let offer = remote.pair().unwrap();
+        until("the desktop reaches the relay", || remote.status().connected);
+        let scanned = Offer::parse(&offer.uri).unwrap();
+        let Frame::Reply { ok: Some(value), .. } = phone_says_hello(&scanned, &Keys::generate()) else { panic!("a reply") };
+        assert_eq!(value["name"], "Mac de prueba");
+        assert!(remote.status().paired);
+        // Forgetting deletes the room at the relay: its socket no longer opens.
+        remote.forget();
+        let gone = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(link::open(&scanned.relay, &scanned.room, &scanned.key, "phone"));
+        assert!(gone.is_err(), "the room is gone");
+    }
+
+    fn until(what: &str, done: impl Fn() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < Duration::from_secs(10), "waiting for: {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_phone_pairs_and_talks_through_a_relay_and_forgetting_cleans_up() {
+        let port = relay();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(Store::open(&dir.path().join("buddy.sqlite")).unwrap()));
+        let bus = Arc::new(EventBus::default());
+        let (vault, rooms, host) = (Arc::new(MemoryVault::default()), Arc::new(FakeRooms::default()), Arc::new(FakeHost::default()));
+        let remote = Remote::new(store, bus.clone(), Box::new(vault.clone()), Box::new(rooms.clone()), host);
+        let changes = bus.subscribe();
+
+        // Nothing runs before the relay is set; a relay in the clear over the network is refused.
+        assert!(remote.pair().is_err());
+        assert!(remote.set_relay("http://relay.example", "dueño").is_err());
+        remote.set_relay(&format!("http://127.0.0.1:{port}/"), "dueño").unwrap();
+        let offer = remote.pair().unwrap();
+        assert_eq!(offer.cells.len(), (offer.size * offer.size) as usize);
+        assert!(remote.status().pairing);
+        until("the desktop reaches the relay", || remote.status().connected);
+        let scanned = Offer::parse(&offer.uri).unwrap();
+
+        // The phone: scans the code, pairs, greets, and calls.
+        let phone = Keys::generate();
+        let reply = phone_says_hello(&scanned, &phone);
+        let Frame::Reply { id: 1, ok: Some(value), err: None } = reply else { panic!("a reply to the call: {reply:?}") };
+        assert_eq!(value["name"], "Mac de prueba");
+
+        // The pairing is kept: the phone's name and key in settings, the keys in the vault, a line in the log.
+        let status = remote.status();
+        assert!(status.paired && !status.pairing, "{status:?}");
+        assert_eq!(status.phone, "iPhone de prueba");
+        for name in [ROOM_KEY, DEVICE_KEY, PUSH_KEY, OWNER_KEY] {
+            assert!(vault.get(name).is_some(), "{name}");
+        }
+        assert!(remote.actions().iter().any(|a| a.text == "iPhone de prueba emparejado"));
+        until("the phone's leaving is noticed", || !remote.status().online);
+        assert!(changes.try_iter().any(|e| e == Event::RemoteChanged));
+        // A relay cannot be swapped under a paired phone.
+        assert!(remote.set_relay("https://otro.example", "").is_err());
+
+        remote.forget();
+        let status = remote.status();
+        assert!(!status.paired && !status.connected && status.phone.is_empty(), "{status:?}");
+        for name in [ROOM_KEY, DEVICE_KEY, PUSH_KEY] {
+            assert!(vault.get(name).is_none(), "{name} was deleted");
+        }
+        assert_eq!(*rooms.deleted.lock().unwrap(), ["00112233445566778899aabbccddeeff"]);
+        assert_eq!(remote.actions()[0].text, "iPhone olvidado");
+    }
+
+    #[test]
+    fn only_settings_with_their_own_way_in_are_reserved() {
+        for key in ["remote.relay", "remote.log", "folders.authorized", "telegram.chat", "telegram.bot", "telegram.offset"] {
+            assert!(reserved_setting(key), "{key}");
+        }
+        for key in ["commands.enabled", "pet.wander", "notch.system.volume", "telegram.other", "remoto.x"] {
+            assert!(!reserved_setting(key), "{key}");
+        }
+    }
 }

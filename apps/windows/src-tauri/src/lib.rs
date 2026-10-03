@@ -322,6 +322,12 @@ pub fn run() {
             telegram_disconnect,
             telegram_new_pairing_code,
             telegram_send,
+            remote_status,
+            remote_set_relay,
+            remote_pair,
+            remote_forget,
+            remote_set_approvals,
+            remote_log,
             set_briefing_topics,
             briefing_now
         ])
@@ -1358,6 +1364,43 @@ fn spotify_disconnect(state: State<'_, AppCore>) -> Result<(), String> {
 #[tauri::command]
 fn spotify_client_id(state: State<'_, AppCore>) -> String {
     state.core.spotify_client_id()
+}
+
+/// The phone link for Settings: the relay, the paired iPhone and whether it is connected.
+#[tauri::command]
+fn remote_status(state: State<'_, AppCore>) -> buddy_core::RemoteStatus {
+    state.core.remote_status()
+}
+
+/// The relay's address and the key that creates rooms in it (kept only in Credential Manager).
+#[tauri::command]
+fn remote_set_relay(state: State<'_, AppCore>, url: String, owner_key: String) -> Result<(), String> {
+    state.core.remote_set_relay(url, owner_key).map_err(|e| e.to_string())
+}
+
+/// A pairing code to draw as a QR. Creates this PC's room at the relay the first time (off the UI thread).
+#[tauri::command]
+async fn remote_pair(app: AppHandle) -> Result<buddy_core::PairOffer, String> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.remote_pair()).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
+/// Forgets the paired iPhone and deletes this PC's keys for it (off the UI thread: it tells the relay).
+#[tauri::command]
+async fn remote_forget(app: AppHandle) -> Result<(), String> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.remote_forget()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remote_set_approvals(state: State<'_, AppCore>, on: bool) -> Result<(), String> {
+    state.core.remote_set_approvals(on).map_err(|e| e.to_string())
+}
+
+/// What the iPhone did on this PC, newest first.
+#[tauri::command]
+fn remote_log(state: State<'_, AppCore>) -> Vec<buddy_core::RemoteAction> {
+    state.core.remote_log()
 }
 
 /// Telegram for Settings: connected bot, paired chat and the code to send as `/start <code>`.
