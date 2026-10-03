@@ -525,12 +525,23 @@ struct UsageSettings: View {
                 if plans.isEmpty {
                     Text("Aparecen después del primer chat con Claude, Codex o Gemini.").foregroundStyle(.secondary)
                 }
+                if !plans.contains(where: { $0.provider == "antigravity" && !$0.windows.isEmpty }) {
+                    LabeledContent("Gemini") {
+                        Text("Cuotas no disponibles").foregroundStyle(.secondary)
+                    }
+                }
                 ForEach(plans, id: \.provider) { plan in
                     ForEach(plan.windows, id: \.label) { window in
-                        LabeledContent("\(plan.name) · \(window.label)") {
+                        LabeledContent {
                             HStack {
                                 ProgressView(value: window.usedPct, total: 100).frame(width: 140)
                                 Text("\(Int(window.usedPct.rounded())) %").monospacedDigit().frame(width: 44, alignment: .trailing)
+                            }
+                        } label: {
+                            Text("\(plan.name) · \(window.label)")
+                            if let reset = window.resetsAt {
+                                Text("Se reinicia \(Date(timeIntervalSince1970: TimeInterval(reset)).formatted(.dateTime.weekday().day().month().hour().minute()))")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -540,7 +551,7 @@ struct UsageSettings: View {
                 if report.isEmpty {
                     Text("Todavía no hay turnos medidos.").foregroundStyle(.secondary)
                 }
-                ForEach(report, id: \.feature) { row in
+                ForEach(report, id: \.self) { row in
                     LabeledContent {
                         Text("\(Self.k(row.input + row.cached)) entrada · \(Self.k(row.output)) salida")
                             .monospacedDigit()

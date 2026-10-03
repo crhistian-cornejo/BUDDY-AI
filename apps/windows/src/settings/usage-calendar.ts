@@ -24,7 +24,7 @@ export function usageCalendar(days: TokenDay[]): HTMLElement {
     return date;
   });
   const filter = h("select", { "aria-label": "Proveedor" },
-    ...[["all", "Todos"], ["claude", "Claude"], ["codex", "Codex"]].map(([value, text]) => h("option", { value, text })));
+    ...[["all", "Todos"], ["claude", "Claude"], ["codex", "Codex"], ["antigravity", "Gemini"]].map(([value, text]) => h("option", { value, text })));
   const months = h("div", { class: "usage-months" });
   for (let week = 0; week < 53; week++) {
     const monthDate = new Date(Math.min(dates[week * 7 + 6].getTime(), today.getTime()));
@@ -53,7 +53,7 @@ export function usageCalendar(days: TokenDay[]): HTMLElement {
       values.set(day.date, { tokens: previous.tokens + day.input + day.cached + day.output, turns: previous.turns + day.turns });
     }
     const maximum = Math.max(1, ...[...values.values()].map(value => value.tokens));
-    summary.textContent = `${k([...values.values()].reduce((sum, value) => sum + value.tokens, 0))} tokens registrados`;
+    summary.textContent = `${k([...values.values()].reduce((sum, value) => sum + value.tokens, 0))} tokens · ${[...values.values()].reduce((sum, value) => sum + value.turns, 0)} turnos registrados`;
     grid.replaceChildren(...dates.map(date => {
       const value = values.get(key(date)) ?? { tokens: 0, turns: 0 };
       const level = value.tokens === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil(value.tokens / maximum * 4)));

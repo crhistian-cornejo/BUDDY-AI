@@ -428,7 +428,10 @@ async function renderUsage(view: HTMLElement) {
         h("i", { class: level, style: `width:${pct}%` }));
       return row(title, reset, meter, h("span", { class: "pct", text: `${pct} %` }));
     }));
-    plans.card.replaceChildren(...(rows.length ? rows : [emptyRow("Aparecen después del primer chat con Claude, Codex o Gemini.")]));
+    if (!usage.some(plan => plan.provider === "antigravity" && plan.windows.length)) {
+      rows.push(row("Gemini", "Cuotas no disponibles"));
+    }
+    plans.card.replaceChildren(...rows);
   }
 
   async function drawTokens() {

@@ -44,8 +44,9 @@ struct UsageCalendar: View {
                     Text("Todos").tag("all")
                     Text("Claude").tag("claude")
                     Text("Codex").tag("codex")
+                    Text("Gemini").tag("antigravity")
                 }
-                .labelsHidden().pickerStyle(.segmented).frame(width: 210)
+                .labelsHidden().pickerStyle(.segmented).frame(width: 290)
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 6) {
@@ -81,7 +82,7 @@ struct UsageCalendar: View {
                 .padding(.trailing, 16)
             }
             HStack {
-                Text("\(UsageSettings.k(values.values.reduce(0) { $0 + $1.tokens })) tokens registrados")
+                Text("\(UsageSettings.k(values.values.reduce(0) { $0 + $1.tokens })) tokens · \(values.values.reduce(0) { $0 + $1.turns }) turnos registrados")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text("Menos").font(.caption).foregroundStyle(.secondary)
