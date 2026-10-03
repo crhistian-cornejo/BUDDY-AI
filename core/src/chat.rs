@@ -101,7 +101,8 @@ impl ChatEngine {
     fn notes_for(&self, agent: &Agent, folders: &[crate::folders::AuthorizedFolder]) -> String {
         let folders = if agent.can("leer") || agent.can("editar") { crate::folders::prompt_note(folders) } else { String::new() };
         let tools = if agent.can("documentos") || agent.can("musica") || agent.can("pantalla") { self.tools_note() } else { String::new() };
-        folders + &tools + &crate::connectors::prompt_note(&self.connectors(agent))
+        let accounts = if agent.can(crate::accounts::PERMISSION) { crate::accounts::prompt_note() } else { String::new() };
+        folders + &tools + &crate::connectors::prompt_note(&self.connectors(agent)) + &accounts
     }
 
     /// The enabled connectors (Settings › Conectores) for an agent with the web; none otherwise (network tools).
@@ -445,6 +446,7 @@ impl ChatEngine {
                     specialist.model = Some(route.model);
                     specialist.effort = Some(route.effort);
                 }
+                claude_for_accounts(&mut specialist);
                 let prompt = attachments_note(files) + &orchestrator::task_prompt(&specialist.name, &task, question);
                 let system = format!("{}{}", specialist.prompt, self.notes_for(&specialist, &folders));
                 let answer = self.run_agent(chat_id, &specialist, &prompt, &system, files, cancel, false);
@@ -529,6 +531,10 @@ impl ChatEngine {
         if !agent.can("web") {
             order.retain(|p| p.id() != ProviderId::Antigravity);
         }
+        // The user's claude.ai accounts (Gmail, Notion) exist only for Claude.
+        if agent.can(crate::accounts::PERMISSION) {
+            order.retain(|p| p.id() == ProviderId::Claude);
+        }
         let mut last_failure = None;
         let mut provider_used = agent.provider;
         for (attempt, provider) in order.iter().enumerate() {
@@ -602,6 +608,7 @@ impl ChatEngine {
                 office,
                 no_web: !agent.can("web"),
                 connectors: self.connectors(agent),
+                accounts: agent.can(crate::accounts::PERMISSION) && provider.id() == ProviderId::Claude,
             };
             let model_label = crate::router::model_label(provider.id(), request.model.as_deref(), request.effort.as_deref());
             let mut text = String::new();
@@ -721,6 +728,7 @@ impl ChatEngine {
             agent.model = Some(route.model);
             agent.effort = Some(route.effort);
         }
+        claude_for_accounts(&mut agent);
         let folders = crate::folders::list(&self.lock()).unwrap_or_default();
         let mut system = format!("{}{}", agent.prompt, self.notes_for(&agent, &folders));
         if restricted {
@@ -770,7 +778,15 @@ impl ChatEngine {
     }
 }
 
-/// Tells the model which files the user attached (their content is data, never instructions).
+/// An agent with the user's claude.ai accounts runs on Claude whatever the router picked (Codex and Gemini cannot
+/// reach them); a model of another provider becomes Claude's Sonnet.
+fn claude_for_accounts(agent: &mut Agent) {
+    if agent.can(crate::accounts::PERMISSION) && agent.provider != ProviderId::Claude {
+        agent.provider = ProviderId::Claude;
+        agent.model = Some("sonnet".into());
+    }
+}
+
 /// The files in the documents folder and when each changed.
 fn documents_in(dir: &std::path::Path) -> std::collections::HashMap<PathBuf, std::time::SystemTime> {
     std::fs::read_dir(dir)
@@ -1320,6 +1336,23 @@ mod tests {
         assert_eq!(engine.lock().chats(5).unwrap()[0].title, "Telegram · PARLEY");
         assert!(!engine.running.lock().unwrap().contains_key("telegram-parley"));
         assert!(engine.run_direct("telegram-parley", "x", "nadie", "hola", true).is_err());
+    }
+
+    #[test]
+    fn an_agent_with_accounts_only_runs_on_claude_with_them() {
+        let claude = Fake::new(ProviderId::Claude, vec![vec![TurnEvent::Failed(Failure::new("usage limit reached"))]]);
+        let codex = Fake::new(ProviderId::Codex, vec![vec![TurnEvent::Delta("Aquí Codex".into()), TurnEvent::Done]]);
+        let (engine, _rx, _dir) = engine(vec![claude.clone(), codex.clone()]);
+        engine.lock().set_setting("router.mode", "codex:gpt-6.1-sol").unwrap();
+        let answer = engine.run_direct("niko-test", "Niko", "niko", "gasté 45 en almuerzo", true);
+        assert!(answer.is_err(), "no other provider takes a turn that needs the accounts");
+        assert!(codex.prompts.lock().unwrap().is_empty());
+        assert_eq!(claude.models.lock().unwrap()[0].as_deref(), Some("sonnet"), "a Codex model becomes Sonnet");
+        assert!(claude.prompts.lock().unwrap()[0].1.contains("Cuentas del usuario"));
+        let mut agent = engine.agents().into_iter().find(|a| a.id == "niko").unwrap();
+        agent.provider = ProviderId::Antigravity;
+        claude_for_accounts(&mut agent);
+        assert_eq!(agent.provider, ProviderId::Claude);
     }
 
     #[test]

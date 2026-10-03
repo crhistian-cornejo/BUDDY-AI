@@ -99,6 +99,13 @@ final class NotchController {
             model.buddyActivity = nil
         case .briefingReady:
             model.briefing = core.briefing()
+        case let .financeRecorded(monto, _, tipo, concepto, comercio):
+            model.show(.init(kind: .finished, agent: "niko", title: "Niko anotó: \(monto) · \(comercio.isEmpty ? concepto : comercio)",
+                             detail: concepto.isEmpty || comercio.isEmpty ? tipo.capitalized : "\(tipo.capitalized) · \(concepto)"))
+        case let .budgetAlert(categoria, usadoPct):
+            model.show(.init(kind: .waiting, agent: "niko",
+                             title: usadoPct >= 100 ? "Te pasaste del presupuesto de \(categoria.capitalized)" : "Te queda \(100 - Int(usadoPct)) % en \(categoria.capitalized)",
+                             detail: "Llevas \(usadoPct) % del tope del mes. Pregúntale a Niko en qué se fue."))
         case let .mediaCommand(action, uri):
             runMediaCommand(action: action, uri: uri)
         case let .usageLow(provider, label, leftPct):

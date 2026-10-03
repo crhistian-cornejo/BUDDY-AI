@@ -68,6 +68,28 @@ const MIGRATIONS: &[&str] = &[
     );",
     // v6: which model wrote each answer («Opus 5.5 · esfuerzo alto»), for its tooltip.
     "ALTER TABLE messages ADD COLUMN model TEXT;",
+    // v7: Niko (personal finance). `finance_seen`: every key already handled on this device (`gmail:<message id>`,
+    // `manual:<…>`), recorded, found in Notion or ignored, so a mail is never processed twice. `finance_records`: the
+    // movements this device knows of (recorded by its reviews or read back from Notion), for the dashboard figures
+    // and the budget alerts.
+    "CREATE TABLE finance_seen (
+        key TEXT PRIMARY KEY,
+        at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE finance_records (
+        key       TEXT PRIMARY KEY,
+        at        INTEGER NOT NULL,
+        monto     REAL NOT NULL,
+        moneda    TEXT NOT NULL,
+        tipo      TEXT NOT NULL,
+        concepto  TEXT NOT NULL,
+        comercio  TEXT NOT NULL,
+        categoria TEXT NOT NULL,
+        origen    TEXT NOT NULL,
+        recurrente INTEGER NOT NULL DEFAULT 0,
+        added_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX finance_records_by_time ON finance_records(at);",
 ];
 
 /// Tokens spent by one feature (and provider) over a period.
@@ -346,6 +368,60 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![today], |r| {
             Ok(crate::briefing::BriefingItem { topic: r.get(0)?, text: r.get(1)?, url: r.get(2)?, at: r.get(3)? })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Marks finance keys (`gmail:<id>`, `manual:<…>`) as handled on this device.
+    pub fn mark_finance_seen(&self, keys: &[String]) -> Result<(), CoreError> {
+        for key in keys.iter().filter(|k| !k.trim().is_empty()) {
+            self.conn.execute("INSERT OR IGNORE INTO finance_seen (key) VALUES (?1)", params![key.trim()])?;
+        }
+        Ok(())
+    }
+
+    pub fn finance_seen(&self, key: &str) -> Result<bool, CoreError> {
+        Ok(self.conn.query_row("SELECT 1 FROM finance_seen WHERE key = ?1", params![key], |_| Ok(())).optional()?.is_some())
+    }
+
+    /// Keys handled since `at` (unix seconds) that start with `prefix`, newest first, at most `limit`.
+    pub fn finance_seen_since(&self, prefix: &str, at: i64, limit: u32) -> Result<Vec<String>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key FROM finance_seen WHERE at >= ?1 AND substr(key, 1, length(?2)) = ?2 ORDER BY at DESC, key LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![at, prefix, limit], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Keeps a movement (once per key); true when it was new.
+    pub fn add_finance_record(&self, r: &crate::niko::FinanceRecord) -> Result<bool, CoreError> {
+        let added = self.conn.execute(
+            "INSERT OR IGNORE INTO finance_records (key, at, monto, moneda, tipo, concepto, comercio, categoria, origen, recurrente)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![r.key, r.at, r.monto, r.moneda, r.tipo, r.concepto, r.comercio, r.categoria, r.origen, r.recurrente],
+        )?;
+        Ok(added > 0)
+    }
+
+    /// Movements from `at` on (unix seconds), newest first, at most `limit`.
+    pub fn finance_records(&self, at: i64, limit: u32) -> Result<Vec<crate::niko::FinanceRecord>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key, at, monto, moneda, tipo, concepto, comercio, categoria, origen, recurrente FROM finance_records
+             WHERE at >= ?1 ORDER BY at DESC, key LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![at, limit], |r| {
+            Ok(crate::niko::FinanceRecord {
+                key: r.get(0)?,
+                at: r.get(1)?,
+                monto: r.get(2)?,
+                moneda: r.get(3)?,
+                tipo: r.get(4)?,
+                concepto: r.get(5)?,
+                comercio: r.get(6)?,
+                categoria: r.get(7)?,
+                origen: r.get(8)?,
+                recurrente: r.get(9)?,
+            })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }

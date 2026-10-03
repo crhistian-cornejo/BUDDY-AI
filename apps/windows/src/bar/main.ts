@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { h, svg } from "../chat/dom";
 import { TABLER } from "../chat/tabler";
 import { PROVIDER_MARKS } from "../chat/provider-marks";
+import { agentFace } from "../chat/avatar";
 
 type Kind = "approval" | "finished" | "waiting" | "failed";
 interface Notice { kind: Kind; agent: string; title: string; detail: string; command?: string; requestId?: string; canAllow?: boolean; always?: string }
@@ -27,6 +28,8 @@ type CoreEvent =
   | { type: "mascotState"; state: string }
   | { type: "usageChanged" }
   | { type: "usageLow"; provider: string; label: string; leftPct: number }
+  | { type: "financeRecorded"; monto: string; moneda: string; tipo: string; concepto: string; comercio: string }
+  | { type: "budgetAlert"; categoria: string; usadoPct: number }
   | { type: string };
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -66,7 +69,7 @@ let news: BriefingItem[] = [];
 const pendingApproval = new Map<string, string>();
 
 const agentName = (agent: string) =>
-  agent === "codex" ? "Codex" : agent === "antigravity" ? "Gemini" : agent === "buddy" ? "Buddy" : "Claude Code";
+  agent === "codex" ? "Codex" : agent === "antigravity" ? "Gemini" : agent === "buddy" ? "Buddy" : agent === "niko" ? "Niko" : "Claude Code";
 /** A plan's name, as the Mac's AgentNames.plan. */
 const planName = (provider: string) => (provider === "codex" ? "Codex" : provider === "antigravity" ? "Gemini" : "Claude");
 
@@ -165,7 +168,13 @@ function drawEars(active: Session | undefined) {
 function drawNotice() {
   if (!notice) return;
   const n = notice;
-  const mark = n.agent === "buddy" ? icon(TABLER.sparkles, 18) : providerMark(n.agent, 18);
+  let mark: Element = n.agent === "buddy" ? icon(TABLER.sparkles, 18) : providerMark(n.agent, 18);
+  if (n.agent === "niko") {
+    // Niko's own pixel face (the core paints it); a sparkle until it is ready.
+    const holder = h("span", {}, icon(TABLER.sparkles, 18));
+    void agentFace("niko").then((url) => { if (url) holder.replaceChildren(h("img", { src: url, alt: "", width: 22, height: 22, style: "image-rendering: pixelated" })); });
+    mark = holder;
+  }
   const head = h("div", { class: "notice-head" },
     h("span", { class: "mark" }, mark),
     h("div", { class: "notice-text" }, h("strong", { text: n.title }), h("span", { text: n.detail })));
@@ -400,6 +409,21 @@ function onCore(e: CoreEvent) {
       const u = e as Extract<CoreEvent, { type: "usageLow" }>;
       const name = planName(u.provider);
       show({ kind: "waiting", agent: u.provider, title: `Te queda ${u.leftPct} % de ${name}`, detail: `Ventana: ${u.label}. Buddy usará el otro proveedor si se acaba.` });
+      break;
+    }
+    case "financeRecorded": {
+      const f = e as Extract<CoreEvent, { type: "financeRecorded" }>;
+      const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+      show({ kind: "finished", agent: "niko", title: `Niko anotó: ${f.monto} · ${f.comercio || f.concepto}`,
+        detail: f.concepto && f.comercio ? `${cap(f.tipo)} · ${f.concepto}` : cap(f.tipo) });
+      break;
+    }
+    case "budgetAlert": {
+      const b = e as Extract<CoreEvent, { type: "budgetAlert" }>;
+      const name = b.categoria.charAt(0).toUpperCase() + b.categoria.slice(1);
+      show({ kind: "waiting", agent: "niko",
+        title: b.usadoPct >= 100 ? `Te pasaste del presupuesto de ${name}` : `Te queda ${100 - b.usadoPct} % en ${name}`,
+        detail: `Llevas ${b.usadoPct} % del tope del mes. Pregúntale a Niko en qué se fue.` });
       break;
     }
     case "mascotState": {

@@ -11,8 +11,11 @@ pub const ORCHESTRATOR: &str = "buddy";
 const MARKER: &str = "[[pasar:";
 const MAX_TASK: usize = 4000;
 
-pub(crate) const BUILT_INS: &[(&str, &str)] =
-    &[("buddy", include_str!("../agents/buddy.md")), ("parley", include_str!("../agents/parley.md"))];
+pub(crate) const BUILT_INS: &[(&str, &str)] = &[
+    ("buddy", include_str!("../agents/buddy.md")),
+    ("parley", include_str!("../agents/parley.md")),
+    ("niko", include_str!("../agents/niko.md")),
+];
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,7 +35,7 @@ pub struct Agent {
 }
 
 /// Every permission an agent can hold, with the words Settings shows.
-pub const PERMISSIONS: [(&str, &str, &str); 7] = [
+pub const PERMISSIONS: [(&str, &str, &str); 8] = [
     ("web", "Web", "Buscar y leer páginas"),
     ("leer", "Leer carpetas", "Leer en tus carpetas autorizadas"),
     ("editar", "Editar carpetas", "Cambiar archivos en las carpetas que marcaste como editables"),
@@ -40,11 +43,13 @@ pub const PERMISSIONS: [(&str, &str, &str); 7] = [
     ("documentos", "Documentos", "Crear y leer Word, Excel y PowerPoint"),
     ("musica", "Música", "Controlar Spotify o Música"),
     ("pantalla", "Pantalla", "Ver tu pantalla, siempre con tu clic"),
+    ("cuentas", "Cuentas", "Usar tus cuentas conectadas en claude.ai: Gmail, Drive, Notion"),
 ];
 
-/// Buddy holds them all; a specialist without `permisos:` gets the web and documents.
+/// Buddy holds them all but the user's accounts (it hands money matters to the agent that has them); a specialist
+/// without `permisos:` gets the web and documents.
 fn default_permissions(id: &str) -> Vec<String> {
-    let all: Vec<&str> = PERMISSIONS.iter().map(|p| p.0).collect();
+    let all: Vec<&str> = PERMISSIONS.iter().map(|p| p.0).filter(|p| *p != crate::accounts::PERMISSION).collect();
     let list = if id == ORCHESTRATOR { all } else { vec!["web", "documentos"] };
     list.into_iter().map(String::from).collect()
 }
@@ -237,6 +242,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let agents = load(dir.path());
         assert!(agents[0].can("comandos") && agents[0].can("musica"), "Buddy holds them all");
+        assert!(!agents[0].can("cuentas"), "but not the user's accounts");
+        let niko = agents.iter().find(|a| a.id == "niko").unwrap();
+        assert_eq!(niko.permissions, ["documentos", "cuentas"]);
+        assert_eq!(niko.model.as_deref(), Some("auto"));
         let parley = agents.iter().find(|a| a.id == "parley").unwrap();
         assert_eq!(parley.permissions, ["web", "documentos"]);
         assert_eq!(parley.model.as_deref(), Some("auto"));

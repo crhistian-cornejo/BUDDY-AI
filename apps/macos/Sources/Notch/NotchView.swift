@@ -409,6 +409,8 @@ private struct NoticeCard: View {
                 Group {
                     if notice.agent == "buddy" {
                         AvatarView(size: 24)
+                    } else if notice.agent == "niko" {
+                        AgentAvatarView(agentId: "niko", size: 24)
                     } else {
                         ProviderMark(provider: AgentNames.mark(notice.agent), size: 18)
                     }

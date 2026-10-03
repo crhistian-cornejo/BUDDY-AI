@@ -66,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if case .telegramChanged = event {
                     NotificationCenter.default.post(name: .buddyTelegramChanged, object: nil)
                 }
+                if case .nikoChanged = event {
+                    NotificationCenter.default.post(name: .buddyNikoChanged, object: nil)
+                }
                 // A new «mensajito»: Buddy says the first line; the notch keeps the list.
                 if case let .briefingReady(count, headline) = event {
                     if count > 0 { pet?.say(Self.short(headline) + (count > 1 ? " (+\(count - 1))" : ""), seconds: 8) }

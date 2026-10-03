@@ -75,6 +75,13 @@ pub enum Event {
     ApprovalClosed { request_id: String },
     /// Telegram's connection or pairing changed: read `telegram_status`.
     TelegramChanged,
+    /// Niko recorded a money movement in the user's Notion: `monto` ready to show («S/ 45,90», «US$ 12,99»),
+    /// `moneda` PEN or USD, `tipo` gasto, pago, suscripción, transferencia recibida, transferencia enviada or ingreso.
+    FinanceRecorded { monto: String, moneda: String, tipo: String, concepto: String, comercio: String },
+    /// A category of this month's budget crossed 80 % or 100 % (`usado_pct`).
+    BudgetAlert { categoria: String, usado_pct: u32 },
+    /// Niko's state changed (a review started or ended, settings): read `niko_status`.
+    NikoChanged,
 }
 
 #[derive(Default)]

@@ -8,6 +8,13 @@ pub fn of_tool(name: &str) -> (&'static str, &'static str) {
     if crate::connectors::owns_tool(name) {
         return ("web", "Consultando documentación");
     }
+    // The user's claude.ai accounts.
+    match crate::accounts::service_of(name) {
+        Some("gmail") => return ("read", "Revisando tu correo"),
+        Some("drive") => return ("read", "Leyendo tu Drive"),
+        Some(_) => return ("edit", "Anotando en Notion"),
+        None => {}
+    }
     let tool = name.rsplit("__").next().unwrap_or(name);
     match tool {
         "create_document" => ("word", "Escribiendo un Word"),
@@ -40,5 +47,7 @@ mod tests {
         assert_eq!(of_tool("mcp__buddy__spotify_search").0, "music");
         assert_eq!(of_tool("algo_raro").0, "tool");
         assert_eq!(of_tool("mcp__context7__query-docs"), ("web", "Consultando documentación"));
+        assert_eq!(of_tool("mcp__claude_ai_Gmail__search_threads"), ("read", "Revisando tu correo"));
+        assert_eq!(of_tool("mcp__claude_ai_Notion__notion-create-pages"), ("edit", "Anotando en Notion"));
     }
 }

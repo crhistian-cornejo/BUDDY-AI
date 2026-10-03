@@ -261,6 +261,15 @@ pub fn run() {
             connectors,
             set_connector_enabled,
             set_connector_key,
+            niko_status,
+            niko_accounts,
+            niko_set_enabled,
+            niko_set_interval,
+            niko_set_senders,
+            niko_set_parent,
+            niko_set_telegram,
+            niko_review_now,
+            niko_refresh_dashboard,
             telegram_account_request,
             telegram_status,
             telegram_connect,
@@ -1204,6 +1213,55 @@ fn set_connector_enabled(state: State<'_, AppCore>, id: String, on: bool) -> Res
 #[tauri::command]
 fn set_connector_key(state: State<'_, AppCore>, id: String, key: String) -> Result<(), String> {
     state.core.set_connector_key(id, key).map_err(|e| e.to_string())
+}
+
+// MARK: Niko · finanzas (Settings; the core does all of it)
+
+#[tauri::command]
+fn niko_status(state: State<'_, AppCore>) -> buddy_core::niko::NikoStatus {
+    state.core.niko_status()
+}
+
+/// Gmail, Notion and Drive as connected in claude.ai (asks Claude Code: a few seconds, off the UI thread).
+#[tauri::command]
+async fn niko_accounts(app: AppHandle) -> Vec<buddy_core::accounts::AccountStatus> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.niko_accounts()).await.unwrap_or_default()
+}
+
+#[tauri::command]
+fn niko_set_enabled(state: State<'_, AppCore>, on: bool) {
+    state.core.niko_set_enabled(on);
+}
+
+#[tauri::command]
+fn niko_set_interval(state: State<'_, AppCore>, minutes: u32) -> Result<(), String> {
+    state.core.niko_set_interval(minutes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn niko_set_senders(state: State<'_, AppCore>, senders: String) -> String {
+    state.core.niko_set_senders(senders.chars().take(4000).collect())
+}
+
+#[tauri::command]
+fn niko_set_parent(state: State<'_, AppCore>, page: String) -> Result<(), String> {
+    state.core.niko_set_parent(page.chars().take(500).collect()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn niko_set_telegram(state: State<'_, AppCore>, on: bool) {
+    state.core.niko_set_telegram(on);
+}
+
+#[tauri::command]
+fn niko_review_now(state: State<'_, AppCore>) {
+    state.core.niko_review_now();
+}
+
+#[tauri::command]
+fn niko_refresh_dashboard(state: State<'_, AppCore>) {
+    state.core.niko_refresh_dashboard();
 }
 
 /// Checks the pair with Spotify, keeps the Client ID in settings and the Client Secret in Credential Manager.

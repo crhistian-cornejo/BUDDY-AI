@@ -104,22 +104,39 @@ impl Claude {
             // `--safe-mode` turns every hook off, the gate's too; `--restricted` ignores the user's settings files
             // but keeps the `--settings` hook.
             // (and MCP servers, so Buddy's Office tools need it too).
-            if request.gate.is_some() || request.office.is_some() || !request.remote().is_empty() { "--restricted" } else { "--safe-mode" },
-            "--strict-mcp-config",
+            if request.gate.is_some() || request.office.is_some() || !request.remote().is_empty() || request.accounts {
+                "--restricted"
+            } else {
+                "--safe-mode"
+            },
             "--permission-mode",
             "dontAsk",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
+        // `--strict-mcp-config` hides the user's claude.ai accounts too: a turn with them goes without it (with
+        // `--restricted` the user's own local servers and plugins still stay out).
+        if !request.accounts {
+            args.push("--strict-mcp-config".into());
+        }
         // Only Buddy's own MCP server and its connectors, never the user's: the Office tools, pre-allowed (they write
         // only in their folder), and each connector's tools (read-only network lookups).
         let mcp = serde_json::json!({ "mcpServers": mcp_servers(request) }).to_string();
         let office_tools = request.office.as_ref().map(|_| super::Office::TOOLS.join(",")).unwrap_or_default();
         let connector_tools: Vec<String> = request.remote().iter().map(|c| format!("mcp__{}", c.id)).collect();
-        let allowed = [allowed, office_tools, connector_tools.join(",")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(",");
+        let account_tools = if request.accounts { crate::accounts::allowed_tools().join(",") } else { String::new() };
+        let allowed = [allowed, office_tools, connector_tools.join(","), account_tools]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(",");
         args.extend(["--mcp-config".into(), mcp]);
         args.extend(["--tools".into(), tools, "--allowedTools".into(), allowed]);
+        // What those accounts offer beyond reading (sending, drafts, trash…) never reaches the model.
+        if request.accounts {
+            args.extend(["--disallowedTools".into(), crate::accounts::denied_tools().join(",")]);
+        }
         for dir in &dirs {
             args.extend(["--add-dir".into(), dir.clone()]);
         }
@@ -267,6 +284,11 @@ impl Provider for Claude {
 }
 
 impl Claude {
+    /// Closes every warm process now (a one-off turn's owner, such as Niko's sync, does not keep them).
+    pub fn close_all(&self) {
+        self.pool.lock().unwrap().clear();
+    }
+
     /// The warm process for this request: its conversation's, or a spare when it starts a new one.
     fn take(&self, request: &TurnRequest) -> Option<Live> {
         let signature = signature(request);
@@ -721,6 +743,42 @@ mod tests {
         let offline = Claude::arguments(&TurnRequest { no_web: true, ..request });
         let joined = offline.join(" ");
         assert!(!joined.contains("context7") && !joined.contains("deepwiki") && joined.contains("--safe-mode"), "{joined}");
+    }
+
+    #[test]
+    fn accounts_keep_claude_ai_servers_and_only_reading_tools() {
+        let args = Claude::arguments(&TurnRequest { accounts: true, no_web: true, ..Default::default() });
+        let joined = args.join(" ");
+        assert!(joined.contains("--restricted") && !joined.contains("--safe-mode"), "{joined}");
+        assert!(!joined.contains("--strict-mcp-config"), "claude.ai accounts need the CLI's own MCP list");
+        let at = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+        assert_eq!(at("--mcp-config"), r#"{"mcpServers":{}}"#, "Buddy's own servers still go by --mcp-config");
+        let allowed = at("--allowedTools");
+        assert!(allowed.contains("mcp__claude_ai_Gmail__search_threads") && allowed.contains("mcp__claude_ai_Gmail__get_message"));
+        assert!(allowed.contains("mcp__claude_ai_Notion__notion-create-pages"));
+        assert!(!allowed.contains("create_draft") && !allowed.contains("trash") && !allowed.contains("WebSearch"));
+        let denied = at("--disallowedTools");
+        assert!(denied.contains("mcp__claude_ai_Gmail__create_draft") && denied.contains("mcp__claude_ai_Gmail__trash_message"));
+        assert_eq!(at("--tools"), "", "no web, no files");
+        // With Buddy's own tools as well, its server is still the only one in --mcp-config.
+        let office = Claude::arguments(&TurnRequest {
+            accounts: true,
+            office: Some(super::super::Office {
+                relay: "/d/bin/buddy-hook".into(),
+                dir: "/d/documentos".into(),
+                skills: "/d/skills".into(),
+                link: None,
+                read: vec![],
+            }),
+            ..Default::default()
+        });
+        let mcp = &office[office.iter().position(|a| a == "--mcp-config").unwrap() + 1];
+        assert!(mcp.contains("\"buddy\"") && !office.join(" ").contains("--strict-mcp-config"));
+        // Without the permission nothing changes: strict, no account tools.
+        let plain = Claude::arguments(&TurnRequest::default()).join(" ");
+        assert!(plain.contains("--strict-mcp-config") && !plain.contains("claude_ai") && !plain.contains("--disallowedTools"));
+        // A turn with accounts never shares a warm process with one without.
+        assert_ne!(signature(&TurnRequest { accounts: true, ..Default::default() }), signature(&TurnRequest::default()));
     }
 
     #[test]

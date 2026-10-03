@@ -148,7 +148,7 @@ final class NotchModel {
 extension NotchModel.Notice {
     var isApproval: Bool { if case .approval = kind { return true } else { return false } }
 
-    var agentName: String { agent == "buddy" ? "Buddy" : AgentNames.name(agent) }
+    var agentName: String { agent == "buddy" ? "Buddy" : agent == "niko" ? "Niko" : AgentNames.name(agent) }
 }
 
 /// How the notch and the settings name a coding agent of the user's (the core's `agent` / `provider` ids) and which

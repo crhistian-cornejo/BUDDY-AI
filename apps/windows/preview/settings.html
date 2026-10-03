@@ -27,6 +27,14 @@
       // ?telegram=pairing | paired shows those states (default: not connected).
       const tgMode = new URLSearchParams(location.search).get("telegram") ?? "";
       let telegram = { connected: tgMode !== "", paired: tgMode === "paired", botName: tgMode ? "@mi_buddy_bot" : "", pairingCode: tgMode === "pairing" ? "482913" : "", error: "" };
+      // Niko · finanzas (made-up movements).
+      const niko = { enabled: true, interval: 20, senders: "notificacionesbcp.com.pe, interbank.pe, bbva.pe, netflix.com", parentPage: "",
+        dashboardUrl: "https://www.notion.so/Dashboard-0123456789abcdef0123456789abcdef", telegram: false, agentReady: true, running: false,
+        lastRunAt: now - 600, lastOk: true, lastError: "", lastRecorded: 2, recent: [
+          { key: "gmail:1", at: now - 900, monto: 44.9, moneda: "PEN", tipo: "suscripción", concepto: "Plan estándar", comercio: "Netflix", categoria: "suscripciones", origen: "correo", recurrente: true },
+          { key: "gmail:2", at: now - 4000, monto: 1234.5, moneda: "PEN", tipo: "transferencia recibida", concepto: "Yape", comercio: "Juan P.", categoria: "transferencias", origen: "correo", recurrente: false },
+          { key: "manual:3", at: now - 9000, monto: 12.99, moneda: "USD", tipo: "suscripción", concepto: "iCloud+", comercio: "Apple", categoria: "suscripciones", origen: "chat", recurrente: true },
+        ] };
       const connectors = [
         { id: "context7", name: "Context7", description: "Documentación al día de librerías y APIs de programación.", site: "https://context7.com", enabled: true, hasKey: false, keyOptional: true },
         { id: "mslearn", name: "Microsoft Learn", description: "Documentación oficial de Microsoft: Windows, Office, Azure, .NET, PowerShell.", site: "https://learn.microsoft.com/training/support/mcp", enabled: false, hasKey: false, keyOptional: false },
@@ -48,6 +56,16 @@
         telegram_disconnect: () => { telegram = { connected: false, paired: false, botName: "", pairingCode: "", error: "" }; },
         telegram_new_pairing_code: () => { telegram = { ...telegram, paired: false, pairingCode: "730154" }; return "730154"; },
         telegram_send: () => {},
+        niko_status: () => ({ ...niko, recent: empty ? [] : niko.recent }),
+        niko_accounts: () => new Promise((resolve) => setTimeout(() => resolve([
+          { id: "gmail", name: "Gmail", state: "connected" }, { id: "notion", name: "Notion", state: "needs-auth" }, { id: "drive", name: "Google Drive", state: "connected" }]), 600)),
+        niko_set_enabled: ({ on }) => { niko.enabled = on; },
+        niko_set_interval: ({ minutes }) => { niko.interval = minutes; },
+        niko_set_senders: ({ senders }) => (niko.senders = senders.trim() || "notificacionesbcp.com.pe, interbank.pe, bbva.pe, netflix.com"),
+        niko_set_parent: ({ page }) => { if (page && !/notion\.(so|com|site)/.test(page)) throw "Pega el enlace de una página de Notion (o su id)."; niko.parentPage = page; },
+        niko_set_telegram: ({ on }) => { niko.telegram = on; },
+        niko_review_now: () => { niko.running = true; setTimeout(() => { niko.running = false; niko.lastRunAt = Date.now() / 1000; }, 1500); },
+        niko_refresh_dashboard: () => {},
         connectors: () => connectors.map((c) => ({ ...c })),
         set_connector_enabled: ({ id, on }) => { connectors.find((c) => c.id === id).enabled = on; },
         set_connector_key: ({ id, key }) => { connectors.find((c) => c.id === id).hasKey = key.trim() !== ""; },
@@ -111,6 +129,7 @@
         buddy: { color: "menta", accessory: "ninguno", eyes: "normales", badge: null },
         investigador: { color: "lavanda", accessory: "lentes", eyes: "normales", badge: null },
         programador: { color: "grafito", accessory: "audifonos", eyes: "serios", badge: "cielo" },
+        niko: { color: "limon", accessory: "lentes", eyes: "felices", badge: null },
       };
       const looks = JSON.parse(JSON.stringify(defaultLooks));
       const lookData = fetch("/preview/agent-looks.json").then((r) => r.json());

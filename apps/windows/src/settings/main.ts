@@ -9,6 +9,7 @@ import { renderAgents } from "./agents";
 import { usageCalendar, type TokenDay } from "./usage-calendar";
 import { renderTelegramAccount } from "./telegram-account";
 import { renderConnectors } from "./connectors";
+import { renderNiko } from "./niko";
 import { SETTINGS_ICONS } from "./icons";
 import { button, emptyRow, errorText, header, icon, iconButton, k, providerMark, row, section, settingRow } from "./ui";
 
@@ -38,6 +39,7 @@ const TABS: Tab[] = [
   { id: "usage", label: "Uso", icon: SETTINGS_ICONS.chartBar, render: renderUsage },
   { id: "agents", label: "Agentes", icon: SETTINGS_ICONS.users, render: renderAgents },
   { id: "briefing", label: "Mensajitos", icon: SETTINGS_ICONS.news, render: renderBriefing },
+  { id: "finanzas", label: "Finanzas", icon: SETTINGS_ICONS.coin, render: async (view) => { const on = await renderNiko(view); if (current === "finanzas") onCoreEvent = on; } },
 ];
 
 const nav = document.getElementById("tabs")!;

@@ -3,6 +3,7 @@
 //! The Mac app reaches it through UniFFI (feature `ffi`); the Windows app (Tauri) calls it directly.
 //! Apps only draw what the core hands them: sprites, settings and the event stream.
 
+pub mod accounts;
 pub mod activity;
 pub mod briefing;
 pub mod chat;
@@ -13,6 +14,7 @@ pub mod images;
 pub mod log;
 pub mod look;
 pub mod media;
+pub mod niko;
 pub mod orchestrator;
 pub mod parley;
 pub mod paths;
@@ -101,6 +103,7 @@ pub struct BuddyCore {
     spotify: Arc<spotify::Spotify>,
     telegram: Arc<telegram::Telegram>,
     telegram_account: telegram_account::Account,
+    niko: Arc<niko::Niko>,
 }
 
 impl BuddyCore {
@@ -122,6 +125,8 @@ impl BuddyCore {
         let core = Self::with_providers(data_dir, store, providers)?;
         // Telegram listens from launch when a bot is connected and a chat paired (never in tests: fresh stores).
         core.telegram.start_if_configured();
+        // Niko's mail review runs only where the user switched it on.
+        core.niko.start();
         Ok(core)
     }
 
@@ -151,7 +156,8 @@ impl BuddyCore {
                 s.search(id, &spotify::SystemSecrets, &text("query"), &text("kind"), payload["new"] == true)
             })
         }));
-        // Telegram: each message of the paired chat is a restricted PARLEY turn in «Telegram · PARLEY».
+        // Telegram: each message of the paired chat is a restricted PARLEY turn in «Telegram · PARLEY»; money notes
+        // («gasté 45 en almuerzo», «Niko, …») go to Niko in «Telegram · Niko».
         let engine = chat.clone();
         let telegram = Arc::new(telegram::Telegram::new(
             store.clone(),
@@ -159,14 +165,29 @@ impl BuddyCore {
             Arc::new(telegram::HttpApi),
             Box::new(telegram::TokenSecret),
             Box::new(move |text, files| {
-                engine.run_direct_with_attachments(telegram::CHAT_ID, telegram::CHAT_TITLE, telegram::AGENT, text, true, files).map_err(|e| match e {
+                let (chat_id, title, agent) = if niko::is_finance_message(text) {
+                    ("telegram-niko", "Telegram · Niko", niko::AGENT)
+                } else {
+                    (telegram::CHAT_ID, telegram::CHAT_TITLE, telegram::AGENT)
+                };
+                engine.run_direct_with_attachments(chat_id, title, agent, text, true, files).map_err(|e| match e {
                     CoreError::Store(m) | CoreError::Hooks(m) => m,
                     other => other.to_string(),
                 })
             }),
         ).with_media_dir(data_dir.join("telegram-bot-media")));
         let telegram_account = telegram_account::Account::new(store.clone(), data_dir.clone());
-        Ok(Self { telegram_account, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram })
+        let niko = Arc::new(niko::Niko::new(data_dir.clone(), store.clone(), bus.clone(), Box::new(niko::ClaudeSource { data_dir: data_dir.clone() })));
+        let tg = telegram.clone();
+        niko.set_notifier(Box::new(move |text| {
+            let tg = tg.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = tg.send(&text) {
+                    log::line(format!("niko: Telegram no recibió el aviso: {e}"));
+                }
+            });
+        }));
+        Ok(Self { telegram_account, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram, niko })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -618,6 +639,7 @@ impl Drop for BuddyCore {
     /// The Telegram poller stops with the core (a request in flight ends within its timeout).
     fn drop(&mut self) {
         self.telegram.shutdown();
+        self.niko.shutdown();
     }
 }
 

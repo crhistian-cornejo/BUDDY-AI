@@ -15,7 +15,7 @@ enum SettingsWindow {
 
     static func show() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 460),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 520),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "Ajustes de Buddy"
             w.contentView = NSHostingView(rootView: SettingsView())
@@ -31,7 +31,7 @@ enum SettingsWindow {
 /// Buddy's Settings: the system's own Settings window with tabs, plain native controls.
 struct SettingsView: View {
     /// BUDDY_DEBUG_SETTINGS=<tab> opens that tab (debug builds), to look at it without clicking.
-    @State private var tab = ProcessInfo.processInfo.environment["BUDDY_DEBUG_SETTINGS"].flatMap { ["general", "carpetas", "conexiones", "uso", "agentes", "mensajitos"].contains($0) ? $0 : nil } ?? "general"
+    @State private var tab = ProcessInfo.processInfo.environment["BUDDY_DEBUG_SETTINGS"].flatMap { ["general", "carpetas", "conexiones", "uso", "agentes", "mensajitos", "finanzas"].contains($0) ? $0 : nil } ?? "general"
 
     var body: some View {
         if let core = AppServices.core {
@@ -48,8 +48,9 @@ struct SettingsView: View {
                     .tabItem { Label("Agentes", systemImage: "person.2") }.tag("agentes")
                 BriefingSettings(core: core)
                     .tabItem { Label("Mensajitos", systemImage: "newspaper") }.tag("mensajitos")
+                NikoSettings(core: core).tabItem { Label("Finanzas", systemImage: "banknote") }.tag("finanzas")
             }
-            .frame(width: 680, height: 460)
+            .frame(width: 860, height: 520)
         } else {
             Text("Buddy aún no ha arrancado.").padding(40)
         }

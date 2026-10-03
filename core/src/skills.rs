@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 const BUILT_INS: &[(&str, &str)] = &[
     ("archivos", include_str!("../skills/archivos/SKILL.md")),
     ("documentos", include_str!("../skills/documentos/SKILL.md")),
+    ("finanzas", include_str!("../skills/finanzas/SKILL.md")),
     ("hojas", include_str!("../skills/hojas/SKILL.md")),
     ("investigar", include_str!("../skills/investigar/SKILL.md")),
     ("pantalla", include_str!("../skills/pantalla/SKILL.md")),

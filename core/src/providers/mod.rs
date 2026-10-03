@@ -71,6 +71,8 @@ pub struct TurnRequest {
     pub no_web: bool,
     /// Remote MCP servers (Settings › Conectores) for this turn; ignored without the web (see `remote`).
     pub connectors: Vec<crate::connectors::Connector>,
+    /// The user's accounts connected in claude.ai (Gmail and Drive to read, Notion): `accounts`. Claude only.
+    pub accounts: bool,
 }
 
 /// Buddy's Office tools: the relay that serves them and the folder the files go to (never anywhere else).
