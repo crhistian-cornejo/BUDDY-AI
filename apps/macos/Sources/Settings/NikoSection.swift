@@ -11,6 +11,7 @@ extension Notification.Name {
 /// The core does all of it; this only shows and asks. Twin of the Windows `settings/niko.ts`.
 struct NikoSettings: View {
     let core: BuddyCore
+    var embedded = false
     @State private var status: NikoStatus?
     @State private var accounts: [AccountStatus] = []
     @State private var checking = false
@@ -23,7 +24,11 @@ struct NikoSettings: View {
     private static let connectors = URL(string: "https://claude.ai/settings/connectors")!
 
     var body: some View {
-        Form {
+        if embedded { content } else { Form { content }.formStyle(.grouped) }
+    }
+
+    private var content: some View {
+        Group {
             Section {
                 HStack(alignment: .top, spacing: 12) {
                     AgentAvatarView(agentId: "niko", size: 36)
@@ -159,7 +164,6 @@ struct NikoSettings: View {
                 Text(saved).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
         .onAppear {
             reload()
             senders = status?.senders ?? ""

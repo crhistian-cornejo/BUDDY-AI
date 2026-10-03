@@ -15,7 +15,7 @@ enum SettingsWindow {
 
     static func show() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 520),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 460),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "Ajustes de Buddy"
             w.contentView = NSHostingView(rootView: SettingsView())
@@ -31,7 +31,7 @@ enum SettingsWindow {
 /// Buddy's Settings: the system's own Settings window with tabs, plain native controls.
 struct SettingsView: View {
     /// BUDDY_DEBUG_SETTINGS=<tab> opens that tab (debug builds), to look at it without clicking.
-    @State private var tab = ProcessInfo.processInfo.environment["BUDDY_DEBUG_SETTINGS"].flatMap { ["general", "carpetas", "conexiones", "uso", "agentes", "mensajitos", "finanzas"].contains($0) ? $0 : nil } ?? "general"
+    @State private var tab = ProcessInfo.processInfo.environment["BUDDY_DEBUG_SETTINGS"].flatMap { ["general", "carpetas", "conexiones", "uso", "agentes"].contains($0) ? $0 : nil } ?? "general"
 
     var body: some View {
         if let core = AppServices.core {
@@ -46,11 +46,8 @@ struct SettingsView: View {
                     .tabItem { Label("Uso", systemImage: "chart.bar") }.tag("uso")
                 AgentSettings(core: core)
                     .tabItem { Label("Agentes", systemImage: "person.2") }.tag("agentes")
-                BriefingSettings(core: core)
-                    .tabItem { Label("Mensajitos", systemImage: "newspaper") }.tag("mensajitos")
-                NikoSettings(core: core).tabItem { Label("Finanzas", systemImage: "banknote") }.tag("finanzas")
             }
-            .frame(width: 860, height: 520)
+            .frame(width: 680, height: 460)
         } else {
             Text("Buddy aún no ha arrancado.").padding(40)
         }
@@ -102,6 +99,7 @@ private struct GeneralSettings: View {
                            detail: "Siempre con tu clic: cada comando sale en el notch con Permitir o Rechazar.")
             }
             AlwaysRulesSection(core: core)
+            BriefingSettings(core: core)
         }
         .formStyle(.grouped)
     }
@@ -500,9 +498,9 @@ private struct BriefingSettings: View {
     @State private var asked = false
 
     var body: some View {
-        Form {
+        Group {
             Section {
-                CoreToggle(core: core, key: "briefing.enabled", title: "Mensajitos del día",
+                CoreToggle(core: core, key: "briefing.enabled", title: "Novedades del día",
                            detail: "A las 8, 16 y 19 h Buddy busca lo nuevo con el modelo más barato (3 búsquedas como mucho). Si no hay nada nuevo, no dice nada. Al empezar otro día se borran las noticias anteriores de todos los paneles.")
             }
             Section("Qué buscar") {
@@ -546,7 +544,6 @@ private struct BriefingSettings: View {
                 }
             }
         }
-        .formStyle(.grouped)
         .onAppear {
             topics = core.briefingTopics()
             items = core.briefing()
@@ -574,65 +571,77 @@ private struct AgentSettings: View {
     @State private var agents: [Agent] = []
     @State private var catalog: [PermissionInfo] = []
     @State private var models: [ModelOption] = []
+    @State private var selectedAgent = "buddy"
 
     var body: some View {
-        Form {
-            ForEach(agents, id: \.id) { agent in
-                Section {
-                    if agent.id == "buddy" {
-                        LabeledContent("Modelo") {
-                            Text("El de «Modelo de Buddy» en General").foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Picker("Modelo", selection: Binding(get: { modelSelection(agent) }, set: { model in
-                            try? core.setAgentModel(agentId: agent.id, model: model)
-                            reload()
-                        })) {
-                            Text("Automático (el router decide)").tag("auto")
-                            Divider()
-                            ForEach(models, id: \.id) { Text($0.name).tag($0.id) }
-                            if let own = agent.model, own != "auto", !models.contains(where: { $0.id == own }) {
+        VStack(spacing: 0) {
+            Picker("Agente", selection: $selectedAgent) {
+                ForEach(agents, id: \.id) { agent in Text(agent.name).tag(agent.id) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            Form {
+                ForEach(agents.filter { $0.id == selectedAgent }, id: \.id) { agent in
+                    Section {
+                        if agent.id == "buddy" {
+                            LabeledContent("Modelo") {
+                                Text("El de «Modelo de Buddy» en General").foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Picker("Modelo", selection: Binding(get: { modelSelection(agent) }, set: { model in
+                                try? core.setAgentModel(agentId: agent.id, model: model)
+                                reload()
+                            })) {
+                                Text("Automático (el router decide)").tag("auto")
                                 Divider()
-                                Text("El de su archivo (\(own))").tag("")
+                                ForEach(models, id: \.id) { Text($0.name).tag($0.id) }
+                                if let own = agent.model, own != "auto", !models.contains(where: { $0.id == own }) {
+                                    Divider()
+                                    Text("El de su archivo (\(own))").tag("")
+                                }
                             }
                         }
-                    }
-                    LabeledContent("Puede") {
-                        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                            ForEach(Array(stride(from: 0, to: catalog.count, by: 2)), id: \.self) { i in
-                                GridRow {
-                                    ForEach(catalog[i..<min(i + 2, catalog.count)], id: \.id) { permission in
-                                        Toggle(permission.name, isOn: Binding(
-                                            get: { agent.permissions.contains(permission.id) },
-                                            set: { on in toggle(agent, permission.id, on) }))
-                                        .toggleStyle(.checkbox)
-                                        .help(permission.detail)
+                        LabeledContent("Puede") {
+                            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                                ForEach(Array(stride(from: 0, to: catalog.count, by: 2)), id: \.self) { i in
+                                    GridRow {
+                                        ForEach(catalog[i..<min(i + 2, catalog.count)], id: \.id) { permission in
+                                            Toggle(permission.name, isOn: Binding(
+                                                get: { agent.permissions.contains(permission.id) },
+                                                set: { on in toggle(agent, permission.id, on) }))
+                                            .toggleStyle(.checkbox)
+                                            .help(permission.detail)
+                                        }
                                     }
                                 }
                             }
                         }
+                        AgentFaceEditor(core: core, agent: agent)
+                    } header: {
+                        HStack(spacing: 8) {
+                            AgentAvatarView(agentId: agent.id, size: 18)
+                            Text(agent.name)
+                            Text(agent.specialty).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
-                    AgentFaceEditor(core: core, agent: agent)
-                } header: {
-                    HStack(spacing: 8) {
-                        AgentAvatarView(agentId: agent.id, size: 18)
-                        Text(agent.name)
-                        Text(agent.specialty).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if selectedAgent == "niko" {
+                    NikoSettings(core: core, embedded: true)
+                }
+                Section {
+                    HStack {
+                        Text("Cada agente es un archivo agent.md que puedes editar. Ejecutar comandos siempre pide tu clic.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Abrir carpeta de agentes") {
+                            NSWorkspace.shared.open(URL(fileURLWithPath: core.dataDir()).appendingPathComponent("agents"))
+                        }
                     }
                 }
             }
-            Section {
-                HStack {
-                    Text("Cada agente es un archivo agent.md que puedes editar. Ejecutar comandos siempre pide tu clic.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Abrir carpeta de agentes") {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: core.dataDir()).appendingPathComponent("agents"))
-                    }
-                }
-            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .onAppear(perform: reload)
     }
 

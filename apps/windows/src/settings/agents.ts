@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { h } from "../chat/dom";
 import { agentFace } from "../chat/avatar";
+import { renderNiko } from "./niko";
 import { faceEditor } from "./face-editor";
 import { SETTINGS_ICONS } from "./icons";
 import { button, emptyRow, errorText, header, icon, providerMark, row, section } from "./ui";
@@ -25,7 +26,11 @@ function title(agent: Agent): HTMLElement {
       h("div", { class: "row-detail", text: agent.specialty })));
 }
 
-export async function renderAgents(view: HTMLElement): Promise<void> {
+export async function renderAgents(view: HTMLElement): Promise<(e: { type: string }) => void> {
+  let selected = "buddy";
+  let revision = 0;
+  let onNikoEvent: ((e: { type: string }) => void) | undefined;
+  const tabs = h("div", { class: "segmented agent-tabs", role: "tablist", "aria-label": "Agentes" });
   const note = h("p", { class: "muted small", role: "status" });
   const list = h("div", { class: "agent-list" });
   const open = button("Abrir carpeta de agentes", () => {
@@ -33,6 +38,7 @@ export async function renderAgents(view: HTMLElement): Promise<void> {
   });
   view.append(
     header("Agentes"),
+    tabs,
     list,
     h("div", { class: "footer-line" }, h("span", { class: "muted small", text: "Cada agente es un archivo agent.md que puedes editar. Ejecutar comandos siempre pide tu clic." }), open),
     note,
@@ -45,7 +51,22 @@ export async function renderAgents(view: HTMLElement): Promise<void> {
       invoke<{ models: ModelOption[] }>("router_config").catch(() => ({ models: [] as ModelOption[] })),
     ]);
     if (!agents.length) { list.replaceChildren(section(null, emptyRow("Sin agentes")).el); return; }
-    list.replaceChildren(...agents.map((agent) => {
+    if (!agents.some((a) => a.id === selected)) selected = agents[0]!.id;
+    const version = ++revision;
+    onNikoEvent = undefined;
+    tabs.replaceChildren(...agents.map((a) => {
+      const tab = h("button", { type: "button", role: "tab", "aria-selected": String(a.id === selected), text: a.name });
+      tab.addEventListener("click", () => { selected = a.id; void draw(); });
+      return tab;
+    }));
+    tabs.onkeydown = (event) => {
+      const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      selected = agents[(agents.findIndex((a) => a.id === selected) + step + agents.length) % agents.length]!.id;
+      void draw().then(() => tabs.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus());
+    };
+    list.replaceChildren(...agents.filter((a) => a.id === selected).map((agent) => {
       const fail = (e: unknown) => { note.textContent = `No se pudo: ${errorText(e)}`; };
       let modelControl: Node;
       if (agent.id === "buddy") {
@@ -72,7 +93,14 @@ export async function renderAgents(view: HTMLElement): Promise<void> {
       face.classList.add("face-row");
       return section(null, head, row("Modelo", null, modelControl), row("Puede", null, checks), face).el;
     }));
+    if (selected === "niko") {
+      const finance = h("div", { class: "agent-finance" });
+      list.append(finance);
+      const handler = await renderNiko(finance);
+      if (version === revision) onNikoEvent = handler;
+    }
   }
 
   await draw();
+  return (event) => onNikoEvent?.(event);
 }

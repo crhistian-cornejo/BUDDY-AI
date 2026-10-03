@@ -1,5 +1,5 @@
-// Buddy's Settings on Windows: six tabs with the same content and words as the Mac's SettingsView.swift
-// (General, Carpetas, Conexiones, Uso, Agentes, Mensajitos). Every value comes from the core through a command.
+// Settings share the Mac layout: General, Carpetas, Conexiones, Uso and Agentes.
+// Novedades live in General; each agent has a tab, with Finanzas inside Niko.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { applyTokens } from "../tokens";
@@ -9,7 +9,6 @@ import { renderAgents } from "./agents";
 import { usageCalendar, type TokenDay } from "./usage-calendar";
 import { renderTelegramAccount } from "./telegram-account";
 import { renderConnectors } from "./connectors";
-import { renderNiko } from "./niko";
 import { SETTINGS_ICONS } from "./icons";
 import { button, emptyRow, errorText, header, icon, iconButton, k, providerMark, row, section, settingRow } from "./ui";
 
@@ -37,9 +36,7 @@ const TABS: Tab[] = [
   { id: "folders", label: "Carpetas", icon: TABLER.folder, render: renderFolders },
   { id: "connections", label: "Conexiones", icon: SETTINGS_ICONS.plugConnected, render: renderConnections },
   { id: "usage", label: "Uso", icon: SETTINGS_ICONS.chartBar, render: renderUsage },
-  { id: "agents", label: "Agentes", icon: SETTINGS_ICONS.users, render: renderAgents },
-  { id: "briefing", label: "Mensajitos", icon: SETTINGS_ICONS.news, render: renderBriefing },
-  { id: "finanzas", label: "Finanzas", icon: SETTINGS_ICONS.coin, render: async (view) => { const on = await renderNiko(view); if (current === "finanzas") onCoreEvent = on; } },
+  { id: "agents", label: "Agentes", icon: SETTINGS_ICONS.users, render: async (view) => { const on = await renderAgents(view); if (current === "agents") onCoreEvent = on; } },
 ];
 
 const nav = document.getElementById("tabs")!;
@@ -93,6 +90,7 @@ function renderGeneral(view: HTMLElement) {
       settingRow("commands.enabled", "Permitir que ejecuten comandos", "Siempre con tu clic: cada comando sale en la barra con Permitir o Rechazar.")).el,
     renderAlwaysRules(),
   );
+  void renderBriefing(view);
 }
 
 interface AlwaysRule { agent: string; prefix: string; addedAt: number }
@@ -496,8 +494,7 @@ async function renderBriefing(view: HTMLElement) {
   }
 
   view.append(
-    header("Mensajitos"),
-    section(null, settingRow("briefing.enabled", "Mensajitos del día",
+    section("Novedades del día", settingRow("briefing.enabled", "Activar novedades",
       "A las 8, 16 y 19 h Buddy busca lo nuevo con el modelo más barato (3 búsquedas como mucho). Si no hay nada nuevo, no dice nada. Al empezar otro día se borran las noticias anteriores de todos los paneles.")).el,
     section("Qué buscar",
       h("div", { class: "field" }, topics,
