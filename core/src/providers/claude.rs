@@ -322,6 +322,7 @@ fn spawn_live(exe: &std::path::Path, request: &TurnRequest) -> Result<Live, Stri
     let _ = std::fs::create_dir_all(&request.workspace);
     let mut cmd = process::command(exe);
     cmd.args(Claude::arguments(request)).args(["--input-format", "stream-json"]).current_dir(&request.workspace);
+    cmd.env(super::OWN_RUN_ENV, "1");
     if let Some(gate) = &request.gate {
         cmd.env("BUDDY_GATE_TOKEN", &gate.token).env("BUDDY_DATA_DIR", &gate.data_dir);
     }

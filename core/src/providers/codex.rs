@@ -237,6 +237,7 @@ impl Session {
     fn spawn(exe: &std::path::Path, cwd: &std::path::Path) -> Result<Self, String> {
         let _ = std::fs::create_dir_all(cwd);
         let mut cmd = process::command(exe);
+        cmd.env(super::OWN_RUN_ENV, "1");
         cmd.arg("app-server").current_dir(cwd);
         let mut child = cmd.spawn().map_err(|e| format!("No se pudo iniciar Codex: {e}"))?;
         let stdin = child.stdin.take().ok_or("sin stdin")?;

@@ -95,9 +95,8 @@ private struct GeneralSettings: View {
                     }
                 }
             }
+            ModelSettings(core: core)
             Section("Agentes") {
-                CoreToggle(core: core, key: "router.cheap", title: "Ahorrar tokens",
-                           detail: "Los saludos y la charla corta van al modelo más ligero (Haiku).")
                 CoreToggle(core: core, key: "commands.enabled", title: "Permitir que ejecuten comandos",
                            detail: "Siempre con tu clic: cada comando sale en el notch con Permitir o Rechazar.")
             }
@@ -113,6 +112,77 @@ private struct GeneralSettings: View {
         } catch {
             loginError = "No se pudo cambiar: \(error.localizedDescription)"
         }
+    }
+}
+
+/// Which model answers Buddy: one fixed, or the router choosing by what is asked (rules, no tokens spent).
+private struct ModelSettings: View {
+    let core: BuddyCore
+    @State private var config: RouterConfig?
+    @State private var sample = ""
+
+    private static let efforts = [("low", "Bajo"), ("medium", "Medio"), ("high", "Alto")]
+    private static let details: [Tier: String] = [
+        .light: "Saludos y charla corta.",
+        .normal: "La mayoría de preguntas.",
+        .deep: "Análisis, comparaciones, planes, mensajes largos.",
+        .code: "Código, errores y archivos de programación.",
+    ]
+
+    var body: some View {
+        Section {
+            if let config {
+                Picker("Modelo", selection: Binding(get: { config.mode }, set: { mode in
+                    try? core.setRouterMode(mode: mode)
+                    reload()
+                })) {
+                    Text("Automático (según lo que pidas)").tag("auto")
+                    Divider()
+                    ForEach(config.models, id: \.id) { Text($0.name).tag($0.id) }
+                }
+                if config.mode == "auto" {
+                    ForEach(config.tiers, id: \.label) { choice in
+                        LabeledContent {
+                            HStack(spacing: 6) {
+                                Picker("Modelo", selection: Binding(get: { choice.model }, set: { save(choice, model: $0) })) {
+                                    ForEach(config.models, id: \.id) { Text($0.name).tag($0.id) }
+                                }
+                                .labelsHidden()
+                                .frame(width: 130)
+                                Picker("Esfuerzo", selection: Binding(get: { choice.effort }, set: { save(choice, effort: $0) })) {
+                                    ForEach(Self.efforts, id: \.0) { Text($0.1).tag($0.0) }
+                                }
+                                .labelsHidden()
+                                .frame(width: 84)
+                                .help("Cuánto piensa el modelo antes de responder")
+                            }
+                        } label: {
+                            Text(choice.label)
+                            Text(Self.details[choice.tier] ?? "")
+                        }
+                    }
+                }
+                TextField("Probar", text: $sample, prompt: Text("Escribe un pedido para ver qué modelo usaría"))
+                if !sample.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text(core.routerPreview(text: sample))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Modelo de Buddy")
+        } footer: {
+            Text("En un mensaje puedes elegir tú: «con opus», «usa gpt», «con sonnet». Los especialistas como PARLEY usan su propio modelo.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onAppear(perform: reload)
+    }
+
+    private func reload() { config = core.routerConfig() }
+
+    private func save(_ choice: TierChoice, model: String? = nil, effort: String? = nil) {
+        try? core.setRouterTier(tier: choice.tier, model: model ?? choice.model, effort: effort ?? choice.effort)
+        reload()
     }
 }
 

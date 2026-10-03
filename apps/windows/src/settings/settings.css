@@ -360,6 +360,26 @@ textarea {
   -webkit-user-select: text;
 }
 
+select.select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--color-stroke);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+select.select:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.mono {
+  font-variant-numeric: tabular-nums;
+}
+
 input.text {
   display: block;
   width: 100%;

@@ -1,25 +1,276 @@
-//! Router: the cheapest model that does the job. Small talk (greetings, thanks, «ok») goes to the provider's light
-//! model; everything else uses the agent's own. Specialists are never downgraded, and attachments always get the
-//! agent's model. A setting turns it off. (Switching provider when a plan runs out lives in `chat`.)
+//! Router: which model answers Buddy's turn. Rules, not a model: they cost no tokens, take microseconds, run on any
+//! machine and say *why* (the reason is shown). Four tiers, each mapped in Settings to a model and an effort:
+//!
+//! - **Ligero**: small talk (greetings, thanks, «ok») → the cheapest model.
+//! - **Normal**: everything else.
+//! - **A fondo**: analysis, comparisons, plans, long or many-question messages, several documents.
+//! - **Código**: code blocks, errors and stack traces, languages and tools, code files attached.
+//!
+//! The user can also name a model in the message («con opus», «usa gpt») or fix one model in Settings. Specialists
+//! keep their own model. (Switching provider when a plan runs out lives in `chat`.)
+
+use std::path::PathBuf;
 
 use crate::providers::ProviderId;
-use crate::store::fold;
+use crate::store::{Store, fold};
 
-/// Setting key; "false" turns the router off.
+/// The old on/off switch of the small-talk router (replaced by the tiers; kept so old settings stay readable).
 pub const SETTING: &str = "router.cheap";
+/// "auto" or a model id from `MODELS` (that model always).
+pub const MODE_KEY: &str = "router.mode";
+const TIER_KEY: &str = "router.tier.";
 
-/// Model and effort to use instead of the agent's, when the message is light.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Light {
-    pub model: Option<String>,
-    pub effort: Option<String>,
+/// The models Buddy can route to: (id, name shown, provider, model name for the CLI).
+pub const MODELS: [(&str, &str, ProviderId, &str); 5] = [
+    ("claude:haiku", "Haiku 4.5", ProviderId::Claude, "haiku"),
+    ("claude:sonnet", "Sonnet 5.5", ProviderId::Claude, "sonnet"),
+    ("claude:opus", "Opus 5.5", ProviderId::Claude, "opus"),
+    ("codex:gpt-6.1-sol", "GPT-6.1 Sol", ProviderId::Codex, "gpt-6.1-sol"),
+    ("codex:gpt-6-luna", "GPT-6 Luna", ProviderId::Codex, "gpt-6-luna"),
+];
+pub const EFFORTS: [&str; 3] = ["low", "medium", "high"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum Tier {
+    Light,
+    Normal,
+    Deep,
+    Code,
 }
 
-pub fn light_for(provider: ProviderId) -> Light {
-    match provider {
-        ProviderId::Claude => Light { model: Some("haiku".into()), effort: None },
-        _ => Light { model: None, effort: Some("low".into()) },
+impl Tier {
+    pub const ALL: [Tier; 4] = [Tier::Light, Tier::Normal, Tier::Deep, Tier::Code];
+
+    pub fn parse(key: &str) -> Option<Tier> {
+        Tier::ALL.into_iter().find(|t| t.key() == key)
     }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Tier::Light => "light",
+            Tier::Normal => "normal",
+            Tier::Deep => "deep",
+            Tier::Code => "code",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tier::Light => "Ligero",
+            Tier::Normal => "Normal",
+            Tier::Deep => "A fondo",
+            Tier::Code => "Código",
+        }
+    }
+
+    fn default_choice(self) -> (&'static str, &'static str) {
+        match self {
+            Tier::Light => ("claude:haiku", "low"),
+            Tier::Normal => ("claude:sonnet", "medium"),
+            Tier::Deep => ("claude:opus", "high"),
+            Tier::Code => ("codex:gpt-6.1-sol", "medium"),
+        }
+    }
+}
+
+/// A tier's model in Settings.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct TierChoice {
+    pub tier: Tier,
+    pub label: String,
+    pub model: String,
+    pub effort: String,
+}
+
+/// A model the user can pick.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct ModelOption {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+}
+
+/// Everything Settings shows: the mode ("auto" or a model id) and each tier's choice.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct RouterConfig {
+    pub mode: String,
+    pub tiers: Vec<TierChoice>,
+    pub models: Vec<ModelOption>,
+}
+
+/// What a turn will use, and why (shown to the user).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Route {
+    pub tier: Tier,
+    pub provider: ProviderId,
+    pub model: String,
+    pub effort: String,
+    pub model_name: String,
+    pub reason: String,
+}
+
+fn model(id: &str) -> Option<(&'static str, &'static str, ProviderId, &'static str)> {
+    MODELS.iter().copied().find(|m| m.0 == id)
+}
+
+pub fn options() -> Vec<ModelOption> {
+    MODELS.iter().map(|m| ModelOption { id: m.0.into(), name: m.1.into(), provider: m.2.as_str().into() }).collect()
+}
+
+/// The saved mode and tiers (defaults for anything missing or unknown).
+pub fn config(store: &Store) -> RouterConfig {
+    let mode = store.setting(MODE_KEY).ok().flatten().filter(|m| m == "auto" || model(m).is_some()).unwrap_or_else(|| "auto".into());
+    let tiers = Tier::ALL
+        .iter()
+        .map(|&tier| {
+            let (model_id, effort) = tier_choice(store, tier);
+            TierChoice { tier, label: tier.label().into(), model: model_id, effort }
+        })
+        .collect();
+    RouterConfig { mode, tiers, models: options() }
+}
+
+fn tier_choice(store: &Store, tier: Tier) -> (String, String) {
+    let saved = store.setting(&format!("{TIER_KEY}{}", tier.key())).ok().flatten().unwrap_or_default();
+    let (m, e) = saved.split_once('|').unwrap_or(("", ""));
+    let (dm, de) = tier.default_choice();
+    let m = if model(m).is_some() { m } else { dm };
+    let e = if EFFORTS.contains(&e) { e } else { de };
+    (m.to_string(), e.to_string())
+}
+
+pub fn set_mode(store: &Store, mode: &str) -> Result<(), String> {
+    if mode != "auto" && model(mode).is_none() {
+        return Err(format!("Modelo desconocido: {mode}"));
+    }
+    store.set_setting(MODE_KEY, mode).map_err(|e| e.to_string())
+}
+
+pub fn set_tier(store: &Store, tier: Tier, model_id: &str, effort: &str) -> Result<(), String> {
+    if model(model_id).is_none() || !EFFORTS.contains(&effort) {
+        return Err("Modelo o esfuerzo desconocido.".into());
+    }
+    store.set_setting(&format!("{TIER_KEY}{}", tier.key()), &format!("{model_id}|{effort}")).map_err(|e| e.to_string())
+}
+
+/// The route for Buddy's turn: a model named in the message first, then a fixed model, then the tier's.
+pub fn route(store: &Store, text: &str, files: &[PathBuf]) -> Route {
+    let (tier, reason) = classify(text, files);
+    let build = |id: &str, effort: &str, tier: Tier, reason: String| {
+        let (_, name, provider, cli) = model(id).unwrap_or(MODELS[1]);
+        Route { tier, provider, model: cli.into(), effort: effort.into(), model_name: name.into(), reason }
+    };
+    let (tier_model, tier_effort) = tier_choice(store, tier);
+    if let Some(id) = named_model(text) {
+        let effort = if tier == Tier::Light { "medium".to_string() } else { tier_effort };
+        return build(id, &effort, tier, "lo pediste".into());
+    }
+    let mode = config(store).mode;
+    if mode != "auto" {
+        return build(&mode, &tier_effort, tier, "modelo fijo en Ajustes".into());
+    }
+    // Code that also asks for depth gets more thinking, on the code model.
+    let effort = if tier == Tier::Code && deep_reason(&fold(text), files).is_some() { "high".to_string() } else { tier_effort };
+    build(&tier_model, &effort, tier, reason.into())
+}
+
+/// The tier and a short reason. Pure: same text, same answer.
+pub fn classify(text: &str, files: &[PathBuf]) -> (Tier, &'static str) {
+    let t = fold(text);
+    if files.is_empty() && is_small_talk(text) {
+        return (Tier::Light, "charla corta");
+    }
+    if let Some(reason) = code_reason(text, &t, files) {
+        return (Tier::Code, reason);
+    }
+    if let Some(reason) = deep_reason(&t, files) {
+        return (Tier::Deep, reason);
+    }
+    (Tier::Normal, "pregunta normal")
+}
+
+/// «con opus», «usa gpt», «con sonnet»… anywhere in the message.
+fn named_model(text: &str) -> Option<&'static str> {
+    let t = fold(text);
+    let asks = |word: &str| ["con ", "usa ", "usando ", "pasalo a ", "pregunta a ", "with "].iter().any(|p| t.contains(&format!("{p}{word}")));
+    if asks("opus") {
+        Some("claude:opus")
+    } else if asks("sonnet") {
+        Some("claude:sonnet")
+    } else if asks("haiku") {
+        Some("claude:haiku")
+    } else if asks("luna") {
+        Some("codex:gpt-6-luna")
+    } else if asks("gpt") || asks("codex") || asks("sol") || asks("chatgpt") {
+        Some("codex:gpt-6.1-sol")
+    } else {
+        None
+    }
+}
+
+const CODE_EXTENSIONS: [&str; 22] = [
+    "rs", "swift", "py", "ts", "tsx", "js", "jsx", "java", "kt", "go", "c", "h", "cpp", "cs", "rb", "php", "sql", "sh",
+    "toml", "yml", "yaml", "json",
+];
+
+fn code_reason(raw: &str, t: &str, files: &[PathBuf]) -> Option<&'static str> {
+    if raw.contains("```") {
+        return Some("trae código");
+    }
+    if files.iter().any(|f| f.extension().and_then(|e| e.to_str()).is_some_and(|e| CODE_EXTENSIONS.contains(&e.to_lowercase().as_str()))) {
+        return Some("adjunta código");
+    }
+    let code_lines = raw
+        .lines()
+        .filter(|l| {
+            let l = l.trim();
+            l.ends_with(';') || l.ends_with('{') || l == "}" || l.starts_with("fn ") || l.starts_with("def ") || l.starts_with("func ")
+                || l.starts_with("import ") || l.starts_with("let ") || l.starts_with("const ") || l.contains("=>")
+        })
+        .count();
+    if code_lines >= 3 {
+        return Some("trae código");
+    }
+    if ["traceback", "stack trace", "panicked at", "exception", "error[e", "segmentation fault", "undefined is not"]
+        .iter()
+        .any(|w| t.contains(w))
+    {
+        return Some("un error de programa");
+    }
+    const WORDS: [&str; 32] = [
+        "codigo", "programa", "funcion", "script", "bug", "depura", "debug", "compila", "refactor", "regex", "sql",
+        "endpoint", "api rest", "rust", "swift", "swiftui", "python", "typescript", "javascript", "kotlin", "react",
+        "tauri", "docker", "git ", "github", "pull request", "test unitario", "unit test", "algoritmo", "clase ", "html",
+        "css",
+    ];
+    WORDS.iter().any(|w| t.contains(w)).then_some("es de programación")
+}
+
+fn deep_reason(t: &str, files: &[PathBuf]) -> Option<&'static str> {
+    const CUES: [&str; 24] = [
+        "a fondo", "en detalle", "detallad", "analiza", "analisis", "investiga", "compara", "comparacion", "estrategia",
+        "arquitectura", "disena", "plan de", "planifica", "paso a paso", "razona", "piensa bien", "demuestra", "evalua",
+        "pros y contras", "ventajas y desventajas", "informe", "ensayo", "profund", "think hard",
+    ];
+    if CUES.iter().any(|c| t.contains(c)) {
+        return Some("pide análisis");
+    }
+    if t.chars().count() > 700 {
+        return Some("mensaje largo");
+    }
+    if t.matches('?').count() >= 3 {
+        return Some("varias preguntas");
+    }
+    let documents = files.iter().filter(|f| !crate::images::is_image(f)).count();
+    (documents >= 2).then_some("varios documentos")
 }
 
 /// True for small talk: short, no question to research, made of greetings or acknowledgements.
@@ -55,6 +306,11 @@ pub fn is_small_talk(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        (Store::open(&dir.path().join("t.sqlite")).unwrap(), dir)
+    }
+
     #[test]
     fn small_talk_is_recognised() {
         for t in ["hola", "Hola mi broooo", "¡Gracias!", "ok", "buenas tardes buddy", "jajaja", "¿Qué tal?", "chao"] {
@@ -63,23 +319,62 @@ mod tests {
     }
 
     #[test]
-    fn real_requests_keep_the_good_model() {
-        for t in [
-            "hola, ¿me explicas qué es SwiftUI?",
-            "dame 3 tips de Rust",
-            "¿quién gana el clásico?",
-            "ok ahora hazlo en Python",
-            "gracias, y el pronóstico para mañana",
-            "",
-            "hola\nrevisa esto",
-        ] {
+    fn real_requests_are_not_small_talk() {
+        for t in ["hola, ¿me explicas qué es SwiftUI?", "dame 3 tips de Rust", "¿quién gana el clásico?", "ok ahora hazlo en Python", "", "hola\nrevisa esto"] {
             assert!(!is_small_talk(t), "{t:?}");
         }
     }
 
     #[test]
-    fn light_models_per_provider() {
-        assert_eq!(light_for(ProviderId::Claude).model.as_deref(), Some("haiku"));
-        assert_eq!(light_for(ProviderId::Codex).effort.as_deref(), Some("low"));
+    fn messages_land_in_their_tier() {
+        let none: &[PathBuf] = &[];
+        let cases = [
+            ("gracias!", Tier::Light),
+            ("¿qué tiempo hace en Lima?", Tier::Normal),
+            ("pon algo de Radiohead", Tier::Normal),
+            ("Analiza los pros y contras de mudarme a Madrid", Tier::Deep),
+            ("Compara el iPhone 18 con el Pixel 11", Tier::Deep),
+            ("¿por qué falla esta función en Rust?", Tier::Code),
+            ("```swift\nlet x = 1\n```", Tier::Code),
+            ("thread 'main' panicked at src/main.rs:3", Tier::Code),
+        ];
+        for (text, tier) in cases {
+            assert_eq!(classify(text, none).0, tier, "{text:?}");
+        }
+        assert_eq!(classify("revisa esto", &[PathBuf::from("/a/main.rs")]).0, Tier::Code);
+        assert_eq!(classify("resúmelos", &[PathBuf::from("/a/x.pdf"), PathBuf::from("/a/y.docx")]).0, Tier::Deep);
+        assert_eq!(classify("hola", &[PathBuf::from("/a/foto.png")]).0, Tier::Normal, "an attachment is never small talk");
+    }
+
+    #[test]
+    fn defaults_name_wins_and_fixed_mode() {
+        let (s, _d) = store();
+        let none: &[PathBuf] = &[];
+        let r = route(&s, "hola", none);
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Claude, "haiku", "low"));
+        let r = route(&s, "analiza a fondo esta estrategia", none);
+        assert_eq!((r.model.as_str(), r.effort.as_str(), r.model_name.as_str()), ("opus", "high", "Opus 5.5"));
+        let r = route(&s, "arregla este bug de typescript", none);
+        assert_eq!((r.provider, r.model.as_str()), (ProviderId::Codex, "gpt-6.1-sol"));
+        let r = route(&s, "explícame la fotosíntesis con opus", none);
+        assert_eq!((r.model.as_str(), r.reason.as_str()), ("opus", "lo pediste"));
+        set_mode(&s, "codex:gpt-6.1-sol").unwrap();
+        let r = route(&s, "hola", none);
+        assert_eq!((r.provider, r.reason.as_str()), (ProviderId::Codex, "modelo fijo en Ajustes"));
+        assert!(set_mode(&s, "claude:mythos").is_err());
+    }
+
+    #[test]
+    fn tiers_are_saved_and_bad_values_fall_back() {
+        let (s, _d) = store();
+        set_tier(&s, Tier::Deep, "codex:gpt-6.1-sol", "high").unwrap();
+        assert!(set_tier(&s, Tier::Deep, "claude:opus", "ultra").is_err());
+        let c = config(&s);
+        assert_eq!(c.mode, "auto");
+        let deep = c.tiers.iter().find(|t| t.tier == Tier::Deep).unwrap();
+        assert_eq!((deep.model.as_str(), deep.effort.as_str()), ("codex:gpt-6.1-sol", "high"));
+        s.set_setting("router.tier.code", "basura").unwrap();
+        let code = config(&s).tiers.into_iter().find(|t| t.tier == Tier::Code).unwrap();
+        assert_eq!(code.model, "codex:gpt-6.1-sol");
     }
 }

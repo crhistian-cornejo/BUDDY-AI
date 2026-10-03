@@ -54,6 +54,13 @@
           { id: "investigador", name: "Investigador", specialty: "Busca en la web y resume con fuentes.", provider: "claude", model: null },
           { id: "programador", name: "Programador", specialty: "Escribe y revisa código en tus carpetas.", provider: "codex", model: null },
         ],
+        router_config: () => ({ mode: "auto", models: [
+            { id: "claude:haiku", name: "Haiku 4.5", provider: "claude" }, { id: "claude:sonnet", name: "Sonnet 5.5", provider: "claude" },
+            { id: "claude:opus", name: "Opus 5.5", provider: "claude" }, { id: "codex:gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "codex" },
+            { id: "codex:gpt-6-luna", name: "GPT-6 Luna", provider: "codex" }],
+          tiers: [{ tier: "light", label: "Ligero", model: "claude:haiku", effort: "low" }, { tier: "normal", label: "Normal", model: "claude:sonnet", effort: "medium" },
+            { tier: "deep", label: "A fondo", model: "claude:opus", effort: "high" }, { tier: "code", label: "Código", model: "codex:gpt-6.1-sol", effort: "medium" }] }),
+        router_preview: ({ text }) => `A fondo → Opus 5.5 (alto) · pide análisis`,
         briefing_topics: () => topics,
         set_briefing_topics: ({ topics: t }) => (topics = t.trim() || "noticias de tecnología; Apple; fútbol peruano; el tiempo en Lima"),
         briefing: () => empty ? [] : [

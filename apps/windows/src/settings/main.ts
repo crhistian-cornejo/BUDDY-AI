@@ -83,8 +83,8 @@ function renderGeneral(view: HTMLElement) {
     header("General"),
     section("Buddy",
       settingRow("pet.wander", "Pasear por la pantalla", "Solo cuando no usas el teclado ni el ratón, y nunca con el chat abierto.")).el,
+    renderModels(),
     section("Agentes",
-      settingRow("router.cheap", "Ahorrar tokens", "Los saludos y la charla corta van al modelo más ligero (Haiku)."),
       settingRow("commands.enabled", "Permitir que ejecuten comandos", "Siempre con tu clic: cada comando sale en la barra con Permitir o Rechazar.")).el,
   );
 }
@@ -92,6 +92,59 @@ function renderGeneral(view: HTMLElement) {
 // MARK: Carpetas
 
 /** The path with its last folder always visible; the start is what gets cut when it is long. */
+interface ModelOption { id: string; name: string; provider: string }
+interface TierChoice { tier: string; label: string; model: string; effort: string }
+interface RouterConfig { mode: string; tiers: TierChoice[]; models: ModelOption[] }
+
+const EFFORTS: [string, string][] = [["low", "Bajo"], ["medium", "Medio"], ["high", "Alto"]];
+const TIER_DETAILS: Record<string, string> = {
+  light: "Saludos y charla corta.",
+  normal: "La mayoría de preguntas.",
+  deep: "Análisis, comparaciones, planes, mensajes largos.",
+  code: "Código, errores y archivos de programación.",
+};
+
+/** A native <select> with (value, label) options. */
+function select(options: [string, string][], value: string, label: string, onChange: (v: string) => void): HTMLSelectElement {
+  const el = h("select", { class: "select", "aria-label": label },
+    ...options.map(([v, text]) => h("option", { value: v, text, selected: v === value })));
+  el.addEventListener("change", () => onChange(el.value));
+  return el;
+}
+
+/** Which model answers Buddy: one fixed, or the router choosing by what is asked (rules, no tokens spent). */
+function renderModels(): HTMLElement {
+  const { el, card } = section("Modelo de Buddy");
+  el.append(h("p", { class: "muted small", text: "En un mensaje puedes elegir tú: «con opus», «usa gpt», «con sonnet». Los especialistas como PARLEY usan su propio modelo." }));
+  const preview = h("div", { class: "row-detail mono", role: "status" });
+  const sample = h("input", { class: "text", type: "text", placeholder: "Escribe un pedido para ver qué modelo usaría", "aria-label": "Probar el router" });
+  sample.addEventListener("input", async () => {
+    preview.textContent = sample.value.trim() ? await invoke<string>("router_preview", { text: sample.value }).catch(() => "") : "";
+  });
+
+  async function draw() {
+    const config = await invoke<RouterConfig>("router_config").catch(() => null);
+    if (!config) { card.replaceChildren(emptyRow("No disponible")); return; }
+    const models: [string, string][] = config.models.map((m) => [m.id, m.name]);
+    const mode = select([["auto", "Automático (según lo que pidas)"], ...models], config.mode, "Modelo",
+      (v) => void invoke("set_router_mode", { mode: v }).then(draw));
+    const rows = [row("Modelo", null, mode)];
+    if (config.mode === "auto") {
+      for (const t of config.tiers) {
+        const save = (model: string, effort: string) => void invoke("set_router_tier", { tier: t.tier, model, effort }).then(draw);
+        rows.push(row(t.label, TIER_DETAILS[t.tier] ?? "",
+          select(models, t.model, `Modelo para ${t.label}`, (v) => save(v, t.effort)),
+          select(EFFORTS, t.effort, `Esfuerzo para ${t.label}`, (v) => save(t.model, v))));
+      }
+    }
+    rows.push(h("div", { class: "field" }, sample, preview));
+    card.replaceChildren(...rows);
+  }
+
+  void draw();
+  return el;
+}
+
 function pathLabel(path: string): HTMLElement {
   const cut = Math.max(path.lastIndexOf("\\", path.length - 2), path.lastIndexOf("/", path.length - 2)) + 1;
   return h("span", { class: "path", title: path }, h("span", { class: "head", text: path.slice(0, cut) }), h("span", { class: "tail", text: path.slice(cut) }));

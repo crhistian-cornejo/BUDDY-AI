@@ -312,6 +312,13 @@ impl SessionHub {
     }
 
     /// Records the session's new state; emits `SessionUpdate` only when something shown changed.
+    /// A hook from one of Buddy's own turns (its agents work in `<data>/agents/<id>/workspace`), not a session of
+    /// the user's: the notch must not show it.
+    fn is_own_run(&self, payload: &Value) -> bool {
+        let cwd = text(payload, "cwd");
+        !cwd.is_empty() && Path::new(cwd).starts_with(self.data_dir.join("agents"))
+    }
+
     fn update_session(&self, agent: &str, session_id: &str, project: &str, state: &str, place: &Place) {
         let now = unix_now();
         let key = (agent.to_string(), session_id.to_string());
@@ -363,16 +370,24 @@ impl SessionHub {
 
 impl server::Sink for SessionHub {
     fn event(&self, payload: Value) {
+        if self.is_own_run(&payload) {
+            log::line(format!("gancho de un turno de Buddy ignorado ({})", agent_of(&payload)));
+            return;
+        }
         let event = text(&payload, "hook_event_name");
         let agent = agent_of(&payload);
         // Never the payload itself: tool inputs may hold secrets.
-        log::line(format!("gancho {event} ({agent})"));
+        log::line(format!("gancho {event} ({agent}, {})", project_of(text(&payload, "cwd"))));
         if let Some(state) = state_for(event) {
             self.update_session(agent, text(&payload, "session_id"), &project_of(text(&payload, "cwd")), state, &Place::of(&payload));
         }
     }
 
     fn permission(&self, payload: Value, closed: &dyn Fn() -> bool) -> Option<&'static str> {
+        // Buddy's own turns never ask through the user's hooks (Codex runs them with approvals off).
+        if self.is_own_run(&payload) {
+            return None;
+        }
         let agent = agent_of(&payload);
         let session_id = text(&payload, "session_id").to_string();
         let project = project_of(text(&payload, "cwd"));
@@ -543,6 +558,17 @@ mod tests {
     use crate::sessions::server::Sink;
     use serde_json::json;
     use std::sync::mpsc::Receiver;
+
+    #[test]
+    fn hooks_from_buddys_own_turns_never_reach_the_notch() {
+        let (hub, rx, dir) = hub(Duration::from_secs(1));
+        let own = dir.path().join("agents/buddy/workspace");
+        Sink::event(&*hub, json!({ "hook_event_name": "UserPromptSubmit", "session_id": "b1", "_agent": "codex", "cwd": own }));
+        assert!(rx.try_recv().is_err(), "Buddy's own Codex turn is not a session");
+        assert!(Sink::permission(&*hub, json!({ "hook_event_name": "PermissionRequest", "session_id": "b1", "cwd": own }), &|| false).is_none());
+        Sink::event(&*hub, json!({ "hook_event_name": "UserPromptSubmit", "session_id": "u1", "_agent": "codex", "cwd": "/Users/u/proyecto" }));
+        assert!(matches!(rx.try_recv(), Ok(Event::SessionUpdate { .. })), "the user's own sessions still show");
+    }
 
     #[test]
     fn the_music_player_needs_the_secret_and_a_clean_spotify_link() {

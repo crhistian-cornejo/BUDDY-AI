@@ -114,6 +114,10 @@ impl Office {
     }
 }
 
+/// Set on every CLI process Buddy starts for its own chat: the relay stays quiet for them, so the user's own
+/// Claude Code / Codex hooks never turn Buddy's turns into notch notices.
+pub const OWN_RUN_ENV: &str = "BUDDY_OWN_RUN";
+
 impl TurnRequest {
     /// The attached files that are images (already shrunk by `images::prepare`). Every provider hands these over
     /// in its own way: Claude as `image` blocks, Codex as `localImage`, Gemini by path.

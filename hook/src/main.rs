@@ -83,6 +83,10 @@ fn main() {
     if args.first().map(String::as_str) == Some("--gate") {
         run_gate();
     }
+    // A hook of one of Buddy's own turns (Buddy started that Claude/Codex): not a session of the user's.
+    if std::env::var_os("BUDDY_OWN_RUN").is_some() {
+        std::process::exit(0);
+    }
     let Some((payload, event)) = read_event(&args) else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";

@@ -171,6 +171,8 @@ pub fn run() {
             chat_resize,
             send_message,
             queued_messages,
+            redirect_queued,
+            take_queued,
             remove_queued,
             resume_queue,
             cancel_chat,
@@ -218,6 +220,10 @@ pub fn run() {
             open_agents_folder,
             briefing_topics,
             spotify_connect,
+            router_config,
+            set_router_mode,
+            set_router_tier,
+            router_preview,
             spotify_disconnect,
             spotify_client_id,
             set_briefing_topics,
@@ -606,6 +612,16 @@ fn remove_queued(state: State<'_, AppCore>, chat_id: String, message_id: String)
 }
 
 #[tauri::command]
+fn redirect_queued(state: State<'_, AppCore>, chat_id: String, message_id: String) -> Result<(), String> {
+    state.core.redirect_queued(chat_id, message_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn take_queued(state: State<'_, AppCore>, chat_id: String, message_id: String) -> Result<buddy_core::QueuedMessage, String> {
+    state.core.take_queued(chat_id, message_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn resume_queue(state: State<'_, AppCore>, chat_id: String) -> Result<(), String> {
     state.core.resume_queue(chat_id).map_err(|e| e.to_string())
 }
@@ -927,7 +943,7 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
 }
 
 /// The on/off settings the Settings page may read and change; nothing else goes through here.
-const FLAGS: [&str; 4] = ["pet.wander", "router.cheap", "commands.enabled", "briefing.enabled"];
+const FLAGS: [&str; 3] = ["pet.wander", "commands.enabled", "briefing.enabled"];
 
 fn flag_key(key: &str) -> Result<String, String> {
     FLAGS.iter().find(|k| **k == key).map(|k| k.to_string()).ok_or_else(|| format!("ajuste desconocido: {key}"))
@@ -1013,6 +1029,27 @@ fn open_agents_folder(app: AppHandle) -> Result<(), String> {
     let dir = std::path::Path::new(&app.state::<AppCore>().core.data_dir()).join("agents");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn router_config(state: State<'_, AppCore>) -> buddy_core::RouterConfig {
+    state.core.router_config()
+}
+
+#[tauri::command]
+fn set_router_mode(state: State<'_, AppCore>, mode: String) -> Result<(), String> {
+    state.core.set_router_mode(mode).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_router_tier(state: State<'_, AppCore>, tier: String, model: String, effort: String) -> Result<(), String> {
+    let tier = buddy_core::Tier::parse(&tier).ok_or("nivel desconocido")?;
+    state.core.set_router_tier(tier, model, effort).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn router_preview(state: State<'_, AppCore>, text: String) -> String {
+    state.core.router_preview(text.chars().take(2000).collect())
 }
 
 /// Checks the pair with Spotify, keeps the Client ID in settings and the Client Secret in Credential Manager.

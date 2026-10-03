@@ -40,6 +40,7 @@ pub use briefing::BriefingItem;
 pub use media::NowPlayingInfo;
 pub use skills::Skill;
 pub use tools::{FocusStatus, Shortcut};
+pub use router::{ModelOption, RouterConfig, Tier, TierChoice};
 pub use usage::{ProviderUsage, UsageWindow};
 pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
 
@@ -198,6 +199,14 @@ impl BuddyCore {
         self.chat.remove_queued(&chat_id, &message_id);
     }
 
+    pub fn redirect_queued(&self, chat_id: String, message_id: String) -> Result<(), CoreError> {
+        self.chat.redirect_queued(&chat_id, &message_id)
+    }
+
+    pub fn take_queued(&self, chat_id: String, message_id: String) -> Result<QueuedMessage, CoreError> {
+        self.chat.take_queued(&chat_id, &message_id)
+    }
+
     pub fn resume_queue(&self, chat_id: String) -> Result<(), CoreError> {
         self.chat.resume_queue(&chat_id)
     }
@@ -319,6 +328,26 @@ impl BuddyCore {
         self.with_store(spotify::client_id).ok().flatten().unwrap_or_default()
     }
 
+    /// The router's Settings: mode ("auto" or a model id), each tier's model and effort, the models to pick from.
+    pub fn router_config(&self) -> router::RouterConfig {
+        router::config(&self.store.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// "auto" (by tiers) or one model id for every turn.
+    pub fn set_router_mode(&self, mode: String) -> Result<(), CoreError> {
+        self.with_store(|s| router::set_mode(s, &mode).map_err(CoreError::Hooks))
+    }
+
+    pub fn set_router_tier(&self, tier: router::Tier, model: String, effort: String) -> Result<(), CoreError> {
+        self.with_store(|s| router::set_tier(s, tier, &model, &effort).map_err(CoreError::Hooks))
+    }
+
+    /// What the router would do with `text` («A fondo → Opus 5.5 (high) · pide análisis»), to try it in Settings.
+    pub fn router_preview(&self, text: String) -> String {
+        let route = router::route(&self.store.lock().unwrap_or_else(|p| p.into_inner()), &text, &[]);
+        format!("{} → {} ({}) · {}", route.tier.label(), route.model_name, effort_label(&route.effort), route.reason)
+    }
+
     /// Buddy's skills (`<data>/skills/<name>/SKILL.md`), seeding the built-in ones.
     pub fn skills(&self) -> Vec<Skill> {
         skills::list(&self.data_dir)
@@ -418,6 +447,15 @@ impl BuddyCore {
 
 pub fn hello() -> String {
     format!("¡Hola! Soy Buddy (núcleo {}).", env!("CARGO_PKG_VERSION"))
+}
+
+/// Effort in the words Settings uses.
+pub fn effort_label(effort: &str) -> &'static str {
+    match effort {
+        "low" => "bajo",
+        "high" => "alto",
+        _ => "medio",
+    }
 }
 
 #[cfg(test)]
