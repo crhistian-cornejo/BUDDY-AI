@@ -18,6 +18,7 @@ struct ComposerView: View {
     @Bindable var chat: ChatController
     var onClose: () -> Void
     @FocusState private var focused: Bool
+    @State private var pasteMonitor = MonitorBox()
 
     private var empty: Bool { chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && chat.attachments.isEmpty }
 
@@ -38,8 +39,38 @@ struct ComposerView: View {
         .padding(.trailing, 8)
         .padding(.vertical, 8)
         .frame(width: ChatMetrics.composerWidth)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            installPasteMonitor()
+        }
+        .onDisappear { removePasteMonitor() }
         .onExitCommand(perform: onClose)
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in chat.attach([url]) }
+                }
+            }
+            return true
+        }
+    }
+
+    /// ⌘V with an image on the clipboard attaches it; with text, it pastes as always. (The text field alone
+    /// only pastes text.)
+    private func installPasteMonitor() {
+        removePasteMonitor()
+        pasteMonitor.value = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers == "v",
+                  focused else { return event }
+            return chat.attachFromPasteboard() ? nil : event
+        }
+    }
+
+    private func removePasteMonitor() {
+        if let monitor = pasteMonitor.value { NSEvent.removeMonitor(monitor) }
+        pasteMonitor.value = nil
     }
 
     private var field: some View {
@@ -95,6 +126,11 @@ struct ComposerView: View {
         chat.attach(panel.urls)
         focused = true
     }
+}
+
+/// Holds the paste monitor between view updates.
+final class MonitorBox {
+    var value: Any?
 }
 
 /// The chat above the composer once there is an answer: a header with the usual actions and the messages.
@@ -323,11 +359,25 @@ struct FileChip: View {
     let path: String
     let onRemove: (() -> Void)?
 
+    /// Images show themselves instead of the file icon.
+    private static func thumbnail(_ path: String) -> NSImage? {
+        guard ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"].contains((path as NSString).pathExtension.lowercased()) else { return nil }
+        return NSImage(contentsOfFile: path)
+    }
+
     var body: some View {
         HStack(spacing: 6) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: path))
-                .resizable()
-                .frame(width: 16, height: 16)
+            if let thumb = Self.thumbnail(path) {
+                Image(nsImage: thumb)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 24, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+                    .resizable()
+                    .frame(width: 16, height: 16)
+            }
             Text((path as NSString).lastPathComponent)
                 .font(.system(size: 12))
                 .lineLimit(1)

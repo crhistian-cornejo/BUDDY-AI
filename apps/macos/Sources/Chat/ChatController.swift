@@ -38,6 +38,31 @@ final class ChatController {
         for url in urls where !attachments.contains(url) { attachments.append(url) }
     }
 
+    /// Takes what ⌘V brought: image files, or a picture on the clipboard (a screenshot) saved as a PNG in a
+    /// temporary folder (the core copies it in, shrunk). Returns false when there is nothing to attach, so the
+    /// paste goes on as text.
+    @discardableResult
+    func attachFromPasteboard(_ pasteboard: NSPasteboard = .general) -> Bool {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            attach(urls)
+            return true
+        }
+        guard pasteboard.string(forType: .string) == nil,
+              let image = pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage,
+              let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        else { return false }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Buddy-pegadas", isDirectory: true)
+        let stamp = Int(Date().timeIntervalSince1970)
+        let url = dir.appendingPathComponent("captura-\(stamp)-\(attachments.count + 1).png")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try png.write(to: url)
+        } catch { return false }
+        attach([url])
+        return true
+    }
+
     func detach(_ url: URL) {
         attachments.removeAll { $0 == url }
     }
