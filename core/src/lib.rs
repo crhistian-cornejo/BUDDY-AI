@@ -199,6 +199,10 @@ impl BuddyCore {
         self.chat.remove_queued(&chat_id, &message_id);
     }
 
+    pub fn queued_thumbnail(&self, chat_id: String, message_id: String) -> Option<String> {
+        self.chat.queued_thumbnail(&chat_id, &message_id)
+    }
+
     pub fn redirect_queued(&self, chat_id: String, message_id: String) -> Result<(), CoreError> {
         self.chat.redirect_queued(&chat_id, &message_id)
     }

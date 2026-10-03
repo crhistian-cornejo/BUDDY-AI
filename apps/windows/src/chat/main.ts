@@ -77,19 +77,56 @@ function queueError(text: string | null) {
   $("queue-error").hidden = !text;
 }
 
+async function editQueued(item: QueuedMessage) {
+  if (!chatId) return;
+  const id = chatId;
+  try {
+    const editing = await invoke<QueuedMessage>("take_queued", { chatId: id, messageId: item.id });
+    if (id !== chatId) return;
+    input.value = input.value ? `${editing.text}\n${input.value}` : editing.text;
+    attach(editing.attachments);
+    autosize(); input.focus(); queueError(null);
+    await refreshQueue();
+  } catch (e) { queueError(`No se pudo editar: ${e}`); }
+}
+
+const thumbnails = new Map<string, Promise<string | null>>();
+function queueAttachment(item: QueuedMessage) {
+  const path = item.attachments[0]!;
+  const el = h("span", { class: "queue-thumb", title: baseName(path) }, icon(TABLER.fileText, 16));
+  if (/\.(png|jpe?g|gif|webp)$/i.test(path) && chatId) {
+    let preview = thumbnails.get(item.id);
+    if (!preview) {
+      preview = invoke<string | null>("queued_thumbnail", { chatId, messageId: item.id }).catch(() => null);
+      thumbnails.set(item.id, preview);
+    }
+    void preview.then((src) => {
+      if (src) el.replaceChildren(h("img", { src, alt: baseName(path) }));
+    });
+  }
+  return el;
+}
+
 function drawQueue() {
   const el = $("queue");
   el.hidden = !queued.length;
-  const header = h("div", { class: "queue-header" }, h("span", { text: `En cola · ${queued.length}` }));
-  if (!streaming) header.append(h("button", { type: "button", class: "queue-resume", text: "Continuar", onclick: () => {
-    if (chatId) void invoke("resume_queue", { chatId }).catch((e) => queueError(`No se pudo continuar: ${e}`));
-  } }));
-  el.replaceChildren(header, h("div", { class: "queue-list" }, ...queued.map((item) => h("div", { class: "queue-item" },
-    ...(item.attachments.length ? [icon(TABLER.paperclip, 14)] : []),
-    h("span", { text: item.text, title: item.text }),
-    h("button", { type: "button", class: "ghost small", title: "Quitar de la cola", "aria-label": "Quitar de la cola", onclick: () => {
-      if (chatId) void invoke("remove_queued", { chatId, messageId: item.id });
-    } }, icon(TABLER.x, 12))))));
+  el.replaceChildren(h("div", { class: "queue-list" }, ...queued.map((item) => {
+    const menu = h("details", { class: "queue-menu" },
+      h("summary", { title: "Más opciones", "aria-label": "Más opciones" }, icon(TABLER.dots, 16)),
+      h("div", { class: "queue-options" },
+        h("button", { type: "button", text: "Editar mensaje", onclick: () => { menu.open = false; void editQueued(item); } }),
+        h("button", { type: "button", text: "Copiar mensaje", onclick: () => { menu.open = false; void navigator.clipboard.writeText(item.text); } })));
+    return h("div", { class: "queue-item" },
+      icon(TABLER.queue, 14),
+      ...(item.attachments.length ? [queueAttachment(item)] : []),
+      h("span", { class: "queue-text", text: item.text, title: item.text }),
+      h("button", { type: "button", class: "queue-redirect", title: "Detener la respuesta actual y enviar este mensaje", onclick: () => {
+        if (chatId) void invoke("redirect_queued", { chatId, messageId: item.id }).catch((e) => queueError(`No se pudo redirigir: ${e}`));
+      } }, icon(TABLER.redirect, 14), "Redirigir"),
+      h("button", { type: "button", class: "ghost small", title: "Eliminar de la cola", "aria-label": "Eliminar de la cola", onclick: () => {
+        if (chatId) void invoke("remove_queued", { chatId, messageId: item.id });
+      } }, icon(TABLER.trash, 14)), menu);
+  })));
 }
 
 async function refreshQueue() {
@@ -97,7 +134,11 @@ async function refreshQueue() {
   const id = chatId;
   if (!id) { queued = []; drawQueue(); return; }
   const pending = await invoke<QueuedMessage[]>("queued_messages", { chatId: id });
-  if (id === chatId && revision === queueRevision) { queued = pending; drawQueue(); }
+  if (id === chatId && revision === queueRevision) {
+    queued = pending;
+    for (const key of thumbnails.keys()) if (!pending.some((item) => item.id === key)) thumbnails.delete(key);
+    drawQueue();
+  }
 }
 
 

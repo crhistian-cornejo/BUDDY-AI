@@ -55,7 +55,9 @@ trait Provider {
 
 El núcleo mantiene una cola FIFO por chat (hasta 20 pendientes). Enviar mientras hay una respuesta activa añade un pendiente; no cancela al proveedor. Los adjuntos se copian al entrar en la cola, y el mensaje pasa al historial justo antes de iniciar su turno. `ChatDequeued` abre la nueva respuesta en ambas interfaces; `ChatQueueChanged` permite redibujar los pendientes sin sondeos.
 
-Una respuesta completa inicia el siguiente mensaje después de guardarse. Un fallo deja los pendientes en pausa con «Continuar»; se pueden quitar individualmente. «Detener y vaciar la cola», abrir otro chat o crear uno nuevo cancela la respuesta y vacía los pendientes de la conversación anterior. Cerrar el panel permite que el chat siga trabajando. La cola vive en memoria durante la sesión de la app; los pendientes no sobreviven al cierre de Buddy.
+La tarjeta de pendientes queda centrada sobre el input y muestra el texto truncado, la miniatura del primer adjunto, «Redirigir», papelera y un menú para editar o copiar. Redirigir pone el pendiente al principio y cancela la respuesta activa; el siguiente proveedor arranca cuando el anterior ha terminado de parar, manteniendo el resto de la cola. Editar retira el pendiente de forma atómica y devuelve texto y adjuntos al composer.
+
+Una respuesta completa inicia el siguiente mensaje después de guardarse. Un fallo deja los pendientes en pausa; «Redirigir» permite continuarlos. Se pueden quitar individualmente. «Detener y vaciar la cola», abrir otro chat o crear uno nuevo cancela la respuesta y vacía los pendientes de la conversación anterior. Cerrar el panel permite que el chat siga trabajando. La cola vive en memoria durante la sesión de la app; los pendientes no sobreviven al cierre de Buddy.
 
 ## Datos
 

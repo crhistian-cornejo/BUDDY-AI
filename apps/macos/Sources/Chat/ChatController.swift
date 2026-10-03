@@ -96,6 +96,30 @@ final class ChatController {
         refreshQueue()
     }
 
+    func redirectQueued(_ id: String) {
+        guard let chatID else { return }
+        queueError = nil
+        do { try core.redirectQueued(chatId: chatID, messageId: id) }
+        catch { queueError = "No se pudo redirigir: \(error)" }
+        refreshQueue()
+    }
+
+    func editQueued(_ id: String) {
+        guard let chatID else { return }
+        do {
+            let item = try core.takeQueued(chatId: chatID, messageId: id)
+            draft = draft.isEmpty ? item.text : item.text + "\n" + draft
+            attach(item.attachments.map { URL(fileURLWithPath: $0) })
+            queueError = nil
+        } catch { queueError = "No se pudo editar: \(error)" }
+        refreshQueue()
+    }
+
+    func copyQueued(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     func resumeQueue() {
         guard let chatID else { return }
         queueError = nil

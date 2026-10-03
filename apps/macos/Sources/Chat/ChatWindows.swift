@@ -46,7 +46,7 @@ final class ChatWindows {
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
             let (panel, host) = KeyPanel.make(visibleSize: CGSize(width: ChatMetrics.composerWidth, height: ChatMetrics.composerHeight),
-                                              cornerRadius: ChatMetrics.composerHeight / 2, prominent: true, view: view)
+                                              cornerRadius: ChatMetrics.composerHeight / 2, prominent: true, drawSurface: false, view: view)
             composer = panel
             composerHost = host
             trackDraft()

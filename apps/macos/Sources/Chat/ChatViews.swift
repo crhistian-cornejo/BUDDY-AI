@@ -23,31 +23,33 @@ struct ComposerView: View {
     private var empty: Bool { chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && chat.attachments.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: -10) {
             if !chat.queued.isEmpty { queue }
-            if let error = chat.queueError {
-                Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 8)
-            }
-            if !chat.attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(chat.attachments, id: \.self) { url in
-                            FileChip(path: url.path) { chat.detach(url) }
+            VStack(alignment: .leading, spacing: 8) {
+                if let error = chat.queueError {
+                    Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 8)
+                }
+                if !chat.attachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(chat.attachments, id: \.self) { url in
+                                FileChip(path: url.path) { chat.detach(url) }
+                            }
                         }
                     }
                 }
+                field
             }
-            field
+            .padding(8)
+            .frame(width: ChatMetrics.composerWidth)
+            .buddySurface(cornerRadius: ChatMetrics.composerHeight / 2, prominent: true, margin: 0)
+            .overlay {
+                RoundedRectangle(cornerRadius: ChatMetrics.composerHeight / 2, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(focused ? 0.65 : 0), lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
         }
-        .padding(.leading, 8)
-        .padding(.trailing, 8)
-        .padding(.vertical, 8)
         .frame(width: ChatMetrics.composerWidth)
-        .overlay {
-            RoundedRectangle(cornerRadius: ChatMetrics.composerHeight / 2, style: .continuous)
-                .strokeBorder(Color.accentColor.opacity(focused ? 0.65 : 0), lineWidth: 1.5)
-                .allowsHitTesting(false)
-        }
         .onAppear {
             focused = true
             installPasteMonitor()
@@ -83,35 +85,44 @@ struct ComposerView: View {
     }
 
     private var queue: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Label("En cola · \(chat.queued.count)", systemImage: "text.line.first.and.arrowtriangle.forward")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if !chat.streaming {
-                    Button("Continuar", action: chat.resumeQueue).buttonStyle(.borderless).font(.caption)
-                }
-            }
-            ScrollView {
-                VStack(spacing: 4) {
-                    ForEach(chat.queued, id: \.id) { item in
-                        HStack(spacing: 6) {
-                            if !item.attachments.isEmpty {
-                                Image(systemName: "paperclip").foregroundStyle(.secondary)
-                            }
-                            Text(item.text).font(.callout).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                            Button { chat.removeQueued(item.id) } label: { Image(systemName: "xmark") }
-                                .buttonStyle(.borderless).foregroundStyle(.secondary).tip("Quitar de la cola")
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(chat.queued, id: \.id) { item in
+                    HStack(spacing: 6) {
+                        Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        if !item.attachments.isEmpty {
+                            FileChip(path: item.attachments[0], compact: true)
                         }
-                        .padding(6)
-                        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                        Text(item.text).font(.system(size: 12)).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading).help(item.text)
+                        Button { chat.redirectQueued(item.id) } label: {
+                            Label("Redirigir", systemImage: "arrow.turn.down.right").font(.system(size: 11))
+                        }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                        .tip("Detener la respuesta actual y enviar este mensaje")
+                        Button { chat.removeQueued(item.id) } label: {
+                            Image(systemName: "trash").frame(width: 22, height: 24)
+                        }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary).tip("Eliminar de la cola")
+                        Menu {
+                            Button("Editar mensaje", systemImage: "pencil") { chat.editQueued(item.id); focused = true }
+                            Button("Copiar mensaje", systemImage: "doc.on.doc") { chat.copyQueued(item.text) }
+                        } label: {
+                            Image(systemName: "ellipsis").frame(width: 22, height: 24)
+                        }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .foregroundStyle(.secondary).tip("Más opciones")
                     }
+                    .padding(.horizontal, 8).frame(height: 40)
                 }
             }
-            .frame(height: min(CGFloat(chat.queued.count) * 34, 102))
-            Divider()
         }
-        .padding(.horizontal, 6)
+        .frame(width: ChatMetrics.composerWidth - 24, height: min(CGFloat(chat.queued.count) * 40, 120))
+        .padding(.bottom, 14)
+        .background(Color.dynamic(light: "#F1F1F3", dark: "#303034"), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.16), lineWidth: 1))
+        .accessibilityLabel("Mensajes en cola")
     }
 
     private var field: some View {
@@ -395,7 +406,8 @@ struct BubbleView: View {
 /// A file as a small chip: its icon and name; with a remove button while it waits in the composer.
 struct FileChip: View {
     let path: String
-    let onRemove: (() -> Void)?
+    var compact = false
+    var onRemove: (() -> Void)? = nil
 
     /// Images show themselves instead of the file icon.
     private static func thumbnail(_ path: String) -> NSImage? {
@@ -416,11 +428,13 @@ struct FileChip: View {
                     .resizable()
                     .frame(width: 16, height: 16)
             }
+            if !compact {
             Text((path as NSString).lastPathComponent)
                 .font(.system(size: 12))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 160, alignment: .leading)
+            }
             if let onRemove {
                 Button(action: onRemove) {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
@@ -430,8 +444,8 @@ struct FileChip: View {
                 .tip("Quitar")
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 26)
+        .padding(.horizontal, compact ? 4 : 8)
+        .frame(height: compact ? 30 : 26)
         .background(.quaternary, in: Capsule())
         .tip(path)
         .onTapGesture(count: 2) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }

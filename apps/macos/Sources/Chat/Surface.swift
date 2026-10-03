@@ -17,7 +17,7 @@ enum Surface {
 
 extension View {
     /// The view on Buddy's surface: system glass, continuous rounded corners, hairline, soft shadow and the margin.
-    func buddySurface(cornerRadius: CGFloat, prominent: Bool = false) -> some View {
+    func buddySurface(cornerRadius: CGFloat, prominent: Bool = false, margin: CGFloat = Surface.margin) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return self
             .background {
@@ -33,7 +33,7 @@ extension View {
             // Barely there: a hairline that only separates it from a background of the same colour, a very soft shadow.
             .overlay(shape.strokeBorder(Color.dynamic(light: "#000000", dark: "#FFFFFF").opacity(prominent ? 0.24 : 0.05), lineWidth: prominent ? 1 : 0.5))
             .shadow(color: .black.opacity(prominent ? 0.4 : 0.08), radius: prominent ? 14 : 10, y: prominent ? 5 : 3)
-            .padding(Surface.margin)
+            .padding(margin)
     }
 }
 
@@ -58,7 +58,7 @@ final class KeyPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 
     /// A panel showing `view` on Buddy's surface; `visibleSize` is the shape's size (the window adds the margin).
-    static func make<V: View>(visibleSize: CGSize, cornerRadius: CGFloat, prominent: Bool = false, view: V) -> (KeyPanel, NSHostingView<AnyView>) {
+    static func make<V: View>(visibleSize: CGSize, cornerRadius: CGFloat, prominent: Bool = false, drawSurface: Bool = true, view: V) -> (KeyPanel, NSHostingView<AnyView>) {
         let frame = Surface.windowFrame(for: NSRect(origin: .zero, size: visibleSize))
         let panel = KeyPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
@@ -69,7 +69,8 @@ final class KeyPanel: NSPanel {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = false
-        let host = NSHostingView(rootView: AnyView(view.buddySurface(cornerRadius: cornerRadius, prominent: prominent)))
+        let content = drawSurface ? AnyView(view.buddySurface(cornerRadius: cornerRadius, prominent: prominent)) : AnyView(view.padding(Surface.margin))
+        let host = NSHostingView(rootView: content)
         // The window decides the size; SwiftUI fills it.
         host.sizingOptions = []
         panel.contentView = host

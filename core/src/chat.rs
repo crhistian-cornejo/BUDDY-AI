@@ -132,6 +132,18 @@ impl ChatEngine {
         self.emit(Event::ChatQueueChanged { chat_id: chat_id.into() });
     }
 
+    /// Small preview of a copied image in this queue; the UI cannot request arbitrary file paths.
+    pub fn queued_thumbnail(&self, chat_id: &str, message_id: &str) -> Option<String> {
+        use base64::Engine;
+        let path = self.queued_messages(chat_id).into_iter().find(|m| m.id == message_id)?.attachments.first()?.clone();
+        let path = PathBuf::from(path);
+        if !crate::images::is_image(&path) { return None; }
+        let thumbnail = image::open(path).ok()?.thumbnail(96, 96);
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        thumbnail.write_to(&mut bytes, image::ImageFormat::Png).ok()?;
+        Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())))
+    }
+
     /// Moves this pending message next and interrupts the active turn, without overlapping providers.
     pub fn redirect_queued(self: &Arc<Self>, chat_id: &str, message_id: &str) -> Result<(), CoreError> {
         let _dispatch = self.dispatch.lock().unwrap();
@@ -142,7 +154,8 @@ impl ChatEngine {
             let message = queue.remove(index).unwrap();
             queue.push_front(message);
         }
-        if let Some(cancel) = self.running.lock().unwrap().get(chat_id) {
+        let active = self.running.lock().unwrap().get(chat_id).cloned();
+        if let Some(cancel) = active {
             self.redirected.lock().unwrap().insert(chat_id.into());
             cancel.cancel();
         } else {
@@ -754,6 +767,64 @@ mod tests {
     }
 
     #[test]
+    fn redirect_stops_the_active_turn_then_sends_the_selected_message_first() {
+        let (provider, ready, release) = held(vec![vec![TurnEvent::Done], vec![TurnEvent::Done], vec![TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![provider.clone()]);
+        let chat = engine.send(None, "Uno".into(), vec![]).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        engine.send(Some(chat.clone()), "Dos".into(), vec![]).unwrap();
+        engine.send(Some(chat.clone()), "Tres".into(), vec![]).unwrap();
+        let selected = engine.queued_messages(&chat)[1].id.clone();
+        engine.redirect_queued(&chat, &selected).unwrap();
+        assert!(engine.running.lock().unwrap().get(&chat).unwrap().is_cancelled());
+        assert_eq!(engine.queued_messages(&chat).iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["Tres", "Dos"]);
+        assert_eq!(provider.fake.prompts.lock().unwrap().len(), 0, "no overlapping requests");
+        release.send(()).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        let messages = engine.lock().messages(&chat).unwrap();
+        assert_eq!(messages.iter().filter(|m| m.role == "user").map(|m| m.text.as_str()).collect::<Vec<_>>(), ["Uno", "Tres", "Dos"]);
+        assert!(engine.redirect_queued(&chat, &selected).is_err());
+    }
+
+    #[test]
+    fn redirect_can_restart_a_queue_paused_by_failure() {
+        let (provider, ready, release) = held(vec![vec![TurnEvent::Failed(Failure::new("Error"))], vec![TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![provider]);
+        let chat = engine.send(None, "Uno".into(), vec![]).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        engine.send(Some(chat.clone()), "Sigo".into(), vec![]).unwrap();
+        let id = engine.queued_messages(&chat)[0].id.clone();
+        release.send(()).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        engine.redirect_queued(&chat, &id).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        assert!(engine.queued_messages(&chat).is_empty());
+        assert_eq!(engine.lock().messages(&chat).unwrap()[2].text, "Sigo");
+    }
+
+    #[test]
+    fn editing_takes_the_pending_message_and_keeps_its_attachments() {
+        let (provider, ready, release) = held(vec![vec![TurnEvent::Done]]);
+        let (engine, rx, dir) = engine(vec![provider]);
+        let chat = engine.send(None, "Uno".into(), vec![]).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let path = dir.path().join("captura.png");
+        image::RgbaImage::from_pixel(200, 100, image::Rgba([20, 100, 50, 255])).save(&path).unwrap();
+        engine.send(Some(chat.clone()), "Editar".into(), vec![path.to_string_lossy().into_owned()]).unwrap();
+        let id = engine.queued_messages(&chat)[0].id.clone();
+        assert!(engine.queued_thumbnail(&chat, &id).unwrap().starts_with("data:image/png;base64,"));
+        assert!(engine.queued_thumbnail(&chat, "no-existe").is_none());
+        let editing = engine.take_queued(&chat, &id).unwrap();
+        assert_eq!(editing.text, "Editar");
+        assert!(PathBuf::from(&editing.attachments[0]).is_file());
+        assert!(engine.queued_messages(&chat).is_empty());
+        assert!(engine.take_queued(&chat, &id).is_err());
+        release.send(()).unwrap();
+        wait_idle(&engine, &rx, &chat);
+        assert_eq!(engine.lock().messages(&chat).unwrap().len(), 2);
+    }
+
+    #[test]
     fn another_chat_runs_while_the_first_chat_has_pending_messages() {
         let (provider, ready, release) = held(vec![vec![TurnEvent::Done], vec![TurnEvent::Done], vec![TurnEvent::Done]]);
         let (engine, rx, _dir) = engine(vec![provider]);
@@ -778,6 +849,7 @@ mod tests {
         ready.recv_timeout(Duration::from_secs(5)).unwrap();
         for i in 0..20 { engine.send(Some(chat.clone()), format!("Pendiente {i}"), vec![]).unwrap(); }
         assert!(engine.send(Some(chat.clone()), "Demasiados".into(), vec![]).is_err());
+        engine.redirect_queued(&chat, &engine.queued_messages(&chat)[5].id).unwrap();
         engine.cancel(&chat);
         assert!(engine.queued_messages(&chat).is_empty());
         assert!(engine.running.lock().unwrap().get(&chat).unwrap().is_cancelled());

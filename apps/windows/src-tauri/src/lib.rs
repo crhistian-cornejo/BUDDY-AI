@@ -172,6 +172,7 @@ pub fn run() {
             send_message,
             queued_messages,
             redirect_queued,
+            queued_thumbnail,
             take_queued,
             remove_queued,
             resume_queue,
@@ -609,6 +610,11 @@ fn queued_messages(state: State<'_, AppCore>, chat_id: String) -> Vec<buddy_core
 #[tauri::command]
 fn remove_queued(state: State<'_, AppCore>, chat_id: String, message_id: String) {
     state.core.remove_queued(chat_id, message_id);
+}
+
+#[tauri::command]
+fn queued_thumbnail(state: State<'_, AppCore>, chat_id: String, message_id: String) -> Option<String> {
+    state.core.queued_thumbnail(chat_id, message_id)
 }
 
 #[tauri::command]

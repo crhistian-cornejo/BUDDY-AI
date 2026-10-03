@@ -4,6 +4,9 @@
 // The "M0 0h24v24H0z" bounding box of each file is dropped and its paths are joined into one "d".
 
 export const TABLER = {
+  queue: "M4 4v10a4 4 0 0 0 4 4h12 M17 15l3 3l-3 3 M8 5h8 M8 9h5",
+  redirect: "M4 5v5a3 3 0 0 0 3 3h13 M16 9l4 4l-4 4",
+  trash: "M4 7h16 M10 11v6 M14 11v6 M5 7l1 13h12l1 -13 M9 7v-3h6v3",
   /** message-circle-plus */
   messageCirclePlus: "M12.007 19.98a9.869 9.869 0 0 1 -4.307 -.98l-4.7 1l1.3 -3.9c-2.324 -3.437 -1.426 -7.872 2.1 -10.374c3.526 -2.501 8.59 -2.296 11.845 .48c1.992 1.7 2.93 4.04 2.747 6.34 M16 19h6 M19 16v6",
   /** message */
