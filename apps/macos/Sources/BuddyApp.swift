@@ -81,6 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if ProcessInfo.processInfo.environment["BUDDY_DEBUG_HISTORY"] != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { windows.showHistory() }
             }
+            // BUDDY_DEBUG_DRAFT="…": opens the composer with that text, unsent (to look at a long draft).
+            if let draft = ProcessInfo.processInfo.environment["BUDDY_DEBUG_DRAFT"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    windows.open()
+                    chat.draft = draft
+                }
+            }
             if let prompt = ProcessInfo.processInfo.environment["BUDDY_DEBUG_PROMPT"] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     windows.open()

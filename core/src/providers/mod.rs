@@ -89,13 +89,14 @@ pub struct Link {
 
 impl Office {
     /// The tool names as Claude Code exposes them (Office, music, skills).
-    pub const TOOLS: [&'static str; 8] = [
+    pub const TOOLS: [&'static str; 9] = [
         "mcp__buddy__create_document",
         "mcp__buddy__create_spreadsheet",
         "mcp__buddy__create_presentation",
         "mcp__buddy__media_control",
         "mcp__buddy__media_play",
         "mcp__buddy__media_search",
+        "mcp__buddy__spotify_search",
         "mcp__buddy__now_playing",
         "mcp__buddy__use_skill",
     ];

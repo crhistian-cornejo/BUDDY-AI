@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 pub const MEDIA_CONTROL: &str = "media_control";
 pub const MEDIA_PLAY: &str = "media_play";
 pub const MEDIA_SEARCH: &str = "media_search";
+pub const SPOTIFY_SEARCH: &str = "spotify_search";
 pub const NOW_PLAYING: &str = "now_playing";
 pub const USE_SKILL: &str = "use_skill";
 const MAX_SKILL: u64 = 64 * 1024;
@@ -26,7 +27,7 @@ impl Extra {
     pub fn names(&self) -> Vec<&'static str> {
         let mut names = Vec::new();
         if self.token.is_some() {
-            names.extend([MEDIA_CONTROL, MEDIA_PLAY, MEDIA_SEARCH, NOW_PLAYING]);
+            names.extend([SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING]);
         }
         if self.skills.is_some() {
             names.push(USE_SKILL);
@@ -58,6 +59,18 @@ impl Extra {
                         "link": { "type": "string", "description": "Enlace de open.spotify.com o URI spotify:" }
                     }, "required": ["link"], "additionalProperties": false },
                     "annotations": safe,
+                }),
+                SPOTIFY_SEARCH => json!({
+                    "name": name,
+                    "title": "Buscar en el catálogo de Spotify",
+                    "description": "Busca dentro de Spotify (no en la web) y devuelve hasta 5 resultados con su enlace \
+spotify:, listos para media_play. Con nuevo=true trae discos salidos en las últimas dos semanas.",
+                    "inputSchema": { "type": "object", "properties": {
+                        "query": { "type": "string", "description": "Canción, artista, disco o lista (puede ir vacío con nuevo=true)" },
+                        "kind": { "type": "string", "enum": ["track", "album", "artist", "playlist"] },
+                        "nuevo": { "type": "boolean", "description": "Solo lanzamientos recientes (discos)" }
+                    }, "required": ["query"], "additionalProperties": false },
+                    "annotations": read,
                 }),
                 MEDIA_SEARCH => json!({
                     "name": name,
@@ -99,6 +112,12 @@ reproducir. Úsala solo si no encontraste un enlace de open.spotify.com.",
                     MEDIA_CONTROL => json!({ "request": "media", "action": args["action"].as_str().unwrap_or("") }),
                     MEDIA_PLAY => json!({ "request": "media", "action": "open", "uri": args["link"].as_str().unwrap_or("") }),
                     MEDIA_SEARCH => json!({ "request": "media", "action": "search", "query": args["query"].as_str().unwrap_or("") }),
+                    SPOTIFY_SEARCH => json!({
+                        "request": "spotify_search",
+                        "query": args["query"].as_str().unwrap_or(""),
+                        "kind": args["kind"].as_str().unwrap_or("track"),
+                        "new": args["nuevo"] == true,
+                    }),
                     _ => json!({ "request": "now_playing" }),
                 };
                 ask_buddy(request, token)
@@ -142,8 +161,8 @@ mod tests {
     fn music_tools_only_with_the_secret_and_skills_only_with_a_folder() {
         assert!(Extra::default().names().is_empty());
         let both = Extra { skills: Some("/s".into()), token: Some("t".into()) };
-        assert_eq!(both.names(), [MEDIA_CONTROL, MEDIA_PLAY, MEDIA_SEARCH, NOW_PLAYING, USE_SKILL]);
-        assert_eq!(both.specs().len(), 5);
+        assert_eq!(both.names(), [SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, USE_SKILL]);
+        assert_eq!(both.specs().len(), 6);
     }
 
     #[test]

@@ -210,6 +210,9 @@ pub fn run() {
             token_report,
             open_agents_folder,
             briefing_topics,
+            spotify_connect,
+            spotify_disconnect,
+            spotify_client_id,
             set_briefing_topics,
             briefing_now
         ])
@@ -972,6 +975,27 @@ fn open_agents_folder(app: AppHandle) -> Result<(), String> {
     let dir = std::path::Path::new(&app.state::<AppCore>().core.data_dir()).join("agents");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Checks the pair with Spotify, keeps the Client ID in settings and the Client Secret in Credential Manager.
+#[tauri::command]
+async fn spotify_connect(app: AppHandle, client_id: String, client_secret: String) -> Result<(), String> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.spotify_connect(client_id, client_secret))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn spotify_disconnect(state: State<'_, AppCore>) -> Result<(), String> {
+    state.core.spotify_disconnect().map_err(|e| e.to_string())
+}
+
+/// The Client ID when connected (empty otherwise); the secret never comes back.
+#[tauri::command]
+fn spotify_client_id(state: State<'_, AppCore>) -> String {
+    state.core.spotify_client_id()
 }
 
 #[tauri::command]

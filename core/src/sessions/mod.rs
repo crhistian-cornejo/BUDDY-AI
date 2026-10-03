@@ -151,7 +151,12 @@ pub struct SessionHub {
     gate_token: String,
     /// What the player plays, as the app last told us (for the agents' `now_playing`).
     now_playing: Mutex<Option<crate::media::NowPlayingInfo>>,
+    /// Requests of Buddy's tools that live elsewhere in the core (Spotify's search): `None` means "not mine".
+    tools: std::sync::OnceLock<ToolHandler>,
 }
+
+/// Answers one tool request by name (`request`), or `None` when it does not know it.
+pub type ToolHandler = Box<dyn Fn(&str, &Value) -> Option<Result<String, String>> + Send + Sync>;
 
 impl SessionHub {
     pub fn new(data_dir: PathBuf, bus: Arc<EventBus>) -> Self {
@@ -169,7 +174,13 @@ impl SessionHub {
             decision_timeout,
             gate_token: random_token(),
             now_playing: Mutex::new(None),
+            tools: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Installs the handler for the tool requests the hub does not answer itself (set once, at start).
+    pub fn set_tool_handler(&self, handler: ToolHandler) {
+        let _ = self.tools.set(handler);
     }
 
     /// The app reports what plays (on each change of its player).
@@ -411,7 +422,11 @@ impl server::Sink for SessionHub {
                 self.bus.publish(Event::MediaCommand { action: action.into(), uri });
                 reply(true, crate::media::done_text(action))
             }
-            _ => reply(false, "Petición desconocida."),
+            other => match self.tools.get().and_then(|handle| handle(other, &payload)) {
+                Some(Ok(text)) => reply(true, &text),
+                Some(Err(text)) => reply(false, &text),
+                None => reply(false, "Petición desconocida."),
+            },
         }
     }
 }

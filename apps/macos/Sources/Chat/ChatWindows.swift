@@ -12,6 +12,8 @@ final class ChatWindows {
     private var composerHost: NSHostingView<AnyView>?
     private var panel: KeyPanel?
     private var contentHeight: CGFloat = 0
+    /// The composer's own height (it grows with the text, up to its line limit).
+    private var composerContentHeight: CGFloat = 0
     private var clickMonitor: Any?
     private var moveObserver: NSObjectProtocol?
     private let history = HistoryWindow()
@@ -36,7 +38,13 @@ final class ChatWindows {
 
     func open() {
         if composer == nil {
+            // Measured at its ideal height whatever the window is, so the window can follow the text as it wraps.
             let view = ComposerView(chat: chat, onClose: { [weak self] in self?.close() })
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { [weak self] height in
+                    self?.composerHeightChanged(height)
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
             let (panel, host) = KeyPanel.make(visibleSize: CGSize(width: ChatMetrics.composerWidth, height: ChatMetrics.composerHeight),
                                               cornerRadius: ChatMetrics.composerHeight / 2, view: view)
             composer = panel
@@ -87,6 +95,7 @@ final class ChatWindows {
         history.close()
         composer = nil
         composerHost = nil
+        composerContentHeight = 0
         panel = nil
         contentHeight = 0
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
@@ -138,6 +147,13 @@ final class ChatWindows {
         layout()
     }
 
+    private func composerHeightChanged(_ height: CGFloat) {
+        let rounded = height.rounded(.up)
+        guard abs(rounded - composerContentHeight) >= 1 else { return }
+        composerContentHeight = rounded
+        layout()
+    }
+
     /// Only real changes resize the window (a resize must never feed back into the measured height).
     private func contentHeightChanged(_ height: CGFloat) {
         let rounded = height.rounded(.up)
@@ -151,8 +167,7 @@ final class ChatWindows {
         let pet = pet()
         let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: pet.midX, y: pet.midY)) } ?? NSScreen.main
         let area = (screen?.visibleFrame ?? pet).insetBy(dx: Self.gap, dy: Self.gap)
-        let fitting = (composerHost?.fittingSize.height ?? 0) - 2 * Surface.margin
-        let size = CGSize(width: ChatMetrics.composerWidth, height: max(fitting, ChatMetrics.composerHeight))
+        let size = CGSize(width: ChatMetrics.composerWidth, height: max(composerContentHeight, ChatMetrics.composerHeight))
         // The side of the pet with more room; bottom level with Buddy's feet.
         let left = pet.midX > area.midX
         var x = left ? pet.minX - size.width - Self.gap : pet.maxX + Self.gap

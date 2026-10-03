@@ -18,6 +18,7 @@ pub mod pixel;
 pub mod providers;
 pub mod router;
 pub mod skills;
+pub mod spotify;
 pub mod sessions;
 pub mod store;
 pub mod tools;
@@ -89,6 +90,7 @@ pub struct BuddyCore {
     usage: Arc<usage::Usage>,
     briefing: Arc<briefing::Briefing>,
     sessions: Arc<SessionHub>,
+    spotify: Arc<spotify::Spotify>,
 }
 
 impl BuddyCore {
@@ -123,7 +125,17 @@ impl BuddyCore {
                 .with_usage(usage.clone())
                 .with_gate(sessions.clone()),
         );
-        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing })
+        let spotify = Arc::new(spotify::Spotify::default());
+        // Spotify's search for the agents (the relay's `spotify_search`): runs on the hub's connection thread.
+        let (s, st) = (spotify.clone(), store.clone());
+        sessions.set_tool_handler(Box::new(move |request, payload| {
+            (request == "spotify_search").then(|| {
+                let id = spotify::client_id(&st.lock().unwrap_or_else(|p| p.into_inner())).ok().flatten();
+                let text = |key: &str| payload[key].as_str().unwrap_or("").to_string();
+                s.search(id, &spotify::SystemSecrets, &text("query"), &text("kind"), payload["new"] == true)
+            })
+        }));
+        Ok(Self { data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -272,6 +284,23 @@ impl BuddyCore {
     /// The app tells what its player plays (on every change), for the agents' `now_playing` tool.
     pub fn set_now_playing(&self, now: Option<NowPlayingInfo>) {
         self.sessions.set_now_playing(now);
+    }
+
+    /// Connects Spotify's search with the user's own app: checks the pair with Spotify, then keeps the Client ID in
+    /// the settings and the Client Secret only in the Keychain / Credential Manager.
+    pub fn spotify_connect(&self, client_id: String, client_secret: String) -> Result<(), CoreError> {
+        self.spotify.connect(&client_id, &client_secret, &spotify::SystemSecrets).map_err(CoreError::Hooks)?;
+        self.with_store(|s| s.set_setting(spotify::CLIENT_ID_KEY, client_id.trim()))
+    }
+
+    pub fn spotify_disconnect(&self) -> Result<(), CoreError> {
+        self.spotify.forget(&spotify::SystemSecrets);
+        self.with_store(|s| s.set_setting(spotify::CLIENT_ID_KEY, ""))
+    }
+
+    /// The Client ID when Spotify is connected (empty otherwise). Never reads the secret back.
+    pub fn spotify_client_id(&self) -> String {
+        self.with_store(spotify::client_id).ok().flatten().unwrap_or_default()
     }
 
     /// Buddy's skills (`<data>/skills/<name>/SKILL.md`), seeding the built-in ones.

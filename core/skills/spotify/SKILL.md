@@ -1,25 +1,28 @@
 ---
 name: spotify
-description: Poner, pausar, saltar o decir qué suena en Spotify o Música cuando el usuario lo pide («pon Radiohead», «siguiente», «¿qué suena?»).
+description: Poner, pausar, saltar o decir qué suena en Spotify o Música («pon Radiohead», «pon algo nuevo de hoy», «siguiente», «¿qué suena?»).
 ---
 # Música
 
 Controlas el reproductor del usuario con las herramientas de Buddy. Nunca digas que no puedes poner música.
+Busca siempre **dentro de Spotify**, nunca en la web: es más rápido y gasta mucho menos.
 
 ## Botones
-- Pausa, sigue, siguiente o anterior: `media_control` con `action` = `pause`, `play`, `toggle`, `next` o `previous`.
+- Pausa, sigue, siguiente o anterior: `media_control` (`pause`, `play`, `toggle`, `next`, `previous`).
 - «¿Qué suena?»: `now_playing`.
-- «Pon algo nuevo de hoy»: busca primero en la web qué salió (una búsqueda), elige uno y sigue los pasos de abajo.
 
 ## Poner algo concreto («pon Creep de Radiohead», «pon el último disco de Bad Bunny»)
-1. Busca el enlace con **una** búsqueda web limitada a Spotify, por ejemplo `Creep Radiohead site:open.spotify.com/track`.
-   Para un disco usa `/album`, para una lista `/playlist`, para un artista `/artist`.
-2. Toma el primer enlace `https://open.spotify.com/...` que coincida con lo pedido. Nunca inventes un id.
-3. Llama a `media_play` con ese enlace.
-   Si esa búsqueda no da un enlace fiable (pasa con lo que salió hoy), no busques más: llama a `media_search` con lo
-   pedido (por ejemplo `Miranda Lambert Crisco`) y di que se lo dejaste abierto en Spotify para darle a reproducir.
-4. Espera un momento y confirma con `now_playing`. Di solo lo que de verdad suena; si no cambió, dilo con honestidad
-   (a veces Spotify necesita estar abierto, o en Windows solo muestra la canción y hay que darle a reproducir).
+1. `spotify_search` con lo pedido y el `kind` que encaje (`track` por defecto; `album`, `artist` o `playlist`).
+2. Elige el resultado que mejor coincide y llama a `media_play` con su enlace `spotify:`. Nunca inventes un enlace.
+3. Responde con una frase: qué pusiste. Solo si el usuario pregunta, confirma con `now_playing`.
+
+## «Pon algo nuevo», «lo que salió hoy»
+`spotify_search` con `nuevo: true` (y el género o artista si lo dijo). Elige un disco y ponlo con `media_play`.
+
+## Si Spotify no está conectado
+Si `spotify_search` dice que no está conectado, llama a `media_search` con lo pedido: se abre la búsqueda en Spotify
+y el usuario le da a reproducir. Díselo en una frase y menciona que en Ajustes › Conexiones puede conectar Spotify
+para que Buddy lo ponga solo. No busques en la web.
 
 ## Respuesta
-Una frase corta: qué pusiste o qué hiciste. Sin narrar los pasos.
+Una frase corta. Sin narrar los pasos ni listar fuentes.

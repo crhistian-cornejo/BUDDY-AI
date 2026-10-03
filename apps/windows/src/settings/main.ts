@@ -152,7 +152,7 @@ async function renderConnections(view: HTMLElement) {
   const message = h("p", { class: "muted small", role: "status" });
   const { el, card } = section("Avisos de tus sesiones");
   const dialog = h("dialog", { class: "confirm", "aria-labelledby": "confirm-title" });
-  view.append(header("Conexiones"), el, message, dialog);
+  view.append(header("Conexiones"), el, message, dialog, renderSpotify());
 
   async function draw() {
     const status = await invoke<HookStatusInfo[]>("hooks_status").catch(() => [] as HookStatusInfo[]);
@@ -202,6 +202,47 @@ async function renderConnections(view: HTMLElement) {
   }
 
   await draw();
+}
+
+/** Spotify's search for Buddy: the user's own app (Client ID in settings, Client Secret only in Credential Manager). */
+function renderSpotify(): HTMLElement {
+  const { el, card } = section("Spotify");
+  const note = h("p", { class: "muted small", text: "Spotify exige Premium en la cuenta dueña de la app. Reproducir no lo necesita: Buddy usa la app de Spotify de tu PC." });
+  el.append(note);
+
+  async function draw() {
+    const id = await invoke<string>("spotify_client_id").catch(() => "");
+    if (id) {
+      card.replaceChildren(row("Conectado", `App ${id.slice(0, 6)}… · el secreto está en el Administrador de credenciales`,
+        button("Desconectar", () => void invoke("spotify_disconnect").then(draw))));
+      return;
+    }
+    const clientId = h("input", { class: "text", type: "text", placeholder: "Client ID", "aria-label": "Client ID", autocomplete: "off", spellcheck: "false" });
+    const secret = h("input", { class: "text", type: "password", placeholder: "Client Secret", "aria-label": "Client Secret", autocomplete: "off" });
+    const error = h("p", { class: "error small", role: "alert" });
+    const connect = button("Conectar", async () => {
+      connect.disabled = true;
+      error.textContent = "";
+      try {
+        await invoke("spotify_connect", { clientId: clientId.value, clientSecret: secret.value });
+        await draw();
+      } catch (e) {
+        error.textContent = errorText(e);
+        connect.disabled = false;
+      }
+    }, "primary");
+    card.replaceChildren(
+      h("div", { class: "field" },
+        h("p", { class: "muted small", text: "Para que Buddy busque y ponga música dentro de Spotify (sin buscar en la web):" }),
+        h("p", { class: "muted small", text: "1. Abre el panel de desarrolladores y crea una app (cualquier nombre; en «Redirect URI» pon http://127.0.0.1:8888, no se usa)." }),
+        h("p", { class: "muted small", text: "2. Marca «Web API», guarda y copia aquí su Client ID y su Client Secret." }),
+        h("div", {}, button("Abrir el panel de Spotify", () => void invoke("open_url", { url: "https://developer.spotify.com/dashboard" }))),
+        clientId, secret,
+        h("div", { class: "actions" }, error, connect)));
+  }
+
+  void draw();
+  return el;
 }
 
 // MARK: Uso

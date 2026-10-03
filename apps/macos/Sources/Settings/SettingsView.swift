@@ -30,21 +30,24 @@ enum SettingsWindow {
 
 /// Buddy's Settings: the system's own Settings window with tabs, plain native controls.
 struct SettingsView: View {
+    /// BUDDY_DEBUG_SETTINGS=<tab> opens that tab (debug builds), to look at it without clicking.
+    @State private var tab = ProcessInfo.processInfo.environment["BUDDY_DEBUG_SETTINGS"].flatMap { ["general", "carpetas", "conexiones", "uso", "agentes", "mensajitos"].contains($0) ? $0 : nil } ?? "general"
+
     var body: some View {
         if let core = AppServices.core {
-            TabView {
+            TabView(selection: $tab) {
                 GeneralSettings(core: core)
-                    .tabItem { Label("General", systemImage: "gearshape") }
+                    .tabItem { Label("General", systemImage: "gearshape") }.tag("general")
                 FolderSettings(core: core)
-                    .tabItem { Label("Carpetas", systemImage: "folder") }
+                    .tabItem { Label("Carpetas", systemImage: "folder") }.tag("carpetas")
                 ConnectionSettings(core: core)
-                    .tabItem { Label("Conexiones", systemImage: "point.3.connected.trianglepath.dotted") }
+                    .tabItem { Label("Conexiones", systemImage: "point.3.connected.trianglepath.dotted") }.tag("conexiones")
                 UsageSettings(core: core)
-                    .tabItem { Label("Uso", systemImage: "chart.bar") }
+                    .tabItem { Label("Uso", systemImage: "chart.bar") }.tag("uso")
                 AgentSettings(core: core)
-                    .tabItem { Label("Agentes", systemImage: "person.2") }
+                    .tabItem { Label("Agentes", systemImage: "person.2") }.tag("agentes")
                 BriefingSettings(core: core)
-                    .tabItem { Label("Mensajitos", systemImage: "newspaper") }
+                    .tabItem { Label("Mensajitos", systemImage: "newspaper") }.tag("mensajitos")
             }
             .frame(width: 680, height: 460)
         } else {
@@ -208,6 +211,7 @@ private struct ConnectionSettings: View {
             if let message {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
+            SpotifySection(core: core)
         }
         .formStyle(.grouped)
         .onAppear { status = core.hooksStatus() }
@@ -239,6 +243,77 @@ private struct ConnectionSettings: View {
             message = "No se pudo: \(error)"
         }
         status = core.hooksStatus()
+    }
+}
+
+/// Spotify's search for Buddy: the user's own app (Client ID in settings, Client Secret only in the Keychain).
+private struct SpotifySection: View {
+    let core: BuddyCore
+    @State private var clientID = ""
+    @State private var secret = ""
+    @State private var connected = ""
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            if connected.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Para que Buddy busque y ponga música dentro de Spotify (sin buscar en la web):")
+                    Text(verbatim: "1. Abre el panel de desarrolladores y crea una app (cualquier nombre; en «Redirect URI» pon http://127.0.0.1:8888, no se usa).")
+                    Text("2. Marca «Web API», guarda y copia aquí su Client ID y su Client Secret.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Link(destination: URL(string: "https://developer.spotify.com/dashboard")!) {
+                    Label("Abrir el panel de Spotify", systemImage: "arrow.up.right.square")
+                }
+                TextField("Client ID", text: $clientID, prompt: Text("Pégalo aquí"))
+                SecureField("Client Secret", text: $secret, prompt: Text("Pégalo aquí"))
+                HStack {
+                    if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                    Spacer()
+                    if busy { ProgressView().controlSize(.small) }
+                    Button("Conectar", action: connect)
+                        .disabled(busy || clientID.trimmingCharacters(in: .whitespaces).isEmpty || secret.isEmpty)
+                }
+            } else {
+                LabeledContent {
+                    Button("Desconectar") {
+                        try? core.spotifyDisconnect()
+                        connected = core.spotifyClientId()
+                    }
+                } label: {
+                    Text("Conectado")
+                    Text("App \(connected.prefix(6))… · el secreto está en tu Llavero")
+                }
+            }
+        } header: {
+            Label("Spotify", systemImage: "music.note")
+        } footer: {
+            Text("Spotify exige Premium en la cuenta dueña de la app. Reproducir no lo necesita: Buddy usa la app de Spotify de tu Mac.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onAppear { connected = core.spotifyClientId() }
+    }
+
+    private func connect() {
+        busy = true
+        error = nil
+        let (id, key) = (clientID, secret)
+        Task.detached {
+            let result = Result { try core.spotifyConnect(clientId: id, clientSecret: key) }
+            await MainActor.run {
+                busy = false
+                switch result {
+                case .success:
+                    secret = ""
+                    connected = core.spotifyClientId()
+                case let .failure(failure):
+                    if case let CoreError.Hooks(message) = failure { error = message } else { error = String(describing: failure) }
+                }
+            }
+        }
     }
 }
 

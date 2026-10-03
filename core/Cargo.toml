@@ -23,6 +23,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 uniffi = { workspace = true, optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 base64 = "0.23.1"
+ureq = "3"
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
