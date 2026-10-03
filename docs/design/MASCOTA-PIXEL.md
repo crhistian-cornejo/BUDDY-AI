@@ -78,6 +78,17 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 Sentado y aburrido: `sit-down` (3), `sit` (1, fijo), `sit-blink` (2), `sit-look` (4), `sit-yawn` (5), `sit-swing` (7) y
 `stand-up` (2). `sleep` ahora también es sentado. Las hojas de cada estado salen con `scripts/characters/buddy_base.py --preview DIR`.
 
+### Con lentes y laptop (2026-10-02)
+
+Cuando Buddy piensa o trabaja (el chat respondiendo, una tarea de un agente) se pone lentes, se sienta, saca una
+laptop plateada y teclea; al terminar la cierra, se quita los lentes y se levanta (y reacciona si hay `done`/`error`).
+
+- Estados: `laptop-on` (10 fotogramas), `laptop-type` (4, `work`), `laptop-think` (4, `think`: ojos arriba y tres
+  puntos) y `laptop-off` (10). Las apps traducen `think`/`work` a estos; `ask` y `listen` siguen igual y primero
+  guardan la laptop.
+- Se dibuja con los mismos 16 colores (lentes y tapa en `k`/`w`/`l`, logo encendido en `y`). Con «reducir
+  movimiento» se muestra el fotograma fijo sin transiciones.
+
 ### Vida en reposo (núcleo: `core/src/pet.rs`)
 
 - **`PetBrain` decide** cada 4–9 s: respirar, parpadear, mirar a los lados, saludar o pasear (22 %).

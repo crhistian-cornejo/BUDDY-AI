@@ -33,6 +33,16 @@ let hovering = false;
 let waiting = false;
 /** An agent state (think, work, ask, listen) shown until the next state; the idle loop is stopped meanwhile. */
 let activity: string | null = null;
+/** Sitting at the laptop with the glasses on: thinking and working show these instead of the plain states. */
+let atLaptop = false;
+const LAPTOP_STATES: Record<string, string> = { think: "laptop-think", work: "laptop-type" };
+
+/** Closes the laptop, takes the glasses off and stands up, if Buddy was at it. */
+async function leaveLaptop(): Promise<boolean> {
+  if (!atLaptop) return true;
+  atLaptop = false;
+  return player.has("laptop-off") ? player.play("laptop-off", 0) : true;
+}
 
 async function main(): Promise<void> {
   const sprite = await invoke<Sprite>("sprite", { id: "buddy-base" });
@@ -120,7 +130,7 @@ canvas.addEventListener("mousedown", (down) => {
         player.show("idle");
         lastUse = Date.now();
         await invoke("pet_settle");
-        if (activity !== null) void player.loop(activity);
+        if (activity !== null) void player.loop(atLaptop ? (LAPTOP_STATES[activity] ?? activity) : activity);
         else void life();
       });
   };
@@ -153,7 +163,18 @@ void listen<{ type: string; state?: string }>("core-event", ({ payload }) => {
     seated = false;
     lastUse = Date.now();
     lifeToken++;
+    const laptop = LAPTOP_STATES[state];
     void (async () => {
+      if (laptop && player.has(laptop)) {
+        if (!atLaptop) {
+          if (wasSeated && !reduceMotion.matches && !(await player.play("stand-up", 0))) return;
+          atLaptop = true;
+          if (!reduceMotion.matches && !(await player.play("laptop-on", 0, undefined, "laptop-type"))) return;
+        }
+        void player.loop(laptop);
+        return;
+      }
+      if (!(await leaveLaptop())) return;
       if (wasSeated && !reduceMotion.matches && !(await player.play("stand-up", 0))) return;
       void player.loop(state);
     })();
@@ -166,8 +187,12 @@ void listen<{ type: string; state?: string }>("core-event", ({ payload }) => {
     seated = false;
     lastUse = Date.now();
     player.stop();
-    player.show("idle");
-    const reaction = reacts ? player.play(state, 1) : Promise.resolve(true);
+    player.show(atLaptop ? "laptop-type" : "idle");
+    const reaction = (async () => {
+      if (!(await leaveLaptop())) return false;
+      player.show("idle");
+      return reacts ? player.play(state, 1) : true;
+    })();
     // A plan made while seated (or the stopped loop) must not run: plan again once the reaction ends.
     if (wasBusy || wasSeated || waiting) {
       lifeToken++;

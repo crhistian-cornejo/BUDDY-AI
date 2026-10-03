@@ -239,6 +239,22 @@ mod tests {
     }
 
     #[test]
+    fn buddy_base_puts_on_glasses_and_works_at_a_laptop() {
+        let c = builtin("buddy-base").unwrap();
+        let frames = |name: &str| &c.states.get(name).unwrap_or_else(|| panic!("missing {name}")).frames;
+        for name in ["laptop-on", "laptop-off", "laptop-type", "laptop-think"] {
+            for frame in frames(name) {
+                assert_eq!(frame.len(), 48, "{name}");
+                assert!(frame.iter().all(|row| row.chars().count() == 48), "{name}");
+            }
+        }
+        // Opening ends on the first typing frame (the apps hold it as the rest frame), and the loops keep moving.
+        assert_eq!(frames("laptop-on").last(), Some(&frames("laptop-type")[0]), "opening ends where typing starts");
+        assert!(frames("laptop-type").windows(2).all(|w| w[0] != w[1]), "typing keeps moving");
+        assert!(frames("laptop-think").iter().any(|f| f != &frames("laptop-think")[0]), "the dots animate");
+    }
+
+    #[test]
     fn rasterizes_to_argb_with_idle_first() {
         let c = Character::parse(&tiny(r#"[["kr",".k"]]"#)).unwrap();
         let sprite = c.rasterize();

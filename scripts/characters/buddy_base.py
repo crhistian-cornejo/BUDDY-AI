@@ -49,6 +49,8 @@ class Pose:
     right_step: int = 0
     dangle: bool = False  # legs hang (being dragged)
     sit: int = 0  # 0 standing, 1 crouching (sitting down / getting up), 2 sitting with the feet forward
+    glasses: int = 0  # 1 round glasses over the eyes
+    laptop: int = 0  # on the lap (sitting only): 1 closed, 2-4 the lid rising, 5 open with the logo lit
     symbol: str = ""  # dots1 dots2 dots3 question question2 exclaim star
 
 
@@ -133,6 +135,13 @@ def draw(p: Pose):
                 g[y][x] = "S" if (y >= 37 + bd or x >= 27) else "s"
     if p.sit == 2:
         seated_feet(g, p.left_leg, p.right_leg)
+        if p.laptop:
+            draw_laptop(g, p.laptop, bd)
+            # the hands rest on the sides of the keyboard, in front of it
+            if p.left_arm == "down":
+                side_arm(12, 1 if p.hands == 1 else 0)
+            if p.right_arm == "down":
+                side_arm(32, 1 if p.hands == 2 else 0)
 
     # hood (head), over the body; `head` bobs it down
     def hood(x, y):
@@ -161,6 +170,8 @@ def draw(p: Pose):
                 else:
                     g[y][x] = "S" if (x >= F[2] - 2 or y >= F[3] - 1) else "s"
 
+    if p.glasses:
+        draw_glasses(g, 19 + dy)
     draw_eyes(g, p.eyes, 19 + dy)
     ey = 19 + dy
     for bx in (17, 18, 29, 30):
@@ -210,6 +221,39 @@ def seated_feet(g, left_lift=0, right_lift=0):
         for y in (y0 + 2, y0 + 3):  # sole pad
             for x in range(fx + 2, fx + 5):
                 g[y][x] = "S" if y == y0 + 3 else "s"
+
+
+def draw_glasses(g, ey):
+    """Round dark frames around both eyes, a bridge between them and a glint on each lens."""
+    for ex in (19, 27):
+        for x in range(ex - 1, ex + 3):
+            g[ey - 1][x] = g[ey + 4][x] = "k"
+        for y in range(ey, ey + 4):
+            g[y][ex - 2] = g[y][ex + 3] = "k"
+        g[ey][ex - 1] = "w"
+    g[ey + 1][23] = g[ey + 1][24] = "k"
+    g[ey + 1][16] = g[ey + 1][31] = "k"
+
+
+def draw_laptop(g, stage, bd):
+    """A silver laptop on the lap seen from the back: a slab for the base, a lid that rises, a small lit logo."""
+    base = 40 + bd  # the two base rows end at the bottom of the figure
+    for y in (base, base + 1):
+        for x in range(13, 35):
+            g[y][x] = "k" if (y == base + 1 or x in (13, 34)) else "l"
+    for x in range(15, 33):
+        g[base - 1][x] = "k"
+    if stage >= 2:
+        top = base - 1 - {2: 2, 3: 5, 4: 7, 5: 7}[stage]
+        for y in range(top, base):
+            for x in range(15, 33):
+                edge = y == top or x in (15, 32)
+                g[y][x] = "k" if edge else ("w" if y < base - 3 else "l")
+        if stage >= 4:
+            mid = (top + base) // 2
+            logo = "y" if stage == 5 else "l"
+            for x, y in ((23, mid), (24, mid), (23, mid + 1), (24, mid + 1)):
+                g[y][x] = logo
 
 
 def raised_arm(g, ax, ay, mirror=False):
@@ -304,6 +348,7 @@ def draw_symbol(g, symbol):
 
 I = Pose()
 SIT = Pose(sit=2, eyes="half", mouth="flat")
+LAP = Pose(sit=2, eyes="down", mouth="flat", glasses=1)  # seated at the laptop
 STATES = {
     # name: (fps, poses). Every state but idle is played by the app and then returns to idle.
     "idle": (4, [I, replace(I, hands=1), replace(I, eyes="left", hands=1),
@@ -378,6 +423,25 @@ STATES = {
                      replace(SIT, eyes="closed", mouth="o")]),
     "sit-swing": (6, [replace(SIT, right_leg=1), replace(SIT, right_leg=2), replace(SIT, right_leg=1), SIT,
                       replace(SIT, right_leg=1), replace(SIT, right_leg=2), replace(SIT, right_leg=1)]),
+    # Working at the laptop: glasses on, sits down, opens the laptop and types; leaving reverses it.
+    "laptop-on": (8, [replace(I, eyes="happy", right_arm="up"),
+                      replace(I, eyes="happy", right_arm="up", glasses=1),
+                      replace(I, glasses=1),
+                      replace(I, glasses=1, sit=1, mouth="flat"),
+                      replace(LAP, laptop=0, head=1),
+                      replace(LAP, laptop=1), replace(LAP, laptop=2), replace(LAP, laptop=3),
+                      replace(LAP, laptop=4), replace(LAP, laptop=5, hands=1)]),
+    "laptop-off": (8, [replace(LAP, laptop=5, hands=2), replace(LAP, laptop=4), replace(LAP, laptop=3),
+                       replace(LAP, laptop=2), replace(LAP, laptop=1), replace(LAP, laptop=0, head=1),
+                       replace(I, glasses=1, sit=1, mouth="flat"), replace(I, glasses=1),
+                       replace(I, eyes="happy", right_arm="up", glasses=1),
+                       replace(I, eyes="happy", right_arm="up")]),
+    "laptop-type": (6, [replace(LAP, laptop=5, hands=1), replace(LAP, laptop=5, eyes="half", hands=0),
+                        replace(LAP, laptop=5, hands=2), replace(LAP, laptop=4, hands=0)]),
+    "laptop-think": (3, [replace(LAP, laptop=5, eyes="up", symbol="dots1"),
+                         replace(LAP, laptop=5, eyes="up", symbol="dots2"),
+                         replace(LAP, laptop=5, eyes="up", symbol="dots3"),
+                         replace(LAP, laptop=5, eyes="up")]),
     "sleep": (1, [
         replace(SIT, eyes="closed"),
         replace(SIT, eyes="closed", head=1),

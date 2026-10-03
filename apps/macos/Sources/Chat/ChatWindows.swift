@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// The composer and the chat next to Buddy. Placed on the side of the pet with more room, the chat growing upwards
-/// with its content (never past the screen). Any click outside closes them and gives the keyboard back to the app
-/// that had it.
+/// with its content (never past the screen). They stay open until the user clicks the X or presses Escape (a click
+/// elsewhere does not close them); closing gives the keyboard back to the app that had it.
 @MainActor
 final class ChatWindows {
     private let chat: ChatController
@@ -14,7 +14,6 @@ final class ChatWindows {
     private var contentHeight: CGFloat = 0
     /// The composer's own height (it grows with the text, up to its line limit).
     private var composerContentHeight: CGFloat = 0
-    private var clickMonitor: Any?
     private var moveObserver: NSObjectProtocol?
     private let history = HistoryWindow()
     /// The app that had the keyboard before the chat opened.
@@ -60,9 +59,6 @@ final class ChatWindows {
         observeChat()
         updateChatPanel()
         layout()
-        clickMonitor = clickMonitor ?? NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.closeIfClickedOutside() }
-        }
         moveObserver = moveObserver ?? NotificationCenter.default.addObserver(forName: .petMoved, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.layout() }
         }
@@ -98,22 +94,11 @@ final class ChatWindows {
         composerContentHeight = 0
         panel = nil
         contentHeight = 0
-        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
-        clickMonitor = nil
         if let moveObserver { NotificationCenter.default.removeObserver(moveObserver) }
         moveObserver = nil
         // The keyboard goes back where it was (an answer still being written keeps going and is in the history).
         previousApp?.activate()
         previousApp = nil
-    }
-
-    /// A click anywhere outside Buddy's windows closes the chat.
-    private func closeIfClickedOutside() {
-        let p = NSEvent.mouseLocation
-        var mine = [composer, panel].compactMap { $0 }.map(Surface.visibleFrame(of:))
-        mine.append(pet())
-        if let frame = history.frame { mine.append(frame) }
-        if !mine.contains(where: { $0.contains(p) }) { close() }
     }
 
     /// Shows the chat panel once there are messages, and keeps watching.

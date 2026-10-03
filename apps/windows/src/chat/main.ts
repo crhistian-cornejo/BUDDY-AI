@@ -479,10 +479,9 @@ new ResizeObserver(() => {
   void invoke("chat_resize", { height: Math.ceil($("root").getBoundingClientRect().height) });
 }).observe($("root"));
 
-// Clicking elsewhere closes the chat, unless an answer is being written.
+// The chat stays open until the X or Escape; a click elsewhere does not close it.
 void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
   if (focused) input.focus();
-  else if (!streaming) close();
 });
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));

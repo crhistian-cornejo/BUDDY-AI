@@ -152,20 +152,54 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Shows an agent state until `nil` (phase 1: thinking, working, asking, error, done).
-    func setActivity(_ state: String?) {
+    /// Buddy is sitting at its laptop (glasses on): thinking and working show this instead of the plain states.
+    private var atLaptop = false
+    private static let laptopStates = ["think": "laptop-think", "work": "laptop-type"]
+
+    /// Closes the laptop, takes the glasses off and stands up, if Buddy was at it.
+    private func leaveLaptop() async {
+        guard atLaptop else { return }
+        atLaptop = false
+        if model.has("laptop-off") { await model.play("laptop-off", duration: 0) }
+    }
+
+    /// Shows an agent state until `nil` (phase 1: thinking, working, asking, error, done). Thinking and working
+    /// put the glasses on, sit down and open a laptop; any other state (or none) puts it all away first.
+    func setActivity(_ state: String?, leaveLaptop leave: Bool = true) {
         activityTask?.cancel()
         let wasBusy = activity != nil
         let wasSeated = seated
         activity = state
         if state != nil || wasBusy { used(standUp: false) }
-        guard let state, model.has(state) else {
-            if !seated { model.show("idle") }
+        let laptop = state.flatMap { Self.laptopStates[$0] }.flatMap { model.has($0) ? $0 : nil }
+        guard let state, laptop != nil || model.has(state) else {
+            if atLaptop && leave {
+                activityTask = Task { [weak self] in
+                    await self?.leaveLaptop()
+                    if let self, !Task.isCancelled, !self.seated { self.model.show("idle") }
+                }
+            } else if !seated {
+                model.show("idle")
+            }
             return
         }
         activityTask = Task { [weak self] in
             guard let self else { return }
-            if wasSeated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            if let laptop {
+                if !self.atLaptop {
+                    if wasSeated && !reduce { guard await self.model.play("stand-up", duration: 0) else { return } }
+                    self.atLaptop = true
+                    if !reduce {
+                        guard await self.model.play("laptop-on", duration: 0, rest: "laptop-type") else { return }
+                    }
+                }
+                await self.model.loop(laptop)
+                return
+            }
+            await self.leaveLaptop()
+            if Task.isCancelled { return }
+            if wasSeated && !reduce {
                 guard await self.model.play("stand-up", duration: 0) else { return }
             }
             await self.model.loop(state)
@@ -178,7 +212,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         case "think", "work", "ask", "listen":
             setActivity(state)
         case "done", "error":
-            setActivity(nil)
+            setActivity(nil, leaveLaptop: false)   // the reaction puts the laptop away first
             react(state)
         default:
             setActivity(nil)
@@ -190,6 +224,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         used(standUp: false)
         Task { [weak self] in
             guard let self else { return }
+            await self.leaveLaptop()
             await self.model.play(state, duration: 1)
             if let activity = self.activity { self.setActivity(activity) }
         }
