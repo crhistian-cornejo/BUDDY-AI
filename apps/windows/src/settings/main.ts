@@ -496,7 +496,7 @@ async function renderBriefing(view: HTMLElement) {
   view.append(
     header("Mensajitos"),
     section(null, settingRow("briefing.enabled", "Mensajitos del día",
-      "A las 8, 13 y 19 h Buddy busca lo nuevo con el modelo más barato (3 búsquedas como mucho). Si no hay nada nuevo, no dice nada.")).el,
+      "A las 8, 16 y 19 h Buddy busca lo nuevo con el modelo más barato (3 búsquedas como mucho). Si no hay nada nuevo, no dice nada. Al empezar otro día se borran las noticias anteriores de todos los paneles.")).el,
     section("Qué buscar",
       h("div", { class: "field" }, topics,
         h("div", { class: "footer-line" },

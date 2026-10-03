@@ -329,12 +329,22 @@ impl Store {
         Ok(())
     }
 
-    /// Briefing lines of the last `seconds`, newest first.
-    pub fn briefing_items(&self, seconds: i64) -> Result<Vec<crate::briefing::BriefingItem>, CoreError> {
+    /// Remove yesterday's news and schedule markers, even when briefings are disabled.
+    pub fn reset_briefing_day(&self, today: &str) -> Result<bool, CoreError> {
+        let changed = self.setting("briefing.day")?.as_deref() != Some(today);
+        if !changed { return Ok(false); }
+        self.conn.execute("DELETE FROM briefing_items WHERE date(at, 'unixepoch', 'localtime') <> ?1", params![today])?;
+        self.conn.execute("DELETE FROM settings WHERE key LIKE 'briefing.done.%' AND key NOT LIKE ?1", params![format!("briefing.done.{today}.%")])?;
+        if changed { self.set_setting("briefing.day", today)?; }
+        Ok(changed)
+    }
+
+    /// Only the current local calendar day's news, newest first.
+    pub fn briefing_items(&self, today: &str) -> Result<Vec<crate::briefing::BriefingItem>, CoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT topic, text, url, at FROM briefing_items WHERE at >= unixepoch() - ?1 ORDER BY at DESC, id ASC LIMIT 30",
+            "SELECT topic, text, url, at FROM briefing_items WHERE date(at, 'unixepoch', 'localtime') = ?1 ORDER BY at DESC, id ASC LIMIT 30",
         )?;
-        let rows = stmt.query_map(params![seconds], |r| {
+        let rows = stmt.query_map(params![today], |r| {
             Ok(crate::briefing::BriefingItem { topic: r.get(0)?, text: r.get(1)?, url: r.get(2)?, at: r.get(3)? })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // A new «mensajito»: Buddy says the first line; the notch keeps the list.
                 if case let .briefingReady(count, headline) = event {
-                    pet?.say(Self.short(headline) + (count > 1 ? " (+\(count - 1))" : ""), seconds: 8)
+                    if count > 0 { pet?.say(Self.short(headline) + (count > 1 ? " (+\(count - 1))" : ""), seconds: 8) }
                     NotificationCenter.default.post(name: .buddyBriefingReady, object: nil)
                 }
             })
@@ -105,10 +105,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return nil
             }
-            // Today's runs (8, 13, 19 h): once a little after launch, then on the hour. The core skips what already ran.
+            // Today's runs (8, 16, 19 h): once a little after launch, then every minute. The core skips what already ran.
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) { core.briefingTick() }
-            let timer = Timer(timeInterval: 3600, repeats: true) { _ in core.briefingTick() }
-            timer.tolerance = 300
+            let timer = Timer(timeInterval: 60, repeats: true) { _ in core.briefingTick() }
+            timer.tolerance = 1
             RunLoop.main.add(timer, forMode: .common)
             briefingTimer = timer
             #if DEBUG

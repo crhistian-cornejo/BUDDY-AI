@@ -1,5 +1,5 @@
 //! Briefing («mensajitos»): what is interesting today about the user's topics (engineering and technology, their
-//! sports…), in a few short lines. Token rules: a morning summary plus at most two updates a day (8:00, 13:00,
+//! sports…), in a few short lines. Token rules: a morning summary plus at most two updates a day (8:00, 16:00,
 //! 19:00 local time), the cheapest model (Haiku), at most 3 web searches per run, and silence when nothing is new
 //! (the lines already said today are passed in so they are not repeated). Each run is metered («mensajitos»).
 
@@ -20,7 +20,7 @@ pub const ENABLED_KEY: &str = "briefing.enabled";
 pub const DEFAULT_TOPICS: &str = "noticias de ingeniería y tecnología (IA, desarrollo de software, Apple); \
 fútbol: resultados, lesiones y previas de la Liga 1 de Perú, LaLiga, Premier League y Champions";
 /// Local hours of the three runs of a day.
-pub const SLOTS: [u32; 3] = [8, 13, 19];
+pub const SLOTS: [u32; 3] = [8, 16, 19];
 const MAX_ITEMS: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -56,13 +56,24 @@ impl Briefing {
         self.store.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// The lines of the last 24 hours, newest first.
+    /// The current local day's news. Reading also removes expired persisted content.
     pub fn latest(&self) -> Vec<BriefingItem> {
-        self.lock().briefing_items(24 * 3600).unwrap_or_default()
+        let today = local_now().1;
+        self.reset_day(&today);
+        self.lock().briefing_items(&today).unwrap_or_default()
     }
 
-    /// Runs when a slot of today has passed and has not run yet (call at launch and on each hourly tick).
+    fn reset_day(&self, today: &str) {
+        let changed = self.lock().reset_briefing_day(today).unwrap_or(false);
+        if changed {
+            // Zero items means refresh/clear all surfaces without announcing a headline.
+            self.bus.publish(Event::BriefingReady { count: 0, headline: String::new() });
+        }
+    }
+
+    /// Runs when a slot of today has passed and has not run yet (call at launch and on each minute tick).
     pub fn tick(self: &Arc<Self>, local_hour: u32, today: &str) {
+        self.reset_day(today);
         let off = self.lock().setting(ENABLED_KEY).ok().flatten().as_deref() == Some("false");
         let Some(slot) = SLOTS.iter().rev().find(|s| local_hour >= **s) else { return };
         let key = format!("briefing.done.{today}.{slot}");
@@ -88,14 +99,21 @@ impl Briefing {
 
     fn run_inner(&self) -> Result<usize, CoreError> {
         let topics = self.lock().setting(TOPICS_KEY)?.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| DEFAULT_TOPICS.into());
-        let said: Vec<String> = self.latest().into_iter().map(|i| i.text).collect();
-        let prompt = prompt(&topics, &said, &local_now().1);
+        let today = local_now().1;
+        self.reset_day(&today);
+        let said: Vec<String> = self.lock().briefing_items(&today)?.into_iter().map(|i| i.text).collect();
+        let prompt = prompt(&topics, &said, &today);
         let Some((answer, tokens)) = self.source.ask(&prompt) else {
             log::line("mensajitos: sin respuesta");
             return Ok(0);
         };
         if let Some(t) = tokens {
             let _ = self.lock().record_tokens("mensajitos", "claude", &t);
+        }
+        let current_day = local_now().1;
+        if current_day != today {
+            self.reset_day(&current_day);
+            return Ok(0); // A response started yesterday must not repopulate today's news.
         }
         let now = now();
         let items: Vec<BriefingItem> = parse(&answer)
@@ -262,7 +280,7 @@ mod tests {
     fn new_lines_are_kept_announced_and_metered() {
         let (b, rx) = briefing(&[r#"{"items":[{"topic":"tecnología","text":"Apple presenta el M6 con más núcleos","url":"https://apple.com"}]}"#]);
         assert_eq!(b.run_now().unwrap(), 1);
-        assert!(matches!(rx.try_recv().unwrap(), Event::BriefingReady { count: 1, .. }));
+        assert!(rx.try_iter().any(|e| matches!(e, Event::BriefingReady { count: 1, .. })));
         assert_eq!(b.latest()[0].url.as_deref(), Some("https://apple.com"));
         assert_eq!(b.lock().token_report(1).unwrap()[0].feature, "mensajitos");
     }
@@ -275,7 +293,7 @@ mod tests {
             r#"{"items":[]}"#,
         ]);
         assert_eq!(b.run_now().unwrap(), 1);
-        let _ = rx.try_recv();
+        let _ = rx.try_iter().count();
         assert_eq!(b.run_now().unwrap(), 0, "a rephrased repeat is not news");
         assert_eq!(b.run_now().unwrap(), 0);
         assert!(rx.try_recv().is_err(), "silence when nothing is new");
@@ -289,8 +307,36 @@ mod tests {
         b.tick(9, "2026-10-02");
         assert!(b.lock().setting("briefing.done.2026-10-02.8").unwrap().is_some());
         b.lock().set_setting(ENABLED_KEY, "false").unwrap();
-        b.tick(14, "2026-10-02");
-        assert_eq!(b.lock().setting("briefing.done.2026-10-02.13").unwrap(), None, "off means off");
+        b.tick(17, "2026-10-02");
+        assert_eq!(b.lock().setting("briefing.done.2026-10-02.16").unwrap(), None, "off means off");
+    }
+
+    #[test]
+    fn a_new_day_deletes_news_and_old_slots_even_when_disabled() {
+        let (b, rx) = briefing(&[]);
+        let store = b.lock();
+        store.set_setting(ENABLED_KEY, "false").unwrap();
+        store.set_setting("briefing.day", "2000-01-01").unwrap();
+        store.set_setting("briefing.done.2000-01-01.19", "1").unwrap();
+        store.add_briefing_items(&[BriefingItem { topic: "t".into(), text: "old news".into(), url: None, at: 946728000 }]).unwrap();
+        drop(store);
+        b.tick(0, "2026-10-03");
+        assert!(b.lock().briefing_items("2000-01-01").unwrap().is_empty(), "deleted, not merely hidden");
+        assert!(b.lock().setting("briefing.done.2000-01-01.19").unwrap().is_none());
+        assert!(matches!(rx.try_recv().unwrap(), Event::BriefingReady { count: 0, .. }));
+        b.tick(1, "2026-10-03");
+        assert!(rx.try_recv().is_err(), "one reset per day");
+    }
+
+    #[test]
+    fn afternoon_slot_is_four_pm_and_today_survives_refreshes() {
+        assert_eq!(SLOTS, [8, 16, 19]);
+        let (b, _rx) = briefing(&[]);
+        let today = local_now().1;
+        b.reset_day(&today);
+        b.lock().add_briefing_items(&[BriefingItem { topic: "t".into(), text: "today".into(), url: None, at: now() }]).unwrap();
+        b.reset_day(&today);
+        assert_eq!(b.latest().len(), 1);
     }
 
     #[test]

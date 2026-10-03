@@ -432,7 +432,7 @@ fn short(text: &str, limit: usize) -> String {
     format!("{}…", text.chars().take(limit - 1).collect::<String>().trim_end())
 }
 
-/// Today's runs of the «mensajitos» (8, 13, 19 h): once a little after launch, then hourly; the core skips what ran.
+/// Today's runs of the «mensajitos» (8, 16, 19 h): once a little after launch, then every minute; the core skips what ran.
 fn start_briefing(core: &Arc<BuddyCore>) {
     let core = core.clone();
     std::thread::Builder::new()
@@ -441,7 +441,7 @@ fn start_briefing(core: &Arc<BuddyCore>) {
             std::thread::sleep(Duration::from_secs(20));
             loop {
                 core.briefing_tick();
-                std::thread::sleep(Duration::from_secs(3600));
+                std::thread::sleep(Duration::from_secs(60));
             }
         })
         .expect("briefing thread");
@@ -772,7 +772,7 @@ fn forward_events(app: &AppHandle, core: &BuddyCore) {
                 // A new «mensajito»: Buddy says the first line; the bar keeps the list.
                 if let buddy_core::Event::BriefingReady { count, headline } = &event {
                     let more = if *count > 1 { format!(" (+{})", count - 1) } else { String::new() };
-                    say(&app, format!("{}{more}", short(headline, 72)));
+                    if *count > 0 { say(&app, format!("{}{more}", short(headline, 72))); }
                 }
                 // The user allowed a screenshot on the card: take it off this thread, then tell the core.
                 if let buddy_core::Event::ScreenshotRequest { path } = &event {

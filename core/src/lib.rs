@@ -407,7 +407,7 @@ impl BuddyCore {
         self.briefing.latest()
     }
 
-    /// Runs the briefing when one of today's slots (8, 13, 19 h) is due. Call at launch and once an hour.
+    /// Runs the briefing when one of today's slots (8, 16, 19 h) is due. Call at launch and once a minute.
     pub fn briefing_tick(&self) {
         let (hour, today) = briefing::local_now();
         self.briefing.tick(hour, &today);

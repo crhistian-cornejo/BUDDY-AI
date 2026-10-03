@@ -502,7 +502,7 @@ private struct BriefingSettings: View {
         Form {
             Section {
                 CoreToggle(core: core, key: "briefing.enabled", title: "Mensajitos del día",
-                           detail: "A las 8, 13 y 19 h Buddy busca lo nuevo con el modelo más barato (3 búsquedas como mucho). Si no hay nada nuevo, no dice nada.")
+                           detail: "A las 8, 16 y 19 h Buddy busca lo nuevo con el modelo más barato (3 búsquedas como mucho). Si no hay nada nuevo, no dice nada. Al empezar otro día se borran las noticias anteriores de todos los paneles.")
             }
             Section("Qué buscar") {
                 TextField("Temas", text: $topics, axis: .vertical)
