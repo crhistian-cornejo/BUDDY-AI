@@ -44,7 +44,7 @@ struct ComposerView: View {
             }
             .padding(8)
             .frame(width: ChatMetrics.composerWidth)
-            .buddySurface(cornerRadius: ChatMetrics.composerHeight / 2, prominent: true, margin: 0)
+            .buddySurface(cornerRadius: ChatMetrics.composerHeight / 2, prominent: true, castsShadow: false, margin: 0)
             .overlay {
                 RoundedRectangle(cornerRadius: ChatMetrics.composerHeight / 2, style: .continuous)
                     .strokeBorder(Color.accentColor.opacity(focused ? 0.65 : 0), lineWidth: 1.5)

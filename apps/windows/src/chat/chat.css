@@ -218,7 +218,6 @@ button {
   border-radius: 22px;
   background: var(--color-surface-raised);
   border: 1px solid color-mix(in srgb, var(--color-text) 24%, var(--color-surface-raised));
-  box-shadow: 0 5px 14px rgb(0 0 0 / 40%);
 }
 
 #composer:focus-within {

@@ -17,7 +17,7 @@ enum Surface {
 
 extension View {
     /// The view on Buddy's surface: system glass, continuous rounded corners, hairline, soft shadow and the margin.
-    func buddySurface(cornerRadius: CGFloat, prominent: Bool = false, margin: CGFloat = Surface.margin) -> some View {
+    func buddySurface(cornerRadius: CGFloat, prominent: Bool = false, castsShadow: Bool = true, margin: CGFloat = Surface.margin) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return self
             .background {
@@ -32,7 +32,7 @@ extension View {
             .tooltipHost()
             // Barely there: a hairline that only separates it from a background of the same colour, a very soft shadow.
             .overlay(shape.strokeBorder(Color.dynamic(light: "#000000", dark: "#FFFFFF").opacity(prominent ? 0.24 : 0.05), lineWidth: prominent ? 1 : 0.5))
-            .shadow(color: .black.opacity(prominent ? 0.4 : 0.08), radius: prominent ? 14 : 10, y: prominent ? 5 : 3)
+            .shadow(color: .black.opacity(castsShadow ? (prominent ? 0.4 : 0.08) : 0), radius: prominent ? 14 : 10, y: prominent ? 5 : 3)
             .padding(margin)
     }
 }
