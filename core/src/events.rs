@@ -39,6 +39,8 @@ pub enum Event {
     FocusFinished { minutes: u32 },
     /// The plan figures changed (`usage()` has the new ones).
     UsageChanged,
+    /// Browser detection, connection or the video selected for the notch changed.
+    YouTubeChanged,
     /// New briefing lines («mensajitos»): how many and the first one.
     BriefingReady { count: u32, headline: String },
     /// An agent asked for the music player (checked by the core): `action` is one of `media::ACTIONS`, `open` with
@@ -53,8 +55,9 @@ pub enum Event {
     /// `done` (the turn finished), `error` (the turn failed) or `ended` (the session closed; it is forgotten).
     ///
     /// `cwd` is the session's folder, `terminal` the bundle id of the app it runs in (empty when unknown) and `summary`
-    /// what the agent said last (only on `done`, a short preview): enough for a card that says what happened and
-    /// brings the user back to it.
+    /// a short preview: what the agent said last (on `done`), or the question it asks the user (on `waiting`, when
+    /// it asked one with its question tool; empty otherwise). Enough for a card that says what happened and brings
+    /// the user back to it.
     SessionUpdate { session_id: String, agent: String, project: String, state: String, cwd: String, terminal: String, summary: String },
     /// An agent asks permission for a tool (from its PermissionRequest hook). Answer with `answer_approval`; the
     /// agent waits until then, up to ~110 s, and otherwise asks in its own terminal. `can_allow` is false when the
@@ -83,6 +86,8 @@ pub enum Event {
     BudgetAlert { categoria: String, usado_pct: u32 },
     /// Niko's state changed (a review started or ended, settings): read `niko_status`.
     NikoChanged,
+    /// The phone link changed (relay reached or lost, a phone paired, connected or forgotten): read `remote_status`.
+    RemoteChanged,
 }
 
 #[derive(Default)]

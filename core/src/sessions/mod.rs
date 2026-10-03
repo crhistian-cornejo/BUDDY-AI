@@ -89,6 +89,39 @@ pub(crate) fn state_for(event: &str) -> Option<&'static str> {
     })
 }
 
+/// The question an agent is asking the user, when this event is its question tool starting.
+///
+/// Codex has no event for a question: its `request_user_input` tools arrive as an ordinary PreToolUse, and the
+/// `_async` one returns at once, so the agent goes on working while the question stays on its screen (live check,
+/// Codex 0.160: the answer comes back later as a UserPromptSubmit). Its text and options are for the notice.
+fn question_of(payload: &Value) -> Option<String> {
+    if text(payload, "hook_event_name") != "PreToolUse" || !text(payload, "tool_name").to_lowercase().contains("request_user_input") {
+        return None;
+    }
+    let input = &payload["tool_input"];
+    let first = input["questions"].get(0).unwrap_or(input);
+    let ask = ["title", "question", "header", "prompt"].iter().find_map(|k| first.get(*k).and_then(Value::as_str)).unwrap_or("");
+    let options: Vec<&str> = first
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|o| o.as_str().or_else(|| o.get("label").and_then(Value::as_str)))
+        .collect();
+    let mut out = ask.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !out.is_empty() && !options.is_empty() {
+        out.push_str(&format!(" — {}", options.join(" · ")));
+    }
+    Some(out.chars().take(240).collect())
+}
+
+/// True when this event is a question tool ending with its answer: the tool that waits for the user
+/// (`request_user_input`). The `_async` one ends at once, long before the answer.
+fn answers_question(payload: &Value) -> bool {
+    let tool = text(payload, "tool_name").to_lowercase();
+    text(payload, "hook_event_name") == "PostToolUse" && tool.contains("request_user_input") && !tool.contains("async")
+}
+
 /// `claude`, `codex` or `antigravity`, from the relay's `_agent` tag (anything else is Claude Code, the relay's
 /// default).
 fn agent_of(payload: &Value) -> &'static str {
@@ -145,6 +178,9 @@ struct Inner {
     /// Keyed by (agent, session id).
     sessions: HashMap<(String, String), SessionInfo>,
     pending: HashMap<String, Pending>,
+    /// Sessions whose agent asked the user a question that is still unanswered (same key): they stay `waiting`
+    /// whatever the agent does meanwhile.
+    asked: std::collections::HashSet<(String, String)>,
 }
 
 pub struct SessionHub {
@@ -159,6 +195,7 @@ pub struct SessionHub {
     gate_token: String,
     /// What the player plays, as the app last told us (for the agents' `now_playing`).
     now_playing: Mutex<Option<crate::media::NowPlayingInfo>>,
+    pub youtube: crate::youtube::YouTube,
     /// Screenshots the app is taking, by file: the request waits for the app's word.
     shots: Mutex<HashMap<String, Sender<bool>>>,
     /// Requests of Buddy's tools that live elsewhere in the core (Spotify's search): `None` means "not mine".
@@ -187,6 +224,7 @@ impl SessionHub {
     pub(crate) fn with_timeout(data_dir: PathBuf, bus: Arc<EventBus>, decision_timeout: Duration) -> Self {
         Self {
             data_dir,
+            youtube: crate::youtube::YouTube::new(bus.clone()),
             bus,
             inner: Mutex::new(Inner::default()),
             started: AtomicBool::new(false),
@@ -470,7 +508,8 @@ impl SessionHub {
                     state: entry.state.clone(),
                     cwd: place.cwd.clone(),
                     terminal: place.terminal.clone(),
-                    summary: if state == "done" { place.summary.clone() } else { String::new() },
+                    // What it said last (done), or the question it asks (waiting).
+                    summary: if state == "done" || state == "waiting" { place.summary.clone() } else { String::new() },
                 })
             }
         };
@@ -481,6 +520,7 @@ impl SessionHub {
 }
 
 impl server::Sink for SessionHub {
+    fn youtube(&self, payload: Value) -> String { self.youtube.receive(&payload) }
     fn event(&self, payload: Value) {
         if self.is_own_run(&payload) {
             log::line(format!("gancho de un turno de Buddy ignorado ({})", agent_of(&payload)));
@@ -490,8 +530,37 @@ impl server::Sink for SessionHub {
         let agent = agent_of(&payload);
         // Never the payload itself: tool inputs may hold secrets.
         log::line(format!("gancho {event} ({agent}, {})", project_of(text(&payload, "cwd"))));
+        let session = text(&payload, "session_id");
+        let project = project_of(text(&payload, "cwd"));
+        let key = (agent.to_string(), session.to_string());
+        if let Some(question) = question_of(&payload) {
+            // The agent asks the user something: the session waits for them, and the notice says what is asked.
+            log::line(format!("pregunta ({agent}, {project})"));
+            self.lock().asked.insert(key);
+            self.update_session(agent, session, &project, "waiting", &Place { summary: question, ..Place::of(&payload) });
+            return;
+        }
+        let unanswered = {
+            let mut inner = self.lock();
+            match event {
+                // The answer comes as the user's next message; a stop or the session's end closes the question too.
+                "UserPromptSubmit" | "Interrupt" | "SessionStart" | "SessionEnd" => {
+                    inner.asked.remove(&key);
+                    false
+                }
+                _ if answers_question(&payload) => {
+                    inner.asked.remove(&key);
+                    false
+                }
+                _ => inner.asked.contains(&key),
+            }
+        };
+        // While its question is unanswered the session keeps waiting, whatever the agent does meanwhile.
+        if unanswered {
+            return;
+        }
         if let Some(state) = state_for(event) {
-            self.update_session(agent, text(&payload, "session_id"), &project_of(text(&payload, "cwd")), state, &Place::of(&payload));
+            self.update_session(agent, session, &project, state, &Place::of(&payload));
         }
     }
 
@@ -566,8 +635,10 @@ impl SessionHub {
     /// Puts an approval card in front of the user and waits for the click (or the timeout, or the asker hanging up).
     fn ask(&self, payload: &Value, agent: &str, session_id: String, project: String, closed: &dyn Fn() -> bool) -> Option<&'static str> {
         let shown = format::approval_text(payload);
-        // A command the user allowed for good: no card.
-        let command = payload.get("tool_input").and_then(Value::as_object).and_then(format::command_of);
+        // A command the user allowed for good: no card. Only an agent's own shell tool: an MCP server's tool that
+        // takes a `command` is another program's business, and always asks.
+        let mcp = text(payload, "tool_name").starts_with("mcp__");
+        let command = payload.get("tool_input").and_then(Value::as_object).and_then(format::command_of).filter(|_| !mcp);
         if let Some(command) = command.as_deref().filter(|_| shown.can_allow) {
             if always::load(&self.data_dir).iter().any(|r| r.agent == agent && always::covers(&r.prefix, command)) {
                 log::line(format!("permiso ({agent}): permitido siempre"));
@@ -745,6 +816,23 @@ mod tests {
         assert!(hub.always_rules().is_empty());
     }
 
+    /// A rule is for a shell command: an MCP tool that happens to take a `command` argument always asks.
+    #[test]
+    fn an_always_rule_never_covers_an_mcp_tool() {
+        let (hub, rx, _dir) = hub(Duration::from_secs(5));
+        always::save(&hub.data_dir, &[always::AlwaysRule { agent: "claude".into(), prefix: "git status".into(), added_at: 1 }]);
+        let payload = json!({
+            "hook_event_name": "PermissionRequest", "session_id": "s1", "cwd": "/p/buddy",
+            "tool_name": "mcp__otro__run", "tool_input": { "command": "git status" }
+        });
+        let asker = hub.clone();
+        let asked = std::thread::spawn(move || asker.ask(&payload, "claude", "s1".into(), "buddy".into(), &|| false));
+        let Ok(Event::ApprovalRequest { request_id, always, .. }) = rx.recv_timeout(Duration::from_secs(2)) else { panic!("no card: the rule covered an MCP tool") };
+        assert_eq!(always, "", "and it is not offered for good");
+        hub.answer_approval(&request_id, false);
+        assert_eq!(asked.join().unwrap(), Some("deny"));
+    }
+
     #[test]
     fn a_codex_command_waits_for_the_users_click() {
         let (hub, rx, _dir) = hub(Duration::from_secs(5));
@@ -844,6 +932,49 @@ mod tests {
         assert_eq!(project_of("/Users/a/code/buddy/"), "buddy");
         assert_eq!(project_of(r"C:\Users\a\code\mika"), "mika");
         assert_eq!(project_of(""), "");
+    }
+
+    #[test]
+    fn a_question_from_codex_keeps_the_session_waiting_until_it_is_answered() {
+        let (hub, rx, _dir) = hub(DECISION_TIMEOUT);
+        let ev = |name: &str| json!({ "hook_event_name": name, "session_id": "s1", "cwd": "/p/buddy", "_agent": "codex", "tool_name": "exec" });
+        let question = json!({
+            "hook_event_name": "PreToolUse", "session_id": "s1", "cwd": "/p/buddy", "_agent": "codex",
+            "tool_name": "request_user_input_async",
+            "tool_input": { "questions": [{ "title": "¿Usamos  barras\no una tarjeta?", "options": ["Barras", "Tarjeta"] }] }
+        });
+        hub.event(ev("UserPromptSubmit"));
+        hub.event(question.clone());
+        // The tool returns at once and the agent goes on working, then its turn ends: the question still stands.
+        for name in ["PostToolUse", "PreToolUse", "PostToolUse", "Stop"] {
+            hub.event(ev(name));
+        }
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(events.iter().cloned().map(bare).collect::<Vec<_>>(), vec![update("s1", "codex", "buddy", "working"), update("s1", "codex", "buddy", "waiting")]);
+        let Event::SessionUpdate { summary, cwd, .. } = &events[1] else { panic!("a session update") };
+        assert_eq!((summary.as_str(), cwd.as_str()), ("¿Usamos barras o una tarjeta? — Barras · Tarjeta", "/p/buddy"));
+        assert_eq!(hub.sessions()[0].state, "waiting");
+        // The answer is the user's next message: back to work, and the turn's end is an end again.
+        hub.event(ev("UserPromptSubmit"));
+        hub.event(ev("Stop"));
+        assert_eq!(drain(&rx), vec![update("s1", "codex", "buddy", "working"), update("s1", "codex", "buddy", "done")]);
+        // A stop by the user closes the question too; any other tool is not a question.
+        hub.event(question);
+        hub.event(ev("Interrupt"));
+        assert_eq!(drain(&rx), vec![update("s1", "codex", "buddy", "waiting"), update("s1", "codex", "buddy", "done")]);
+        // The tool that waits for the answer (plan mode) ends when the user has answered: back to work.
+        let waits = |event: &str| json!({
+            "hook_event_name": event, "session_id": "s1", "cwd": "/p/buddy", "_agent": "codex", "tool_name": "request_user_input",
+            "tool_input": { "questions": [{ "id": "q", "header": "Formato", "question": "¿Barras o tarjeta?", "options": [{ "label": "Barras", "description": "…" }] }] }
+        });
+        hub.event(waits("PreToolUse"));
+        hub.event(waits("PostToolUse"));
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(matches!(&events[0], Event::SessionUpdate { state, summary, .. } if state == "waiting" && summary == "¿Barras o tarjeta? — Barras"), "{events:?}");
+        assert!(matches!(&events[1], Event::SessionUpdate { state, .. } if state == "working"));
+        assert_eq!(question_of(&ev("PreToolUse")), None);
+        assert_eq!(question_of(&json!({ "hook_event_name": "PostToolUse", "tool_name": "request_user_input_async" })), None);
+        assert_eq!(question_of(&json!({ "hook_event_name": "PreToolUse", "tool_name": "request_user_input" })).as_deref(), Some(""));
     }
 
     #[test]

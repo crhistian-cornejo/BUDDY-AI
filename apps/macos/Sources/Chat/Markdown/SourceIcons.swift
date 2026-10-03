@@ -18,6 +18,13 @@ enum SourceIcons {
     static let retry: TimeInterval = 7 * 24 * 3600
     static let paths = ["/favicon.ico", "/apple-touch-icon.png"]
 
+    /// Whether `source` may ask its site for its icon: only a site the core reported for this answer (one the
+    /// agent's own tools searched or opened). A link that is only written in the answer's text never causes a
+    /// request: its address is whatever the model wrote, and a request to it could carry data out with no click.
+    static func mayFetch(_ source: ChatSource, reported: [ChatSource]) -> Bool {
+        reported.contains { $0.host == source.host }
+    }
+
     static var enabled: Bool { UserDefaults.standard.object(forKey: settingKey) as? Bool ?? true }
 
     /// `Buddy/icons/` in Application Support.

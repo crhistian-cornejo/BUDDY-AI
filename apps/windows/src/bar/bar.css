@@ -119,7 +119,9 @@ pre.command {
   font: 11px/1.45 "Cascadia Mono", Consolas, monospace;
   white-space: pre-wrap;
   max-height: 8.7em;
-  overflow: hidden;
+  /* Never cut: what is approved must be readable to its end («Permitir» waits for it, see approval.ts). */
+  overflow-y: auto;
+  overflow-wrap: anywhere;
   user-select: text;
 }
 
@@ -615,3 +617,10 @@ button:disabled { opacity: .4; cursor: default; }
     animation: none;
   }
 }
+
+#youtube-prompt { margin-bottom:16px; }
+#youtube-prompt .track strong { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#youtube-viewer { display:flex; flex-direction:column; gap:8px; margin:16px 0 20px; }
+#youtube-viewer iframe { width:100%; height:288px; border:0; background:black; }
+.youtube-actions { display:flex; align-items:center; gap:8px; height:24px; font-size:11px; }
+.youtube-actions span { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

@@ -19,6 +19,8 @@ export default defineConfig({
         chat: resolve(__dirname, "chat.html"),
         history: resolve(__dirname, "history.html"),
         bar: resolve(__dirname, "bar.html"),
+        youtube: resolve(__dirname, "youtube.html"),
+        video: resolve(__dirname, "video.html"),
         settings: resolve(__dirname, "settings.html"),
       },
     },

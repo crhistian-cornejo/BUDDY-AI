@@ -18,10 +18,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chat: ChatController?
     private var chatWindows: ChatWindows?
     private var notch: NotchController?
+    private var videoWindow: VideoWindowController?
+    private var videoQuestionObserver: NSObjectProtocol?
     private var briefingTimer: Timer?
     private var shortcutMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        // Hosted unit tests must not start a second core on the user's live database and hooks socket.
+        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+        #endif
         let tokens = DesignTokens.load()
         do {
             // An empty folder lets the core use ~/Library/Application Support/Buddy.
@@ -57,8 +65,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 chat.draft = text
                 chat.send()
             }
+            let videoWindow = VideoWindowController(core: core, petFrame: { [weak pet] in pet?.frame ?? .zero }, chatFrame: { [weak windows] in windows?.occupied }) { [weak chat, weak windows] in
+                chat?.askVideo(); windows?.open()
+            }
+            self.videoWindow = videoWindow
+            videoQuestionObserver = NotificationCenter.default.addObserver(forName: .buddyVideoQuestion, object: nil, queue: .main) { [weak chat, weak windows] _ in
+                Task { @MainActor in chat?.askVideo(); windows?.open() }
+            }
             // Chat events draw the chat, session events the notch; mascot events animate Buddy.
-            core.subscribe(listener: CoreEvents { [weak chat, weak pet, weak notch] event in
+            core.subscribe(listener: CoreEvents { [weak chat, weak pet, weak notch, weak videoWindow] event in
                 chat?.handle(event)
                 notch?.handle(event)
                 if case let .mascotState(state) = event { pet?.showMascotState(state) }
@@ -73,6 +88,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .usageChanged, .chatDone, .chatFailed:
                     NotificationCenter.default.post(name: .buddyUsageChanged, object: nil)
                 default: break
+                }
+                if case .youTubeChanged = event {
+                    videoWindow?.refresh()
+                    NotificationCenter.default.post(name: .buddyYouTubeChanged, object: nil)
                 }
                 if case .telegramChanged = event {
                     NotificationCenter.default.post(name: .buddyTelegramChanged, object: nil)
@@ -111,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "f": self.chatWindows?.showHistory()
                 case "n": self.chat?.newChat(); self.chatWindows?.open()
                 case "w":
+                    if event.window?.title == "Video · Buddy" { event.window?.performClose(nil); return nil }
                     guard event.window is NSPanel else { return event }
                     self.chatWindows?.close()
                 case ",": SettingsWindow.show()

@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "buddy-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  // One Durable Object per room. SQLite-backed so it runs on the free plan.
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+  // Secrets (never in this file): OWNER_KEY, APNS_KEY_P8, APNS_KEY_ID,
+  // APNS_TEAM_ID, APNS_TOPIC. See README.md.
+}

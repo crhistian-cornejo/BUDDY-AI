@@ -45,6 +45,9 @@ final class NotchModel {
         var link: String = ""
         /// What Buddy is asked when the user does not recognise the movement (empty: no question on the card).
         var ask: String = ""
+        /// An agent asks the user something (Codex's question tool): the card opens by itself with the question
+        /// whole and a way back to the agent, where it is answered.
+        var question = false
     }
 
     struct Session: Identifiable, Equatable {
@@ -61,6 +64,7 @@ final class NotchModel {
     var pinned = false
     private(set) var collapsedByUser = false
     /// What Spotify or Music is playing (read only while the island is open).
+    var youtube: YouTubeStatus?
     var nowPlaying: NowPlaying?
     /// When the reading above was taken (the progress bar runs from it).
     var nowPlayingAt = Date()
@@ -92,7 +96,7 @@ final class NotchModel {
     static let noticeSeconds: Double = 6
 
     var mode: Mode {
-        if let notice, notice.isApproval || notice.asks || pinned || (hovering && !collapsedByUser) { return .notice }
+        if let notice, notice.isApproval || notice.asks || notice.question || pinned || (hovering && !collapsedByUser) { return .notice }
         if dragging { return .drop }
         return pinned || (hovering && !collapsedByUser) ? .open : .idle
     }
@@ -141,6 +145,7 @@ final class NotchModel {
         let working = sessions.filter { $0.state == "working" }.count
         if working > 0 { return working == 1 ? "1 agente trabajando" : "\(working) agentes trabajando" }
         if focus?.running == true { return "Enfoque en curso" }
+        if youtube?.detected?.playing == true { return "Reproduciendo en YouTube" }
         if let earTrack, earTrack.playing { return "Sonando en \(earTrack.app)" }
         return "Todo a mano"
     }
@@ -192,8 +197,8 @@ final class NotchModel {
 
     private func present(_ notice: Notice) {
         self.notice = notice
-        // A movement that asks «¿fuiste tú?» stays long enough to be read and answered.
-        if !notice.isApproval { scheduleDismiss(after: notice.asks ? 20 : Self.noticeSeconds) }
+        // A movement that asks «¿fuiste tú?», or an agent's question, stays long enough to be read.
+        if !notice.isApproval { scheduleDismiss(after: notice.asks || notice.question ? 20 : Self.noticeSeconds) }
     }
 
     private func scheduleDismiss(after seconds: Double) {

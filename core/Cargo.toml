@@ -16,8 +16,11 @@ name = "buddy_core"
 ffi = ["dep:uniffi"]
 
 [dependencies]
+# Sanitizes browser context URLs without forwarding credentials, query tokens or fragments.
+url = "2"
 buddy-telegram = { path = "../telegram" }
-tokio = { version = "1", features = ["rt", "time"] }
+buddy-remote = { path = "../remote" }
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -34,6 +37,9 @@ ical = { version = "0.11", default-features = false, features = ["ical"] }
 chrono-tz = "0.10"
 rrule = "0.14"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+qrcode = { version = "0.14.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

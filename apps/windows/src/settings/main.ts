@@ -1,3 +1,4 @@
+import { renderYouTube } from "./youtube";
 // Settings share the Mac layout: General, Carpetas, Conexiones, Uso and Agentes.
 // Novedades live in General; each agent has a tab, with Finanzas inside Niko.
 import { invoke } from "@tauri-apps/api/core";
@@ -230,7 +231,9 @@ async function renderConnections(view: HTMLElement) {
   const message = h("p", { class: "muted small", role: "status" });
   const { el, card } = section("Avisos de tus sesiones");
   const dialog = h("dialog", { class: "confirm", "aria-labelledby": "confirm-title" });
-  view.append(header("Conexiones"), el, message, dialog, renderSpotify(), renderTelegram(), renderTelegramAccount(), renderParleyOdds(), renderConnectors());
+  const youtube = renderYouTube();
+  onCoreEvent = event => { if (event.type === "youTubeChanged") void youtube.refresh(); };
+  view.append(header("Conexiones"), el, message, dialog, youtube.element, renderSpotify(), renderTelegram(), renderTelegramAccount(), renderParleyOdds(), renderConnectors());
 
   async function draw() {
     const status = await invoke<HookStatusInfo[]>("hooks_status").catch(() => [] as HookStatusInfo[]);

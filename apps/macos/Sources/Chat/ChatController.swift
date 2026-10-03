@@ -12,6 +12,7 @@ final class ChatController {
     private(set) var recent: [ChatSummary] = []
     private(set) var queued: [QueuedMessage] = []
     private(set) var queueError: String?
+    var videoMode = false
     var draft = ""
     /// What the user asks often (from the core), offered above an empty field.
     private(set) var suggestions: [String] = []
@@ -99,6 +100,7 @@ final class ChatController {
     func send() {
         var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
+        if videoMode && !attachments.isEmpty { queueError = "Para adjuntar archivos, abre un chat nuevo. Este chat usa el contexto del video."; return }
         if text.isEmpty { text = attachments.count == 1 ? "Revisa este archivo." : "Revisa estos archivos." }
         // The token travels as the command it stands for («/banana un gato»).
         let called = command
@@ -110,7 +112,8 @@ final class ChatController {
         attachments = []
         queueError = nil
         do {
-            chatID = try core.sendMessage(chatId: chatID, text: text, attachments: files.map(\.path))
+            if videoMode { chatID = try core.sendVideoMessage(chatId: chatID, text: text) }
+            else { chatID = try core.sendMessage(chatId: chatID, text: text, attachments: files.map(\.path)) }
         } catch {
             draft = called.map { String(text.dropFirst($0.command.count + 1)) } ?? text
             command = called
@@ -184,7 +187,12 @@ final class ChatController {
         refreshQueue()
     }
 
+    func askVideo() {
+        newChat(); videoMode = true; suggestions = []; command = nil
+        draft = "Explícame este momento del video."
+    }
     func newChat() {
+        videoMode = false
         stop()
         chatID = nil
         messages = []
@@ -200,6 +208,7 @@ final class ChatController {
     }
 
     func open(_ id: String) {
+        videoMode = core.isVideoChat(chatId: id)
         stop()
         suggestions = []
         chatID = id

@@ -1,3 +1,4 @@
+import { YouTubePanel } from "./youtube";
 // The top bar (Windows), twin of the Mac notch: one notice at a time (a permission of Claude Code or Codex with
 // Permitir / Rechazar, a session that finished or waits, the end of a focus block), and on hover the tools: the music
 // player, the agents, the focus timer and the pinned shortcuts. Files dragged onto it can go to Buddy. The window is
@@ -12,9 +13,11 @@ import { agentFace } from "../chat/avatar";
 import { activeSession as findActiveSession, compactActivity, activityLabel } from "./activity";
 import { compactWindow, usageHelp, type ProviderUsage } from "./usage";
 import { NotchToolPanel } from "./tools";
+import { lockUntilRead } from "./approval";
 
 type Kind = "approval" | "finished" | "waiting" | "failed";
-interface Notice { kind: Kind; agent: string; title: string; detail: string; command?: string; requestId?: string; canAllow?: boolean; always?: string }
+/** `question`: an agent asks the user something (Codex's question tool); the card opens by itself with the question. */
+interface Notice { kind: Kind; agent: string; title: string; detail: string; command?: string; requestId?: string; canAllow?: boolean; always?: string; question?: boolean }
 interface Session { id: string; agent: string; project: string; state: string }
 interface NowPlaying { app: string; title: string; artist: string; status: string; positionMs: number | null; durationMs: number | null; thumbnail: string | null }
 interface FocusStatus { running: boolean; startedAt: number; endsAt: number; minutes: number }
@@ -69,7 +72,11 @@ let buddyBusy = false;
 let buddyActivity: { kind: string; label: string } | null = null;
 let usage: ProviderUsage[] = [];
 const pendingApproval = new Map<string, string>();
+/** Approval cards: where the reader is in each command, and which ones were seen to their end (by request id). */
+const commandScroll = new Map<string, number>();
+const commandRead = new Set<string>();
 const tools = new NotchToolPanel(render);
+const youtube = new YouTubePanel(started => { if (started) { pinned = true; collapsedByUser = false; tools.tab = "home"; } render(); });
 
 const agentName = (agent: string) =>
   agent === "codex" ? "Codex" : agent === "antigravity" ? "Gemini" : agent === "buddy" ? "Buddy" : agent === "niko" ? "Niko" : "Claude Code";
@@ -85,9 +92,9 @@ function providerMark(agent: string, size: number): Element {
 
 const activeSession = () => findActiveSession(sessions) as Session | undefined;
 const activityState = () => ({ sessions, buddyBusy, buddyLabel: buddyActivity?.label,
-  focusing: !!focus?.running, playing: track?.status === "playing", player: track?.app });
+  focusing: !!focus?.running, playing: youtube.state.detected?.playing || track?.status === "playing", player: youtube.state.detected?.playing ? "YouTube" : track?.app });
 const mode = (): "notice" | "drop" | "open" | "idle" =>
-  notice && (notice.kind === "approval" || pinned || (hovering && !collapsedByUser)) ? "notice"
+  notice && (notice.kind === "approval" || notice.question || pinned || (hovering && !collapsedByUser)) ? "notice"
     : dragging ? "drop" : pinned || (hovering && !collapsedByUser) ? "open" : "idle";
 const left = () => Math.max((focus?.endsAt ?? 0) - Date.now() / 1000, 0);
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -102,6 +109,8 @@ function render() {
   overview.hidden = m !== "open";
   dropEl.hidden = m !== "drop";
   tools.draw(m === "open");
+  youtube.draw(m === "open" && tools.tab === "home");
+  if (youtube.state.viewer && youtube.state.destination === "notch" && m === "open" && tools.tab === "home") $("home-tools").hidden = true;
   const active = activeSession();
   const focusing = !!focus?.running;
   const ear = earKind();
@@ -161,10 +170,11 @@ function drawEars(active: Session | undefined) {
     ears.title = buddyActivity?.label ?? "Buddy está respondiendo";
     return;
   }
-  if (kind === "music" && track) {
+  if (kind === "music" && (track || youtube.state.detected)) {
     $("ear-left").replaceChildren(h("span", { style: "color:var(--mint);display:inline-grid" }, icon(TABLER.musicNote, 14)));
     $("ear-right").replaceChildren(h("span", { class: "eq" }, h("i"), h("i"), h("i")));
-    ears.title = `${track.title} · ${track.artist}`;
+    const video = youtube.state.detected;
+    ears.title = video?.playing ? `${video.title} · YouTube` : `${track?.title ?? ''} · ${track?.artist ?? ''}`;
     return;
   }
   if (active) {
@@ -192,19 +202,33 @@ function drawNotice() {
     h("span", { class: "mark" }, mark),
     h("div", { class: "notice-text" }, h("strong", { text: n.title }), h("span", { text: n.detail })));
   const parts: Node[] = [head];
-  if (n.command) parts.push(h("pre", { class: "command", text: n.command }));
+  const pre = n.command ? h("pre", { class: "command", text: n.command }) as HTMLElement : null;
+  if (pre) parts.push(pre);
+  // The buttons that allow: off until the whole command has been in view.
+  const allow: HTMLButtonElement[] = [];
+  const unread = h("span", { class: "muted", text: "Hay más abajo: desplázate hasta el final para poder permitir." }) as HTMLElement;
   if (n.kind === "approval" && n.requestId) {
     const id = n.requestId;
     const row = h("div", { class: "actions" });
     if (!n.canAllow) row.append(h("span", { class: "muted", text: "Es demasiado largo para revisarlo aquí: respóndelo en la terminal." }));
+    else if (pre) row.append(unread);
     row.append(h("button", { class: "btn", type: "button", title: `No permitirlo; ${agentName(n.agent)} seguirá sin hacerlo`, onclick: () => answer(id, false) }, "Rechazar"));
     if (n.canAllow && n.always) {
-      row.append(h("button", { class: "btn", type: "button", title: `Permitir siempre «${n.always} …» a ${agentName(n.agent)}; se quita en Ajustes › General`, onclick: () => answerAlways(id) }, "Permitir siempre"));
+      allow.push(h("button", { class: "btn", type: "button", title: `Permitir siempre «${n.always} …» a ${agentName(n.agent)}; se quita en Ajustes › General`, onclick: () => answerAlways(id) }, "Permitir siempre") as HTMLButtonElement);
     }
-    if (n.canAllow) row.append(h("button", { class: "btn primary", type: "button", title: "Permitir esta vez", onclick: () => answer(id, true) }, "Permitir"));
+    if (n.canAllow) allow.push(h("button", { class: "btn primary", type: "button", title: "Permitir esta vez", onclick: () => answer(id, true) }, "Permitir") as HTMLButtonElement);
+    row.append(...allow);
     parts.push(row);
   }
   noticeEl.replaceChildren(...parts);
+  if (pre && n.requestId) {
+    const id = n.requestId;
+    // A redraw keeps the reader's place, and what was read stays read.
+    pre.scrollTop = commandScroll.get(id) ?? 0;
+    pre.addEventListener("scroll", () => commandScroll.set(id, pre.scrollTop), { passive: true });
+    if (!commandRead.has(id)) lockUntilRead(pre, allow, unread, () => commandRead.add(id));
+    else unread.hidden = true;
+  }
   noticeEl.onclick = n.kind === "approval" ? null : () => dismiss();
 }
 
@@ -219,6 +243,7 @@ function drawOverview() {
     drawShortcuts();
   }
   drawUsage();
+  if (youtube.state.viewer && youtube.state.destination === "notch") $("usage").hidden = true;
 }
 
 /** One mark and percentage per provider, with the window and reset in the tooltip. */
@@ -245,6 +270,7 @@ function drawUsage() {
 
 function drawMusic() {
   const music = $("music");
+  if (youtube.state.detected) { music.hidden = true; return; }
   music.hidden = !track;
   if (!track) return;
   const t = track;
@@ -375,7 +401,8 @@ function show(n: Notice) {
 function present(n: Notice) {
   notice = n;
   window.clearTimeout(dismissTimer);
-  if (n.kind !== "approval") dismissTimer = window.setTimeout(() => { if (!hovering) dismiss(); }, NOTICE_SECONDS * 1000);
+  // A question stays long enough to be read.
+  if (n.kind !== "approval") dismissTimer = window.setTimeout(() => { if (!hovering) dismiss(); }, (n.question ? 20 : NOTICE_SECONDS) * 1000);
   render();
 }
 
@@ -405,6 +432,9 @@ function closeApproval(requestId: string) {
 
 function onCore(e: CoreEvent) {
   switch (e.type) {
+    case "youTubeChanged":
+      void youtube.refresh();
+      break;
     case "approvalRequest": {
       const a = e as Extract<CoreEvent, { type: "approvalRequest" }>;
       pendingApproval.set(a.requestId, a.sessionId);
@@ -416,6 +446,8 @@ function onCore(e: CoreEvent) {
     case "approvalClosed": {
       const id = (e as Extract<CoreEvent, { type: "approvalClosed" }>).requestId;
       pendingApproval.delete(id);
+      commandScroll.delete(id);
+      commandRead.delete(id);
       closeApproval(id);
       break;
     }
@@ -486,7 +518,8 @@ function onCore(e: CoreEvent) {
           window.setTimeout(() => {
             const still = sessions.find((x) => x.id === s.sessionId)?.state === "waiting";
             if (still && ![...pendingApproval.values()].includes(s.sessionId)) {
-              show({ kind: "waiting", agent: s.agent, title: `${name} espera tu respuesta`, detail: s.project });
+              // A question the agent asked (Codex's question tool) comes with its text and options.
+              show({ kind: "waiting", agent: s.agent, title: s.summary ? `${name} te pregunta en ${s.project}` : `${name} espera tu respuesta`, detail: s.summary || s.project, question: !!s.summary });
             }
           }, 300);
         }
@@ -533,6 +566,7 @@ $("pin-tools").append(icon("M16 3l5 5l-4 1l-3 6l-5 -5l6 -3z M3 21l6 -6", 14));
 $("close-tools").append(icon(TABLER.x, 14));
 $("pin-tools").addEventListener("click", () => { pinned = !pinned; render(); });
 function closeTools() {
+  if (youtube.state.destination === "notch") youtube.close();
   pinned = false;
   collapsedByUser = true;
   if (notice && notice.kind !== "approval") dismiss();
@@ -560,6 +594,7 @@ void getCurrentWebview().onDragDropEvent(({ payload }) => {
 });
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));
+void youtube.refresh();
 // Windows raises its own media events, so the bar listens all the time (the worker sleeps between them: no polling).
 void listen<NowPlaying | null>("media-changed", ({ payload }) => { track = payload; trackAt = Date.now(); render(); });
 void invoke("media_watch", { on: true });

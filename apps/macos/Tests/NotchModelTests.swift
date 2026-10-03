@@ -2,6 +2,17 @@ import XCTest
 @testable import Buddy
 
 final class NotchModelTests: XCTestCase {
+    /// «Permitir» waits until the whole command of an approval card has been in view.
+    func testACommandIsSeenWholeWhenItFitsOrWasScrolledToItsEnd() {
+        XCTAssertTrue(NotchLayout.seenWhole(offset: 0, box: 96, content: 96))
+        XCTAssertTrue(NotchLayout.seenWhole(offset: 0, box: 96, content: 60))
+        XCTAssertFalse(NotchLayout.seenWhole(offset: 0, box: 96, content: 400))
+        XCTAssertFalse(NotchLayout.seenWhole(offset: 200, box: 96, content: 400))
+        XCTAssertTrue(NotchLayout.seenWhole(offset: 304, box: 96, content: 400))
+        XCTAssertTrue(NotchLayout.seenWhole(offset: 302.5, box: 96, content: 400))
+        XCTAssertFalse(NotchLayout.seenWhole(offset: 0, box: 0, content: 0))
+    }
+
     @MainActor
     func testSessionFlagStartsUnlockSynchronouslyAndOnlyOnce() {
         var locked: Bool? = true

@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 buddy-core.workspace = true
+buddy-hook = { path = "../../../hook" }
 serde.workspace = true
 serde_json.workspace = true
 # macos-private-api only lets the window be transparent when the app is run on a Mac during development.
@@ -25,6 +26,8 @@ tauri-plugin-dialog = "2"
 arboard = { version = "3.6", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.39.1"
+windows-core = "0.62"
 # GetLastInputInfo (seconds since the last input, for "Buddy sleeps when you are away"). A query, not a hook.
 windows = { version = "0.61", features = [
   "Win32_UI_Input_KeyboardAndMouse",

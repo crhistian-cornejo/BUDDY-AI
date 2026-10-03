@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Buddy · Video compañero",
+  "version": "0.3.0",
+  "description": "YouTube junto a Buddy, videos flotantes y conexión local con tu mascota. Activa otros sitios solo cuando quieras.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzcy49FkDAt3Wl1twDiVjU8eNRSR0SxxBbLNtln6mYmwyCIzy814PJeF3kI2ewdUK/ne6aYBsd9n0Mvp+xmpg7wj7hPOMn8Zfrl5wQs+E22xSiTb3Sp2EbaHgXoCu3ftdnGdo/dJv/pdE0E6XNmomPeEADciScxII0hXtQe/zytqL+Hm6zctS3jzI7Q8/JzC7lp2SuK98ODSdO+8AUhunvjeVbRNNXQYwgtNUEMioddZtfrc9VE8b3NSxPnspZ7Yupt4xPcOAUBNBgyiAHTRxzES+LNrqGZZVGfdnju4nYKJ30VONfzGRj/k2SKDDwvkPO23vvCvaU81c6qXPTQ9SMQIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "activeTab",
+    "scripting"
+  ],
+  "icons": {
+    "16": "icon-32.png",
+    "32": "icon-32.png",
+    "48": "icon-64.png",
+    "128": "icon-128.png"
+  },
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_icon": {
+      "16": "icon-32.png",
+      "32": "icon-32.png"
+    },
+    "default_title": "Buddy · Video compañero",
+    "default_popup": "popup.html"
+  },
+  "optional_host_permissions": [
+    "https://*/*"
+  ]
+}

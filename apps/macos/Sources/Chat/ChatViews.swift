@@ -26,6 +26,9 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: -10) {
+            if chat.videoMode {
+                Text("Gemini · título, minuto y subtítulos disponibles").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
+            }
             if !chat.matchingCommands.isEmpty { commands } else if !chat.queued.isEmpty { queue } else if showsSuggestions { suggestions }
             VStack(alignment: .leading, spacing: 8) {
                 if let error = chat.queueError ?? dictation.problem {
@@ -189,7 +192,7 @@ struct ComposerView: View {
                     .frame(height: 26)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SuggestionButtonStyle())
                 .tip("Enviar: \(text)")
             }
         }
@@ -229,7 +232,7 @@ struct ComposerView: View {
                 .tip("Este mensaje va directo a \(command.name). Clic o ⌫ para quitarlo")
                 .accessibilityLabel("Comando \(command.name)")
             }
-            TextField(chat.command.map { "Pídele algo a \($0.name)" } ?? "Pregúntale a Buddy", text: $chat.draft, axis: .vertical)
+            TextField(chat.videoMode ? "Pregúntale a Gemini sobre el video" : (chat.command.map { "Pídele algo a \($0.name)" } ?? "Pregúntale a Buddy"), text: $chat.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.body)
                 .lineLimit(1...6)
@@ -312,6 +315,28 @@ struct ComposerView: View {
 /// Holds the paste monitor between view updates.
 final class MonitorBox {
     var value: Any?
+}
+
+/// Highlights the whole suggestion row when the pointer enters it or the user presses it.
+private struct SuggestionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HoverRow(configuration: configuration)
+    }
+
+    private struct HoverRow: View {
+        let configuration: ButtonStyle.Configuration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .background {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.dynamic(light: "#000000", dark: "#FFFFFF")
+                            .opacity(configuration.isPressed ? 0.14 : hovering ? 0.08 : 0))
+                }
+                .onHover { hovering = $0 }
+        }
+    }
 }
 
 /// The chat above the composer once there is an answer: a header with the usual actions and the messages.

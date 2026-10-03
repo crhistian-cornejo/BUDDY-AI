@@ -43,6 +43,7 @@ pub(crate) trait Sink: Send + Sync + 'static {
     /// an explicit allow is a deny.
     fn gate(&self, payload: Value, closed: &dyn Fn() -> bool) -> &'static str;
     /// A request from Buddy's own tools (the relay's MCP mode: the music player). Answers one JSON line.
+    fn youtube(&self, _payload: Value) -> String { r#"{"enabled":false,"commands":[]}"#.into() }
     fn app(&self, _payload: Value) -> String {
         r#"{"ok":false,"text":"Buddy no atiende esta petición."}"#.into()
     }
@@ -106,6 +107,10 @@ fn handle(conn: &mut dyn Conn, sink: &dyn Sink) {
     let Some(line) = conn.read_request() else { return };
     let Ok(payload) = serde_json::from_slice::<Value>(&line) else { return };
     if !payload.is_object() {
+        return;
+    }
+    if payload.get("_youtube") == Some(&Value::Bool(true)) {
+        conn.send_line(&sink.youtube(payload));
         return;
     }
     // Only the relay's MCP mode sends `_app` (it strips the key from the hook payloads it forwards).

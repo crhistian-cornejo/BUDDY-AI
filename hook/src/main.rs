@@ -36,6 +36,7 @@ mod mcp;
 mod office;
 mod tools;
 mod transport;
+mod youtube;
 #[cfg(windows)]
 mod win;
 
@@ -88,6 +89,10 @@ fn parse_args(args: &[String]) -> (Agent, String) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).is_some_and(|s| s == "buddy-youtube-host") {
+        youtube::main(args.first().map(String::as_str).unwrap_or(""));
+        return;
+    }
     if args.first().map(String::as_str) == Some("--mcp") {
         std::process::exit(mcp::main(&args[1..]));
     }
@@ -237,6 +242,7 @@ fn prepare(mut raw: Vec<u8>, agent: Agent, arg_event: String) -> Option<(String,
     map.remove("_truncated");
     map.remove("_gate");
     map.remove("_app");
+    map.remove("_youtube");
 
     for field in DROPPED_FIELDS {
         map.remove(*field);

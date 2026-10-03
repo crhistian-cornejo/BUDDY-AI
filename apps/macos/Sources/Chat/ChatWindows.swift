@@ -23,6 +23,9 @@ final class ChatWindows {
     static let maxChatHeight: CGFloat = 400
 
     var isOpen: Bool { composer != nil }
+    /// What the composer and the chat take on screen while open (their shapes, without the windows' margins): the
+    /// video next to Buddy keeps out of it.
+    private(set) var occupied: NSRect?
     /// Told when the chat opens or closes (Buddy holds still meanwhile).
     var onOpenChange: ((Bool) -> Void)?
 
@@ -96,6 +99,8 @@ final class ChatWindows {
         contentHeight = 0
         if let moveObserver { NotificationCenter.default.removeObserver(moveObserver) }
         moveObserver = nil
+        occupied = nil
+        NotificationCenter.default.post(name: .chatLayoutChanged, object: nil)
         // The keyboard goes back where it was (an answer still being written keeps going and is in the history).
         previousApp?.activate()
         previousApp = nil
@@ -158,15 +163,28 @@ final class ChatWindows {
         var x = left ? pet.minX - size.width - Self.gap : pet.maxX + Self.gap
         x = min(max(x, area.minX), area.maxX - size.width)
         let y = min(max(pet.minY + 6, area.minY), area.maxY - size.height)
-        let composerFrame = Surface.windowFrame(for: NSRect(origin: CGPoint(x: x, y: y), size: size))
+        let composerShape = NSRect(origin: CGPoint(x: x, y: y), size: size)
+        let composerFrame = Surface.windowFrame(for: composerShape)
         if composer.frame != composerFrame { composer.setFrame(composerFrame, display: true) }
 
-        guard let panel else { return }
+        guard let panel else {
+            took(composerShape)
+            return
+        }
         let width = ChatMetrics.chatWidth
         let px = min(max(left ? x + size.width - width : x, area.minX), area.maxX - width)
         let bottom = y + size.height + Self.gap
         let height = min(max(contentHeight, 120), Self.maxChatHeight, area.maxY - bottom)
-        let chatFrame = Surface.windowFrame(for: NSRect(x: px, y: bottom, width: width, height: height))
+        let chatShape = NSRect(x: px, y: bottom, width: width, height: height)
+        let chatFrame = Surface.windowFrame(for: chatShape)
         if panel.frame != chatFrame { panel.setFrame(chatFrame, display: true) }
+        took(composerShape.union(chatShape))
+    }
+
+    /// Tells whoever sits next to Buddy (the video) that the chat takes another place now.
+    private func took(_ shape: NSRect) {
+        guard occupied != shape else { return }
+        occupied = shape
+        NotificationCenter.default.post(name: .chatLayoutChanged, object: nil)
     }
 }

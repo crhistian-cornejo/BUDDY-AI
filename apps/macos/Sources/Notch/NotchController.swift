@@ -73,6 +73,7 @@ final class NotchController {
             self?.model.nowPlaying = track
             self?.model.nowPlayingAt = Date()
         }
+        model.youtube = core.youtubeStatus()
         model.focus = core.focusStatus().running ? core.focusStatus() : nil
         watchPlayers()
         model.shortcuts = (try? core.shortcuts()) ?? []
@@ -149,8 +150,30 @@ final class NotchController {
         panel?.close()
     }
 
+    /// Whether two video states differ at most in how far the video has played (and the caption of that moment).
+    nonisolated static func sameButPosition(_ a: YouTubeStatus?, _ b: YouTubeStatus?) -> Bool {
+        func still(_ status: YouTubeStatus?) -> YouTubeStatus? {
+            guard var status else { return nil }
+            status.detected?.seconds = 0; status.detected?.caption = ""
+            status.viewer?.seconds = 0; status.viewer?.caption = ""
+            return status
+        }
+        return still(a) == still(b)
+    }
+
     func handle(_ event: Event) {
         switch event {
+        case .youTubeChanged:
+            let next = core.youtubeStatus()
+            // A video playing in the browser reports its position every second. With the notch closed nothing on
+            // screen shows it: the model is left alone, so nothing is drawn or measured again for it.
+            if model.mode != .open, Self.sameButPosition(model.youtube, next) { break }
+            let wasNotch = model.youtube?.viewer != nil && model.youtube?.destination == "notch"
+            model.youtube = next
+            if wasNotch, model.youtube?.destination == "floating" { model.collapse() }
+            if !wasNotch, model.youtube?.viewer != nil, model.youtube?.destination == "notch" {
+                model.tab = .home; model.pinned = true; model.setHovering(true)
+            }
         case let .settingChanged(key):
             if key.hasPrefix("notch.system.") { system.reload() }
         case let .approvalRequest(requestId, sessionId, agent, project, title, summary, detail, canAllow, always):
@@ -220,7 +243,10 @@ final class NotchController {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                     guard let self, !self.hasPendingApproval(for: sessionId),
                           self.model.sessions.first(where: { $0.id == sessionId })?.state == "waiting" else { return }
-                    self.model.show(.init(kind: .waiting, agent: agent, title: "\(name) espera tu respuesta", detail: project, place: place))
+                    // A question the agent asked (Codex's question tool) comes with its text and options.
+                    let asks = !summary.isEmpty
+                    self.model.show(.init(kind: .waiting, agent: agent, title: asks ? "\(name) te pregunta en \(project)" : "\(name) espera tu respuesta",
+                                          detail: asks ? summary : project, place: place, question: asks))
                 }
             case "error": model.show(.init(kind: .failed, agent: agent, title: "\(name) se detuvo por un error", detail: project, place: place))
             default: break
@@ -323,6 +349,7 @@ final class NotchController {
     private func screenLocked() {
         hoverWork?.cancel(); hoverWork = nil
         leaveWork?.cancel(); leaveWork = nil
+        core.youtubeClose()
         model.pinned = false
         model.dragging = false
         model.setHovering(false)
@@ -388,6 +415,13 @@ final class NotchController {
                       connect: { [weak self] in self?.connectHooks() },
                       media: { [weak self] action in self?.media.send(action) },
                       seek: { [weak self] ms in self?.media.seek(toMs: ms) },
+                      youtubeOpen: { [weak self] video in
+                          guard let self else { return }
+                          do {
+                              _ = try self.core.youtubeOpen(sourceId: video.sourceId, videoId: video.videoId)
+                              self.model.toolMessage = ""
+                          } catch { self.model.toolMessage = "El video cambió o el navegador se desconectó. Vuelve a intentarlo." }
+                      },
                       focusStart: { [weak self] minutes in _ = self?.core.focusStart(minutes: minutes) },
                       focusStop: { [weak self] in self?.core.focusStop() },
                       openShortcut: { [weak self] item in self?.open(item) },
@@ -411,7 +445,7 @@ final class NotchController {
                           self.model.dragging = false
                           if !urls.isEmpty { self.performTool { self.model.acceptTools(try self.core.notchAddFiles(paths: urls.map(\.path))); self.model.revealFiles() } }
                       },
-                      close: { [weak self] in self?.model.collapse() },
+                      close: { [weak self] in if self?.model.youtube?.destination == "notch" { self?.core.youtubeClose() }; self?.model.collapse() },
                       addFiles: { [weak self] in self?.pickShelfFiles() },
                       removeFile: { [weak self] path in self?.performTool { guard let self else { return }; self.model.acceptTools(try self.core.notchRemoveFile(path: path)) } },
                       openFile: { url in NSWorkspace.shared.activateFileViewerSelecting([url]) },
@@ -553,6 +587,7 @@ final class NotchController {
             _ = model.notice
             _ = model.sessions
             _ = model.nowPlaying
+            _ = model.youtube
             _ = model.focus
             _ = model.shortcuts
             _ = model.dropped
@@ -572,6 +607,7 @@ final class NotchController {
                 // SwiftUI observes the model itself. Replacing its root for every session event closes open menus.
                 // The players are asked only while the overview is open.
                 if self.model.mode == .open { self.media.start() } else { self.media.stop() }
+                if self.model.youtube?.viewer != nil && self.model.youtube?.destination == "notch" && (self.model.mode != .open || self.model.tab != .home) { self.core.youtubeClose() }
                 self.syncUtilities()
                 self.pointerMoved()
                 self.observe()

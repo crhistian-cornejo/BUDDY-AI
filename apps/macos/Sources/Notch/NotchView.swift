@@ -17,6 +17,12 @@ enum NotchLayout {
     static let usageHeight: CGFloat = 18
     static let shelfHeight: CGFloat = 190
 
+    /// True when nothing of an approval's command is left below its box: it fits, or the user scrolled to its end.
+    /// A box with no size yet (not laid out) has shown nothing.
+    static func seenWhole(offset: CGFloat, box: CGFloat, content: CGFloat) -> Bool {
+        box > 0 && offset + box >= content - 2
+    }
+
     @MainActor
     static func utilitiesHeight(_ model: NotchModel) -> CGFloat {
         let widgets = (model.tools?.batteryEnabled ?? true) || (model.tools?.calendarEnabled ?? true)
@@ -42,13 +48,15 @@ enum NotchLayout {
             if let notice = model.notice, notice.isApproval {
                 extra = 120 + (notice.command.isEmpty ? 0 : 20 + CGFloat(commandLines(notice.command)) * 16)
             } else {
-                extra = 80 + (model.notice?.asks == true ? 40 : 0)
+                // A question shows up to four lines of it, and its buttons.
+                extra = 80 + (model.notice?.asks == true ? 40 : 0) + (model.notice?.question == true ? 70 : 0)
             }
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + extra)
         case .open:
-            let body: CGFloat = model.tab == .files ? shelfHeight : model.tab == .utilities ? utilitiesHeight(model)
-                : tileHeight + (model.nowPlaying == nil ? 0 : playerHeight + 16)
-            let usage = model.tab != .files && model.usage.contains { NotchUsage.window(for: $0) != nil } ? usageHeight + 12 : 0
+            let video = model.tab == .home && model.youtube?.viewer != nil && model.youtube?.destination == "notch"
+            let body: CGFloat = video ? 320 : model.tab == .files ? shelfHeight : model.tab == .utilities ? utilitiesHeight(model)
+                : tileHeight + (model.nowPlaying == nil && model.youtube?.detected == nil ? 0 : playerHeight + 16)
+            let usage = !video && model.tab != .files && model.usage.contains { NotchUsage.window(for: $0) != nil } ? usageHeight + 12 : 0
             let message: CGFloat = model.toolMessage.isEmpty ? 0 : 24
             return CGSize(width: max(openWidth, notch.width + 48),
                           height: notch.height + 16 + body + usage + message + 20)
@@ -75,6 +83,9 @@ extension NotchModel {
         if buddyBusy { return .buddy }
         if let session = activeSession { return .session(session) }
         if let focus, focus.running { return .focus(focus) }
+        if let video = youtube?.detected, video.playing {
+            return .music(EarTrack(title: video.title, artist: "", app: "YouTube", playing: true))
+        }
         if let track = earTrack, track.playing { return .music(track) }
         return .none
     }
@@ -89,6 +100,7 @@ struct NotchActions {
     var connect: () -> Void
     var media: (MediaAction) -> Void
     var seek: (Int) -> Void
+    var youtubeOpen: (YouTubeVideo) -> Void
     var focusStart: (UInt32) -> Void
     var focusStop: () -> Void
     var openShortcut: (Shortcut) -> Void
@@ -205,13 +217,22 @@ struct NotchView: View {
                 NoticeCard(notice: notice, onAnswer: actions.answer, onAlways: actions.answerAlways, onDismiss: { model.dismiss() },
                            onAsk: { text in actions.askBuddy(text); model.dismiss() },
                            onOpen: { place in actions.openPlace(place); model.dismiss() })
+                    // A new notice is a new card: what was read of the previous command says nothing about this one.
+                    .id(notice.id)
             }
         case .open:
             VStack(spacing: 16) {
                 switch model.tab {
                 case .home:
+                    if model.youtube?.destination == "notch", let video = model.youtube?.viewer, let core = AppServices.core {
+                        YouTubeNotchView(core: core, video: video).id(video.sourceId + video.videoId)
+                    } else {
                     VStack(spacing: 16) {
-                        if let playing = model.nowPlaying {
+                        if let video = model.youtube?.detected {
+                            YouTubeMediaCard(video: video, onOpen: { actions.youtubeOpen(video) }, onToggle: {
+                                try? AppServices.core?.youtubeToggle(sourceId: video.sourceId, videoId: video.videoId)
+                            })
+                        } else if let playing = model.nowPlaying {
                             MusicPlayer(track: playing, readAt: model.nowPlayingAt, onMedia: actions.media, onSeek: actions.seek)
                         }
                         HStack(spacing: 12) {
@@ -221,12 +242,13 @@ struct NotchView: View {
                                           onRemove: actions.removeShortcut)
                         }.frame(height: NotchLayout.tileHeight, alignment: .top)
                     }
+                    }
                 case .files:
                     NotchShelfView(model: model, actions: actions)
                 case .utilities:
                     NotchUtilitiesView(model: model, actions: actions)
                 }
-                if model.tab != .files && model.usage.contains(where: { NotchUsage.window(for: $0) != nil }) {
+                if (model.youtube?.viewer == nil || model.youtube?.destination != "notch") && model.tab != .files && model.usage.contains(where: { NotchUsage.window(for: $0) != nil }) {
                     HStack(spacing: 12) {
                         if model.tab == .home { WeatherStrip(weather: weather) }
                         UsageStrip(usage: model.usage)
@@ -553,6 +575,16 @@ private struct NoticeCard: View {
     var onDismiss: () -> Void
     var onAsk: (String) -> Void = { _ in }
     var onOpen: (NotchModel.Place) -> Void
+    /// An approval's command was in view to its end (it fits, or the user scrolled there), and whether it is longer
+    /// than its box. Fresh for every notice: the card is made again for each one (`.id`).
+    @State private var commandRead = false
+    @State private var commandLong = false
+
+    /// What the command's scroll box says about itself.
+    private struct CommandBox: Equatable {
+        var seen: Bool
+        var long: Bool
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -575,19 +607,31 @@ private struct NoticeCard: View {
                     Text(notice.detail)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(notice.question ? 4 : 2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
             if !notice.command.isEmpty {
-                Text(notice.command)
-                    .font(.system(size: 11, design: .monospaced))
-                    .lineLimit(6)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .textSelection(.enabled)
+                // Never cut: what is approved must be readable to its end, and «Permitir» waits until it was.
+                ScrollView(.vertical) {
+                    Text(notice.command)
+                        .font(.system(size: 11, design: .monospaced))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .scrollIndicators(.visible)
+                .frame(height: CGFloat(NotchLayout.commandLines(notice.command)) * 15 + 20)
+                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .onScrollGeometryChange(for: CommandBox.self) { g in
+                    CommandBox(seen: NotchLayout.seenWhole(offset: g.contentOffset.y, box: g.containerSize.height, content: g.contentSize.height),
+                               long: g.containerSize.height > 0 && g.contentSize.height > g.containerSize.height + 2)
+                } action: { _, box in
+                    if box.seen { commandRead = true }
+                    commandLong = box.long
+                }
             }
             if notice.asks {
                 HStack(spacing: 8) {
@@ -605,10 +649,30 @@ private struct NoticeCard: View {
                         .tip("Cerrar el aviso")
                 }
             }
+            if notice.question {
+                // The question is answered where it was asked: Buddy only takes the user there.
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("Cerrar", action: onDismiss)
+                        .buttonStyle(IslandButtonStyle(prominent: false))
+                        .tip("Cerrar el aviso; la pregunta sigue en \(notice.agentName)")
+                    if let place = notice.place {
+                        Button("Responder en \(notice.agentName)") { onOpen(place) }
+                            .buttonStyle(IslandButtonStyle(prominent: true))
+                            .tip("Ir a \(notice.agentName) para responder")
+                    }
+                }
+            }
             if case let .approval(requestID, canAllow) = notice.kind {
                 HStack(spacing: 8) {
+                    // Part of the command is still below its box: nothing is allowed unread.
+                    let unread = !notice.command.isEmpty && !commandRead
                     if !canAllow {
                         Text("Es demasiado largo para revisarlo aquí: respóndelo en la terminal.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if unread && commandLong {
+                        Text("Hay más abajo: desplázate hasta el final para poder permitir.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -619,11 +683,13 @@ private struct NoticeCard: View {
                     if canAllow && !notice.always.isEmpty {
                         Button("Permitir siempre") { onAlways(requestID) }
                             .buttonStyle(IslandButtonStyle(prominent: false))
+                            .disabled(unread)
                             .tip("Permitir siempre «\(notice.always) …» a \(notice.agentName); se quita en Ajustes › General")
                     }
                     if canAllow {
                         Button("Permitir") { onAnswer(requestID, true) }
                             .buttonStyle(IslandButtonStyle(prominent: true))
+                            .disabled(unread)
                             .tip("Permitir esta vez")
                     }
                 }
@@ -633,7 +699,7 @@ private struct NoticeCard: View {
         .padding(.bottom, 20)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !notice.isApproval, !notice.asks else { return }
+            guard !notice.isApproval, !notice.asks, !notice.question else { return }
             if let place = notice.place { onOpen(place) } else { onDismiss() }
         }
         .tip(notice.place == nil ? "" : "Volver a \(notice.agentName)")

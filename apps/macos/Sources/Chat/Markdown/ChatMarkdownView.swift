@@ -86,7 +86,7 @@ struct AssistantBubble: View, Equatable {
             } else if !cleaned.text.isEmpty {
                 MarkdownView(text: cleaned.text, streaming: message.isStreaming)
             }
-            SourcesRow(sources: sources)
+            SourcesRow(sources: sources, reported: message.sources)
         }
         .animation(.easeOut(duration: 0.2), value: sources.count)
     }
@@ -144,6 +144,8 @@ struct AnswerStatusView: View {
 /// A click opens the page in the browser (http/https only).
 struct SourcesRow: View {
     let sources: [ChatSource]
+    /// The ones the core reported (the agent's tools searched or opened them): only these ask for their icon.
+    var reported: [ChatSource] = []
     private let limit = 8
     @State private var spread = false
 
@@ -160,7 +162,7 @@ struct SourcesRow: View {
                 }
                 HStack(spacing: spread ? 3 : -9) {
                     ForEach(Array(shown.enumerated()), id: \.element.url) { index, source in
-                        SourceChip(source: source)
+                        SourceChip(source: source, fetchesIcon: SourceIcons.mayFetch(source, reported: reported))
                             .zIndex(Double(index))          // the newest on top
                             .transition(.scale(scale: 0.6).combined(with: .opacity))
                     }
@@ -197,6 +199,8 @@ actor SourceIconLoader {
 
 struct SourceChip: View {
     let source: ChatSource
+    /// False for a link that is only written in the answer: it keeps its letter tile (see `SourceIcons.mayFetch`).
+    var fetchesIcon = false
     @AppStorage(SourceIcons.settingKey) private var iconsOn = true
     @State private var hovered = false
     @State private var icon: NSImage?
@@ -247,7 +251,7 @@ struct SourceChip: View {
         }
         .task(id: iconsOn) {
             // A site with a drawn logo never asks for its favicon.
-            guard logo == nil, iconsOn, icon == nil, let data = await SourceIconLoader.shared.icon(for: source) else { return }
+            guard fetchesIcon, logo == nil, iconsOn, icon == nil, let data = await SourceIconLoader.shared.icon(for: source) else { return }
             icon = NSImage(data: data)
         }
     }

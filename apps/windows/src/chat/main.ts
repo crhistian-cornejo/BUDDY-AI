@@ -37,6 +37,9 @@ const input = $<HTMLTextAreaElement>("input");
 const send = $<HTMLButtonElement>("send");
 
 let chatId: string | null = null;
+let videoMode = false;
+const videoBadge = h('div', { text: 'Gemini · título, minuto y subtítulos disponibles', hidden: true, style: 'font-size:11px;color:var(--text-muted,#71717a);padding:6px 14px' });
+panel.prepend(videoBadge);
 let submitting = false;
 let chatGeneration = 0;
 let submissionGeneration = -1;
@@ -319,6 +322,7 @@ async function submit() {
   const generation = chatGeneration;
   let text = input.value.trim();
   if (!text && !files.length) return;
+  if (videoMode && files.length) { queueError('Para adjuntar archivos, abre un chat nuevo. Este chat usa el contexto del video.'); return; }
   if (!text) text = files.length === 1 ? "Revisa este archivo." : "Revisa estos archivos.";
   // The token travels as the command it stands for («/banana un gato»).
   if (picked) { text = `${picked.command} ${text}`; setCommand(null); }
@@ -332,7 +336,7 @@ async function submit() {
   queueError(null);
   render();
   try {
-    const id = await invoke<string>("send_message", { chatId, text, attachments: sending });
+    const id = await invoke<string>(videoMode ? "send_video_message" : "send_message", { chatId, text, attachments: sending });
     if (generation === chatGeneration) { chatId = id; await refreshQueue(); }
   } catch (e) {
     if (generation === chatGeneration) {
@@ -464,6 +468,9 @@ async function openChat(id: string) {
   ]);
   const names = new Map(agents.map((a) => [a.id, a.name]));
   chatId = id;
+  videoMode = await invoke<boolean>('is_video_chat', { chatId: id });
+  videoBadge.hidden = !videoMode;
+  input.placeholder = videoMode ? 'Pregúntale a Gemini sobre el video' : 'Pregúntale a Buddy';
   void refreshQueue();
   streaming = false;
   live = null;
@@ -479,6 +486,7 @@ async function openChat(id: string) {
 }
 
 function newChat() {
+  videoMode = false; videoBadge.hidden = true; input.placeholder = 'Pregúntale a Buddy';
   chatGeneration++;
   queueError(null);
   queued = [];
@@ -591,6 +599,13 @@ void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 });
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));
+async function takeVideoQuestion() {
+  if (!await invoke<boolean>('video_take_question')) return;
+  newChat(); videoMode = true; videoBadge.hidden = false;
+  input.placeholder = 'Pregúntale a Gemini sobre el video'; input.value = 'Explícame este momento del video.';
+  autosize(); render(); input.focus();
+}
+void listen('video-question', () => void takeVideoQuestion()).then(takeVideoQuestion);
 void listen<string>("open-chat", ({ payload }) => void openChat(payload));
 // The history deleted chats: if the open one was among them, start over.
 void listen<string[]>("chats-deleted", ({ payload }) => { if (chatId && payload.includes(chatId)) newChat(); });

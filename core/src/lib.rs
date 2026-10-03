@@ -28,6 +28,7 @@ pub mod paths;
 pub mod pet;
 pub mod pixel;
 pub mod providers;
+pub mod remote;
 pub mod router;
 pub mod skills;
 pub mod spotify;
@@ -38,6 +39,8 @@ mod telegram_account;
 pub mod tools;
 pub mod usage;
 pub mod voice;
+pub mod youtube;
+pub use youtube::{YouTubeStatus, YouTubeVideo};
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -62,6 +65,7 @@ pub use router::{ModelOption, RouterConfig, Tier, TierChoice};
 pub use usage::{ProviderUsage, UsageWindow};
 pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
 pub use telegram::TelegramStatus;
+pub use remote::{PairOffer, RemoteAction, RemoteStatus};
 
 #[cfg(feature = "ffi")]
 uniffi::setup_scaffolding!();
@@ -106,7 +110,8 @@ pub struct BuddyCore {
     store: Arc<Mutex<store::Store>>,
     bus: Arc<EventBus>,
     chat: Arc<ChatEngine>,
-    focus: tools::Focus,
+    focus: Arc<tools::Focus>,
+    remote: Arc<remote::Remote>,
     usage: Arc<usage::Usage>,
     briefing: Arc<briefing::Briefing>,
     sessions: Arc<SessionHub>,
@@ -141,6 +146,8 @@ impl BuddyCore {
         core.niko.start();
         // The mail watch runs only when the user connected a Gmail address.
         core.mail.start();
+        // The phone link runs only when a phone is paired.
+        core.remote.start_if_configured();
         Ok(core)
     }
 
@@ -154,6 +161,7 @@ impl BuddyCore {
         let bus = Arc::new(EventBus::default());
         let usage = Arc::new(usage::Usage::new(store.clone(), bus.clone()));
         let sessions = Arc::new(SessionHub::new(data_dir.clone(), bus.clone()));
+        sessions.youtube.enable(store.lock().unwrap_or_else(|p| p.into_inner()).setting("youtube.enabled")?.as_deref() == Some("true"));
         let briefing = Arc::new(briefing::Briefing::new(store.clone(), bus.clone(), Box::new(briefing::ClaudeSource)));
         let chat = Arc::new(
             ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers.clone())
@@ -219,7 +227,25 @@ impl BuddyCore {
                 let _ = reader.mail_arrived(&mails);
             });
         }));
-        Ok(Self { telegram_account, odds, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram, niko, mail })
+        let focus = Arc::new(tools::Focus::default());
+        // The phone link: what the paired iPhone may ask for is answered by `PhoneHost`, and nothing else.
+        let remote = Arc::new(remote::Remote::new(
+            store.clone(),
+            bus.clone(),
+            Box::new(remote::SystemVault),
+            Box::new(remote::HttpRooms),
+            Arc::new(PhoneHost {
+                data_dir: data_dir.clone(),
+                store: store.clone(),
+                bus: bus.clone(),
+                chat: chat.clone(),
+                sessions: sessions.clone(),
+                usage: usage.clone(),
+                briefing: briefing.clone(),
+                focus: focus.clone(),
+            }),
+        ));
+        Ok(Self { telegram_account, odds, data_dir, store, bus, chat, sessions, focus, remote, usage, briefing, spotify, telegram, niko, mail })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -240,7 +266,33 @@ impl BuddyCore {
         Self::open(data_dir).map(Arc::new)
     }
 
-    /// The same greeting on both platforms: proof that the app is talking to the core.
+    pub fn youtube_extension_path(&self) -> String {
+        let path = self.data_dir.join("youtube-extension");
+        if path.join("manifest.json").is_file() { path.to_string_lossy().into_owned() } else { String::new() }
+    }
+    pub fn youtube_status(&self) -> YouTubeStatus { self.sessions.youtube.status() }
+    pub fn youtube_prepare(&self, browser: String) -> Result<String, CoreError> {
+        self.youtube_prepare_with_host(browser, self.sessions.relay_path().to_string_lossy().into_owned())
+    }
+    pub fn youtube_prepare_with_host(&self, browser: String, host_path: String) -> Result<String, CoreError> {
+        let dir = youtube::prepare(&self.data_dir, &PathBuf::from(host_path), &browser)?;
+        self.youtube_enable(true)?;
+        Ok(dir.to_string_lossy().into_owned())
+    }
+    pub fn youtube_enable(&self, enabled: bool) -> Result<(), CoreError> {
+        self.set_setting("youtube.enabled".into(), enabled.to_string())?;
+        self.sessions.youtube.enable(enabled); Ok(())
+    }
+    pub fn youtube_open(&self, source_id: String, video_id: String) -> Result<YouTubeVideo, CoreError> { self.sessions.youtube.open(&source_id, &video_id) }
+    pub fn youtube_started(&self, source_id: String, video_id: String) { self.sessions.youtube.started(&source_id, &video_id); }
+    pub fn youtube_close(&self) { self.sessions.youtube.close(); }
+    pub fn youtube_toggle(&self, source_id: String, video_id: String) -> Result<(), CoreError> { self.sessions.youtube.toggle(&source_id, &video_id) }
+    pub fn youtube_open_floating(&self, source_id: String, video_id: String) -> Result<YouTubeVideo, CoreError> { self.sessions.youtube.open_at(&source_id, &video_id, "floating") }
+    pub fn youtube_move(&self, destination: String) -> Result<(), CoreError> { self.sessions.youtube.move_viewer(&destination) }
+    pub fn video_browser_pip(&self, source_id: String, video_id: String) -> Result<(), CoreError> { self.sessions.youtube.browser_pip(&source_id, &video_id) }
+    pub fn youtube_position(&self, source_id: String, video_id: String, seconds: f64) { self.sessions.youtube.position(&source_id, &video_id, seconds); }
+
+    /// The same greeting on both platforms.
     pub fn hello(&self) -> String {
         hello()
     }
@@ -301,6 +353,10 @@ impl BuddyCore {
     }
 
     pub fn set_setting(&self, key: String, value: String) -> Result<(), CoreError> {
+        // Folders, the paired Telegram chat and the phone link have their own, checked, ways in.
+        if remote::reserved_setting(&key) {
+            return Err(CoreError::Io(format!("«{key}» no se cambia como un ajuste suelto.")));
+        }
         self.with_store(|s| s.set_setting(&key, &value))?;
         self.bus.publish(Event::SettingChanged { key });
         Ok(())
@@ -312,6 +368,12 @@ impl BuddyCore {
         self.chat.send(chat_id, text, attachments)
     }
 
+    /// Explicitly shares the current video's bounded context with Gemini only.
+    pub fn send_video_message(&self, chat_id: Option<String>, text: String) -> Result<String, CoreError> {
+        let video = self.sessions.youtube.context().ok_or_else(|| CoreError::Io("No hay un video detectado. Abre uno o conecta la extensión.".into()))?;
+        self.chat.send_video(chat_id, text, video)
+    }
+    pub fn is_video_chat(&self, chat_id: String) -> bool { self.chat.video_context(&chat_id).is_some() }
     pub fn queued_messages(&self, chat_id: String) -> Vec<QueuedMessage> {
         self.chat.queued_messages(&chat_id)
     }
@@ -371,6 +433,7 @@ impl BuddyCore {
 
     pub fn delete_chat(&self, chat_id: String) -> Result<(), CoreError> {
         self.chat.cancel(&chat_id);
+        self.chat.forget_video(&chat_id);
         self.with_store(|s| s.delete_chat(&chat_id))
     }
 
@@ -698,6 +761,36 @@ impl BuddyCore {
         self.focus.stop(&self.bus);
     }
 
+    /// The phone link: where the relay is, whether a phone is paired and connected.
+    pub fn remote_status(&self) -> RemoteStatus {
+        self.remote.status()
+    }
+
+    /// The relay's address and the key that creates rooms in it (empty: keep the saved key).
+    pub fn remote_set_relay(&self, url: String, owner_key: String) -> Result<(), CoreError> {
+        self.remote.set_relay(&url, &owner_key)
+    }
+
+    /// A pairing code to show as a QR: good for five minutes, once.
+    pub fn remote_pair(&self) -> Result<PairOffer, CoreError> {
+        self.remote.pair()
+    }
+
+    /// Forgets the paired phone and deletes this machine's keys for it.
+    pub fn remote_forget(&self) {
+        self.remote.forget();
+    }
+
+    /// «Aprobar permisos desde el iPhone»: off, the phone can only deny.
+    pub fn remote_set_approvals(&self, on: bool) -> Result<(), CoreError> {
+        self.remote.set_approvals(on)
+    }
+
+    /// What the phone did on this machine, newest first.
+    pub fn remote_log(&self) -> Vec<RemoteAction> {
+        self.remote.actions()
+    }
+
     pub fn focus_status(&self) -> FocusStatus {
         self.focus.status()
     }
@@ -764,11 +857,90 @@ impl Drop for BuddyCore {
         self.telegram.shutdown();
         self.niko.shutdown();
         self.mail.shutdown();
+        self.remote.shutdown();
     }
 }
 
 pub fn hello() -> String {
-    format!("¡Hola! Soy Buddy (núcleo {}).", env!("CARGO_PKG_VERSION"))
+    "¡Hola! Soy Buddy.".into()
+}
+
+/// The core as the paired phone reaches it: one listed call at a time (`remote::rpc`), answered with the same
+/// records the apps get.
+struct PhoneHost {
+    data_dir: PathBuf,
+    store: Arc<Mutex<store::Store>>,
+    bus: Arc<EventBus>,
+    chat: Arc<ChatEngine>,
+    sessions: Arc<SessionHub>,
+    usage: Arc<usage::Usage>,
+    briefing: Arc<briefing::Briefing>,
+    focus: Arc<tools::Focus>,
+}
+
+impl remote::rpc::Host for PhoneHost {
+    fn run(&self, call: remote::rpc::Call) -> Result<serde_json::Value, String> {
+        use remote::rpc::Call;
+        use serde_json::{Value, json};
+        fn shown<T: serde::Serialize>(value: Result<T, CoreError>) -> Result<Value, String> {
+            let value = value.map_err(|e| match e {
+                CoreError::Store(m) | CoreError::Hooks(m) => m,
+                other => other.to_string(),
+            })?;
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        }
+        let store = || self.store.lock().unwrap_or_else(|p| p.into_inner());
+        match call {
+            Call::Hello => Ok(json!({ "name": remote::machine_name(), "platform": std::env::consts::OS, "version": env!("CARGO_PKG_VERSION") })),
+            Call::Chats { limit } => shown(store().chats(limit)),
+            Call::SearchChats { query, limit } => shown(store().search_chats(&query, limit)),
+            Call::Messages { chat_id } => shown(store().messages(&chat_id)),
+            Call::ImagePreview { path } => Ok(json!(self.chat.image_preview(&path))),
+            Call::Agents => shown(Ok(self.chat.agents())),
+            Call::AgentSprite { agent_id } => {
+                let name = self.chat.agents().into_iter().find(|a| a.id == agent_id).map(|a| a.name).unwrap_or_default();
+                let look = look::resolve(&self.data_dir, &store(), &agent_id);
+                shown(look::sprite(&look, &agent_id, &name))
+            }
+            Call::Sprite { id } => shown(pixel::builtin_sprite(&id)),
+            Call::ChatCommands => shown(Ok(chat::commands(&self.chat.agents()))),
+            Call::ChatSuggestions => shown(Ok(store().frequent_questions(3).unwrap_or_default())),
+            Call::QueuedMessages { chat_id } => shown(Ok(self.chat.queued_messages(&chat_id))),
+            Call::Sessions => shown(Ok(self.sessions.sessions())),
+            Call::Usage => shown(Ok(self.usage.snapshot())),
+            Call::Briefing => shown(Ok(self.briefing.latest())),
+            Call::FocusStatus => shown(Ok(self.focus.status())),
+            Call::VoiceVocabulary => {
+                let mut words: Vec<String> = voice::VOCABULARY.iter().map(|w| w.to_string()).collect();
+                for agent in self.chat.agents() {
+                    if !words.contains(&agent.name) {
+                        words.push(agent.name);
+                    }
+                }
+                Ok(json!(words))
+            }
+            // Text only: files never come from the phone through this call.
+            Call::SendMessage { chat_id, text } => shown(self.chat.send(chat_id, text, Vec::new())),
+            Call::CancelChat { chat_id } => {
+                self.chat.cancel(&chat_id);
+                Ok(Value::Null)
+            }
+            Call::Regenerate { chat_id } => shown(self.chat.regenerate(&chat_id)),
+            Call::RemoveQueued { chat_id, message_id } => {
+                self.chat.remove_queued(&chat_id, &message_id);
+                Ok(Value::Null)
+            }
+            Call::AnswerApproval { request_id, allow } => {
+                self.sessions.answer_approval(&request_id, allow);
+                Ok(Value::Null)
+            }
+            Call::FocusStart { minutes } => shown(Ok(self.focus.start(minutes, &self.bus))),
+            Call::FocusStop => {
+                self.focus.stop(&self.bus);
+                Ok(Value::Null)
+            }
+        }
+    }
 }
 
 /// A permission an agent can hold.
@@ -793,6 +965,46 @@ pub fn effort_label(effort: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Folders, the paired Telegram chat and the phone link are changed only through their own, checked, calls.
+    #[test]
+    fn the_generic_setter_refuses_settings_that_have_their_own_way_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = BuddyCore::open(dir.path()).unwrap();
+        for key in ["folders.authorized", "telegram.chat", "remote.relay", "remote.phoneKey", "remote.approvals", "remote.room"] {
+            assert!(core.set_setting(key.into(), "x".into()).is_err(), "{key}");
+            assert_eq!(core.setting(key.into()).unwrap(), None, "{key} was not written");
+        }
+        // The apps' own switches still go through.
+        for key in ["commands.enabled", "pet.wander", "notch.system.volume"] {
+            assert!(core.set_setting(key.into(), "true".into()).is_ok(), "{key}");
+        }
+    }
+
+    /// The phone reaches the core through `PhoneHost`: the same records the apps get, and nothing unlisted.
+    #[test]
+    fn the_phone_host_answers_the_listed_calls() {
+        use remote::rpc::{Call, Host};
+        let dir = tempfile::tempdir().unwrap();
+        let core = BuddyCore::open(dir.path()).unwrap();
+        let host = PhoneHost {
+            data_dir: core.data_dir.clone(), store: core.store.clone(), bus: core.bus.clone(), chat: core.chat.clone(),
+            sessions: core.sessions.clone(), usage: core.usage.clone(), briefing: core.briefing.clone(), focus: core.focus.clone(),
+        };
+        let hello = host.run(Call::Hello).unwrap();
+        assert!(!hello["name"].as_str().unwrap().is_empty());
+        assert_eq!(hello["platform"], std::env::consts::OS);
+        assert_eq!(host.run(Call::Chats { limit: 10 }).unwrap(), serde_json::json!([]));
+        assert!(host.run(Call::Agents).unwrap().as_array().unwrap().iter().any(|a| a["id"] == "buddy"));
+        assert!(host.run(Call::Sprite { id: "no-existe".into() }).is_err());
+        assert_eq!(host.run(Call::FocusStart { minutes: 25 }).unwrap()["running"], true);
+        assert_eq!(host.run(Call::FocusStop).unwrap(), serde_json::Value::Null);
+        assert_eq!(host.run(Call::FocusStatus).unwrap()["running"], false);
+        // Without a relay there is nothing to pair with, and nothing runs.
+        let status = core.remote_status();
+        assert!(!status.paired && !status.connected && status.relay.is_empty());
+        assert!(core.remote_pair().is_err());
+    }
 
     #[test]
     fn opens_and_round_trips_settings_with_an_event() {

@@ -356,6 +356,7 @@ private struct ConnectionSettings: View {
             if let message {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
+            YouTubeSection(core: core)
             SpotifySection(core: core)
             TelegramSection(core: core)
             TelegramAccountSection(core: core)

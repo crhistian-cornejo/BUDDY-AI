@@ -14,6 +14,7 @@
    - Servidor local: solo el mismo usuario; 1 MB y 5 s por petición; como mucho 16 conexiones.
    - Estado de cada sesión (trabajando, esperando, terminó, error, cerrada).
    - Peticiones de permiso pendientes y su respuesta (`answer_approval`).
+   - Preguntas de Codex: Codex no tiene un evento para «te pregunto algo»; su herramienta `request_user_input` llega como un `PreToolUse` cualquiera (la variante `_async` vuelve al instante y Codex sigue trabajando). El núcleo la reconoce, deja la sesión «esperando» hasta que el usuario responde (`UserPromptSubmit`, o el `PostToolUse` de la variante que espera) y envía la pregunta en `SessionUpdate.summary`; el notch abre la tarjeta con ella y un botón para ir a responder. Las aprobaciones de Codex solo llegan si su sesión pregunta antes de ejecutar: con «Acceso completo» (política `never`) Codex no pide permiso y no hay nada que mostrar.
    - Instalador que edita `~/.claude/settings.json` y `~/.codex/hooks.json`, siempre tras un clic: muestra el cambio, guarda una copia fechada, no toca hooks ajenos y se puede deshacer.
    - Eventos al bus: `SessionUpdate`, `ApprovalRequest`, `ApprovalClosed`. Con un permiso pendiente, Buddy muestra «pregunta».
 3. **Mac (SwiftUI/AppKit), `Sources/Notch`.**

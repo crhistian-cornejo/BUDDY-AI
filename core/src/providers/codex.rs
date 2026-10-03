@@ -139,10 +139,25 @@ impl Default for Codex {
     }
 }
 
+/// Whether Codex runs under a permission profile here (reads confined to the agent's folders): macOS. Windows
+/// still has the legacy sandbox, whose commands can read the whole disk.
+const PROFILE: bool = cfg!(target_os = "macos");
+
+/// Codex's web search for a turn: live pages only where a profile confines what its commands read. Without one a
+/// command could read any file and a live request could carry it out, so the search stays on OpenAI's cached
+/// index (no request ever reaches a site named by the model or by a page).
+fn web_search_mode(no_web: bool, profile: bool) -> &'static str {
+    match (no_web, profile) {
+        (true, _) => "disabled",
+        (false, true) => "live",
+        (false, false) => "cached",
+    }
+}
+
 /// Read-only sandbox and no approvals: Codex can think and search, but runs nothing and edits nothing (phase 4
 /// opens that behind Buddy's approval gate).
 pub fn thread_params(request: &TurnRequest) -> Value {
-    let mut config = json!({ "web_search": if request.no_web { "disabled" } else { "live" }, "features": {"apps": request.accounts}, "apps": crate::accounts::app_policy(&[]) });
+    let mut config = json!({ "web_search": web_search_mode(request.no_web, PROFILE), "features": {"apps": request.accounts}, "apps": crate::accounts::app_policy(&[]) });
     // Buddy supplies the agent contract; unrelated coding notes must not leak into a sports chat.
     config["project_doc_max_bytes"] = json!(0);
     config["project_doc_fallback_filenames"] = json!([]);
@@ -172,7 +187,7 @@ pub fn thread_params(request: &TurnRequest) -> Value {
         config["model_reasoning_effort"] = json!(effort);
     }
     let mut params = json!({ "cwd": request.workspace });
-    if cfg!(target_os = "macos") {
+    if PROFILE {
         // A permission profile: Codex's commands read only what this agent may (attachments, its folders) plus the
         // system's minimum and Codex itself, write only in its workspace and editable folders, and have no network.
         // (The legacy read-only sandbox let them read the whole disk.)
@@ -636,6 +651,18 @@ mod tests {
         assert_eq!(server_request_reply(json!(1), "item/commandExecution/requestApproval")["result"]["decision"], "decline");
         assert_eq!(server_request_reply(json!(2), "item/fileChange/requestApproval")["result"]["decision"], "decline");
         assert!(server_request_reply(json!(3), "account/chatgptAuthTokens/refresh")["error"].is_object());
+    }
+
+    /// Without a permission profile (Windows today) Codex's commands can read the whole disk: a live web search
+    /// there would be a way out for what they read, so only the cached index is searched.
+    #[test]
+    fn the_web_is_live_only_where_a_permission_profile_confines_reads() {
+        assert_eq!(web_search_mode(false, true), "live");
+        assert_eq!(web_search_mode(false, false), "cached");
+        assert_eq!(web_search_mode(true, true), "disabled");
+        assert_eq!(web_search_mode(true, false), "disabled");
+        let p = thread_params(&TurnRequest::default());
+        assert_eq!(p["config"]["web_search"], if cfg!(target_os = "macos") { "live" } else { "cached" });
     }
 
     #[test]

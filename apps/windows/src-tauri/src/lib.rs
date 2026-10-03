@@ -4,6 +4,7 @@
 mod capture;
 mod media;
 mod notch;
+mod youtube;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -40,6 +41,7 @@ struct AppCore {
     chat_height: std::sync::Mutex<f64>,
     /// What the next bubble says (the hello when empty).
     say: std::sync::Mutex<Option<String>>,
+    video_question: AtomicBool,
 }
 
 struct PetTokens {
@@ -180,6 +182,25 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(media::MediaWatch::default())
         .invoke_handler(tauri::generate_handler![
+            youtube::youtube_status,
+            youtube::youtube_extension_path,
+            youtube::youtube_prepare,
+            youtube::youtube_enable,
+            youtube::youtube_open,
+            youtube::youtube_open_floating,
+            youtube::youtube_move,
+            youtube::youtube_position,
+            youtube::video_browser_pip,
+            youtube::video_ask,
+            youtube::video_take_question,
+            youtube::send_video_message,
+            youtube::is_video_chat,
+            youtube::youtube_started,
+            youtube::youtube_close,
+            youtube::youtube_toggle,
+            youtube::youtube_show_folder,
+            youtube::youtube_copy_folder,
+            youtube::youtube_browser_page,
             hello,
             sprite,
             show_pet_menu,
@@ -329,6 +350,7 @@ pub fn run() {
                 chat_open: AtomicBool::new(false),
                 chat_height: std::sync::Mutex::new(60.0),
                 say: std::sync::Mutex::new(None),
+                video_question: AtomicBool::new(false),
             });
             app.manage(notch::Inbox::default());
             forward_events(app.handle(), &core);
@@ -540,6 +562,7 @@ fn open_bar(app: &AppHandle) -> tauri::Result<()> {
         .focused(false)
         .visible(false)
         .build()?;
+    youtube::identify_player(&bar);
     place_bar(&bar, 160.0, 8.0)?;
     bar.show()
 }
@@ -561,7 +584,7 @@ fn bar_resize(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     let Some(bar) = app.get_webview_window(BAR) else {
         return Ok(());
     };
-    place_bar(&bar, width.clamp(40.0, 600.0), height.clamp(4.0, 420.0)).map_err(|e| e.to_string())
+    place_bar(&bar, width.clamp(40.0, 600.0), height.clamp(4.0, 560.0)).map_err(|e| e.to_string())
 }
 
 /// The bar listens to the system's "now playing" only while it is open.
@@ -841,6 +864,7 @@ fn forward_events(app: &AppHandle, core: &BuddyCore) {
                 if let buddy_core::Event::MediaCommand { action, uri } = &event {
                     run_media_command(&app, action.clone(), uri.clone());
                 }
+                if matches!(event, buddy_core::Event::YouTubeChanged) { let _ = youtube::sync_window(&app); }
                 let _ = app.emit("core-event", &event);
             }
         })

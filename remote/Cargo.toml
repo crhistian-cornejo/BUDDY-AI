@@ -1,0 +1,21 @@
+[package]
+name = "buddy-remote"
+description = "Buddy's phone link: pairing, the end-to-end encrypted channel and sealed notices. No I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+chacha20poly1305 = "0.11.0"
+getrandom = "0.4.3"
+hkdf = "0.13.0"
+hmac = "0.13.0"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.0"
+snow = "0.10.0"
+subtle = "2.6.1"
+thiserror.workspace = true
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
