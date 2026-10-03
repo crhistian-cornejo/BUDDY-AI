@@ -97,10 +97,10 @@ impl Spotify {
     /// The cached app token, or a new one (None: no secret stored).
     fn token(&self, id: &str, secrets: &dyn Secrets) -> Option<Result<String, String>> {
         let mut cached = self.token.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((token, until)) = cached.as_ref() {
-            if Instant::now() < *until {
-                return Some(Ok(token.clone()));
-            }
+        if let Some((token, until)) = cached.as_ref()
+            && Instant::now() < *until
+        {
+            return Some(Ok(token.clone()));
         }
         let secret = secrets.get()?;
         Some(fetch_token(id, &secret).map(|(token, until)| {
@@ -142,7 +142,7 @@ fn get_json(token: &str, q: &str, kind: &str) -> Result<Value, String> {
         .header("Authorization", &format!("Bearer {token}"))
         .query("q", q)
         .query("type", kind)
-        .query("limit", &RESULTS.to_string())
+        .query("limit", RESULTS.to_string())
         .call()
         .map_err(|e| format!("No se pudo buscar en Spotify: {e}"))?;
     let status = response.status().as_u16();
