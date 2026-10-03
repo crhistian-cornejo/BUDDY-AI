@@ -19,10 +19,12 @@
       </section>
       <div id="composer-stack">
         <div id="queue" aria-label="Mensajes en cola" hidden></div>
+        <div id="commands" role="listbox" aria-label="Comandos de agentes" hidden></div>
       <form id="composer" class="card" autocomplete="off">
         <div id="queue-error" role="status" hidden></div>
         <div id="files" hidden></div>
         <button type="button" id="attach" class="ghost" title="Adjuntar archivos (imágenes, PDF, texto)" aria-label="Adjuntar archivos"></button>
+        <button type="button" id="command" class="command-token" hidden></button>
         <textarea id="input" rows="1" placeholder="Pregúntale a Buddy" aria-label="Mensaje para Buddy"></textarea>
         <button type="button" id="stop" class="ghost" hidden title="Detener y vaciar la cola" aria-label="Detener y vaciar la cola"></button>
         <button type="submit" id="send" class="primary" title="Enviar (Enter)" aria-label="Enviar"></button>

@@ -6,6 +6,7 @@
     <link rel="stylesheet" href="/src/styles.css" />
     <link rel="stylesheet" href="/src/chat/chat.css" />
     <style>html, body { background: #888 !important; } #root { width: 440px; margin: 40px; }</style>
+    <script src="/preview/partial.js"></script>
     <script>
       const handlers = {};
       const listeners = {};
@@ -31,9 +32,39 @@
             const pixels = grid.flatMap((row) => [...row].map((ch) => pal[ch] ? (0xff000000 | parseInt(pal[ch].slice(1), 16)) >>> 0 : 0));
             return { size: grid.length, face: { x: 0, y: 0, size: grid.length }, states: [{ name: "idle", frames: [pixels] }] };
           }
+          // The core checks cards in the app; here the block is taken as written.
+          if (cmd === "card_from_json") { try { return JSON.parse(args.json); } catch { return null; } }
+          if (cmd === "card_partial") return window.previewPartialCard(args.json);
+          // The skies come from the core: `cargo run --example preview_backdrops > preview/weather-backdrops.json`.
+          if (cmd === "weather_backdrop") return fetch("/preview/weather-backdrops.json").then((r) => r.json()).then((all) => all[`${args.icon}|${args.night}`] ?? null);
+          if (cmd === "chat_commands") return [{ command: "/banana", agentId: "banana", name: "Banana", description: "Imágenes" }, { command: "/niko", agentId: "niko", name: "Niko", description: "Finanzas personales" }, { command: "/parley", agentId: "parley", name: "PARLEY", description: "Deportes" }];
           if (cmd === "send_message") {
             const c = "c1", s = (t, d) => setTimeout(() => emit(d), t);
             s(0, { type: "chatDequeued", chatId: c, text: args.text, attachments: [] });
+            // «clima», «gastos», «torta»: an answer with a card (the same blocks the core writes).
+            const CARDS = {"clima": "En **Lima** hay **24 °C**, parcialmente nublado. Máxima 24°, mínima 19°.\n\n```buddy-ui\n{\"titulo\":\"\",\"subtitulo\":\"\",\"metricas\":[],\"grafico\":null,\"tabla\":null,\"pasos\":[],\"clima\":{\"lugar\":\"Lima, Perú\",\"temperatura\":24.0,\"sensacion\":26.1,\"estado\":\"Parcialmente nublado\",\"icono\":\"parcial\",\"noche\":false,\"max\":24.3,\"min\":19.1,\"humedad\":69.0,\"viento\":15.4,\"lluvia\":0.0,\"dias\":[{\"dia\":\"dom\",\"icono\":\"nubes\",\"max\":25.1,\"min\":19.4,\"lluvia\":0.0},{\"dia\":\"lun\",\"icono\":\"nubes\",\"max\":24.8,\"min\":19.9,\"lluvia\":0.0},{\"dia\":\"mar\",\"icono\":\"nubes\",\"max\":25.2,\"min\":19.9,\"lluvia\":0.0},{\"dia\":\"mié\",\"icono\":\"nubes\",\"max\":24.9,\"min\":20.5,\"lluvia\":0.0},{\"dia\":\"jue\",\"icono\":\"lluvia\",\"max\":24.4,\"min\":20.8,\"lluvia\":2.0}]},\"fuente\":\"Open-Meteo · 14:00\",\"modelo\":\"\",\"acciones\":[\"¿Lloverá esta semana en Lima?\",\"Clima de mañana en Lima\"]}\n```", "gastos": "Así van tus gastos del periodo.\n\n```buddy-ui\n{\"titulo\": \"Tus gastos\", \"subtitulo\": \"Periodo desde el 26 de septiembre\", \"metricas\": [{\"etiqueta\": \"Hoy\", \"valor\": \"S/. 48.00\", \"nota\": \"\", \"tono\": \"\"}, {\"etiqueta\": \"Semana\", \"valor\": \"S/. 310.50\", \"nota\": \"+12 % vs. anterior\", \"tono\": \"mal\"}, {\"etiqueta\": \"Periodo\", \"valor\": \"S/. 980.00\", \"nota\": \"49 % del tope\", \"tono\": \"bien\"}], \"grafico\": {\"tipo\": \"barras\", \"etiquetas\": [\"Servicios\", \"Transfer.\", \"Ocio\", \"Otros\", \"Comida\", \"Transporte\"], \"series\": [{\"nombre\": \"Soles\", \"valores\": [320, 250, 160, 120, 90, 40]}], \"unidad\": \"S/.\"}, \"tabla\": {\"columnas\": [\"Comercio\", \"Fecha\", \"Monto\"], \"filas\": [[\"Luz\", \"01 oct\", \"S/. 150.00\"], [\"Internet\", \"30 sep\", \"S/. 120.00\"], [\"Taxi\", \"02 oct\", \"S/. 25.00\"]]}, \"pasos\": [], \"clima\": null, \"fuente\": \"Movimientos que Niko registró en este equipo\", \"modelo\": \"\", \"acciones\": [\"¿Cuánto gasté esta semana?\", \"Niko, ¿en qué puedo ahorrar?\"]}\n```", "torta": "```buddy-ui\n{\"titulo\": \"Suscripciones\", \"subtitulo\": \"Octubre, en dólares\", \"metricas\": [], \"grafico\": {\"tipo\": \"torta\", \"etiquetas\": [\"Música\", \"Películas\", \"Nube\", \"Otros\"], \"series\": [{\"nombre\": \"USD\", \"valores\": [11, 14, 3, 6]}], \"unidad\": \"US$\"}, \"tabla\": null, \"pasos\": [\"Revisa cuál usas menos\", \"Cancela antes del día 25\"], \"clima\": null, \"fuente\": \"Correos de cobro de octubre\", \"modelo\": \"Gemini 3.8 Flash\", \"acciones\": []}\n```"};
+            // «flujo»: the same card, arriving as a model writes it: text, the block opens (a skeleton), then the
+            // JSON a few characters at a time (`?lento` in the address: slower, to look at each stage).
+            if (args.text.toLowerCase().includes("flujo")) {
+              const slow = new URLSearchParams(location.search).has("lento") ? 6 : 1;
+              const [words, block] = CARDS.gastos.split("```buddy-ui\n");
+              const json = block.replace(/\n```$/, "");
+              s(200, { type: "chatStarted", chatId: c, agent: "buddy", agentName: "Buddy", provider: "antigravity" });
+              s(400, { type: "chatDelta", chatId: c, text: words });
+              s(900, { type: "chatDelta", chatId: c, text: "```buddy-ui\n" });
+              let at = 900 + 1500 * slow;
+              for (let i = 0; i < json.length; i += 14) { s(at, { type: "chatDelta", chatId: c, text: json.slice(i, i + 14) }); at += 60 * slow; }
+              s(at, { type: "chatDelta", chatId: c, text: "\n```" });
+              s(at + 200, { type: "chatDone", chatId: c, messageId: 0 });
+              return c;
+            }
+            const card = Object.keys(CARDS).find((k) => args.text.toLowerCase().includes(k));
+            if (card) {
+              s(200, { type: "chatStarted", chatId: c, agent: "buddy", agentName: "Buddy", provider: "" });
+              s(400, { type: "chatDelta", chatId: c, text: CARDS[card] });
+              s(600, { type: "chatDone", chatId: c, messageId: 2 });
+              return c;
+            }
             s(400, { type: "chatStarted", chatId: c, agent: "buddy", agentName: "Buddy", provider: "claude" });
             s(1200, { type: "chatStarted", chatId: c, agent: "parley", agentName: "PARLEY", provider: "claude" });
             s(2000, { type: "chatTool", chatId: c, name: "WebSearch", summary: "Real Madrid próximo partido" });
@@ -63,10 +94,12 @@
       </section>
       <div id="composer-stack">
         <div id="queue" aria-label="Mensajes en cola" hidden></div>
+        <div id="commands" role="listbox" aria-label="Comandos de agentes" hidden></div>
       <form id="composer" class="card" autocomplete="off">
         <div id="queue-error" role="status" hidden></div>
         <div id="files" hidden></div>
         <button type="button" id="attach" class="ghost" title="Adjuntar archivos (imágenes, PDF, texto)" aria-label="Adjuntar archivos"></button>
+        <button type="button" id="command" class="command-token" hidden></button>
         <textarea id="input" rows="1" placeholder="Pregúntale a Buddy" aria-label="Mensaje para Buddy"></textarea>
         <button type="button" id="stop" class="ghost" hidden title="Detener y vaciar la cola" aria-label="Detener y vaciar la cola"></button>
         <button type="submit" id="send" class="primary" title="Enviar (Enter)" aria-label="Enviar"></button>

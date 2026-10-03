@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- Development only (not built): every weather sky, by day and by night, drawn by the Windows card renderer with a
+     fake bridge. The skies come from the core: `cargo run --example preview_backdrops > preview/weather-backdrops.json`. -->
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <style>
+      html, body { background: #18181b !important; margin: 0; overflow: auto !important; height: auto !important; }
+      body { font-family: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, sans-serif; }
+      #grid { display: grid; grid-template-columns: repeat(2, 380px); gap: 14px 16px; padding: 20px; width: max-content; }
+      #grid h2 { margin: 0; font: 600 13px system-ui; color: #a1a1aa; }
+      #grid .ui-card { margin-top: 0; }
+    </style>
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        invoke: async (cmd, args) => {
+          if (cmd === "weather_backdrop") return fetch("/preview/weather-backdrops.json").then((r) => r.json()).then((all) => all[`${args.icon}|${args.night}`] ?? null);
+          return null;
+        },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="grid"><h2>De día</h2><h2>De noche</h2></div>
+    <script type="module">
+      import { applyTokens } from "/src/tokens.ts";
+      import { cardView, complete, applyChartColors } from "/src/chat/card.ts";
+      applyTokens();
+      applyChartColors();
+      const skies = [["sol", "Despejado", 27], ["parcial", "Parcialmente nublado", 24], ["nubes", "Nublado", 19], ["niebla", "Niebla", 15],
+        ["lluvia", "Lluvia", 17], ["tormenta", "Tormenta", 21], ["nieve", "Nieve", -2]];
+      const only = new URLSearchParams(location.search).get("solo");
+      for (const [icono, estado, temperatura] of skies) {
+        if (only && only !== icono) continue;
+        for (const noche of [false, true]) {
+          const clima = { lugar: "Lima, Perú", temperatura: temperatura - (noche ? 4 : 0), sensacion: temperatura + 1, estado, icono, noche, max: temperatura + 2, min: temperatura - 5,
+            humedad: 69, viento: 15, lluvia: icono === "lluvia" || icono === "tormenta" ? 80 : 5, dias: [] };
+          document.getElementById("grid").append(cardView(complete({ clima, fuente: "Open-Meteo · 13:45" })));
+        }
+      }
+    </script>
+  </body>
+</html>

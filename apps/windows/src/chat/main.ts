@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyTokens } from "../tokens";
 import { AnswerView } from "./answer";
+import { splitCards, applyChartColors } from "./card";
 import { h, svg } from "./dom";
 import { TABLER } from "./tabler";
 import { faceForName } from "./avatar";
@@ -13,8 +14,9 @@ import { PROVIDER_MARKS } from "./provider-marks";
 import { makeSource, type ChatSource } from "./markdown";
 
 applyTokens();
+applyChartColors();
 
-interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean; attachments?: string[]; model?: string | null }
+interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean; attachments?: string[]; model?: string | null; took?: string | null }
 interface QueuedMessage { id: string; text: string; attachments: string[] }
 interface Agent { id: string; name: string }
 type CoreEvent =
@@ -153,6 +155,7 @@ function activityFor(tool: string, summary: string): Activity {
   if (tool === "WebFetch") return { icon: TABLER.search, text: "Leyendo una página…" };
   if (tool === "Cambio") return { icon: TABLER.arrowsExchange, text: summary };
   if (tool === "Telegram" || tool === "Cuotas") return { icon: TABLER.search, text: summary };
+  if (tool === "Imagen") return { icon: TABLER.dots, text: `${summary}…` };
   return { icon: TABLER.dots, text: "Trabajando…" };
 }
 
@@ -181,6 +184,12 @@ function setAuthor(el: HTMLElement, name: string, agentId = "buddy", active = fa
   el.title = active ? `Buddy le encarga la tarea a ${name}, con sus propios permisos` : `Respuesta de ${name}, del equipo de Buddy`;
 }
 
+/** How long the answer took, after the author («Buddy · 4.2 s»). */
+function setTook(author: HTMLElement, took?: string | null) {
+  author.querySelector(".took")?.remove();
+  if (took) author.append(h("span", { class: "took", text: `· ${took}`, title: "Lo que tardó esta respuesta" }));
+}
+
 /** The mark of the service that wrote the answer, after the copy and redo buttons. */
 /** The provider's mark; its tooltip says who wrote it and, on a second line, the model and its effort. */
 function setMark(actions: HTMLElement, provider?: string | null, model?: string | null) {
@@ -198,7 +207,7 @@ function setMark(actions: HTMLElement, provider?: string | null, model?: string 
 function actionsFor(getText: () => string): HTMLElement {
   const copy = h("button", { class: "ghost small", type: "button", title: "Copiar respuesta", "aria-label": "Copiar respuesta" }, icon(TABLER.copy, 14));
   copy.addEventListener("click", () => {
-    void navigator.clipboard.writeText(getText());
+    void navigator.clipboard.writeText(splitCards(getText()).text);
     copy.replaceChildren(icon(TABLER.check, 14));
     copy.title = "Copiado";
     setTimeout(() => { copy.replaceChildren(icon(TABLER.copy, 14)); copy.title = "Copiar respuesta"; }, 1500);
@@ -252,6 +261,14 @@ function documentCard(path: string): HTMLElement {
   const dot = name.lastIndexOf(".");
   const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
   const title = dot > 0 ? name.slice(0, dot) : name;
+  // A picture shows itself; a click opens the file as it was made, at full size.
+  if (["png", "jpg", "jpeg", "webp", "gif"].includes(ext)) {
+    const picture = h("img", { class: "image-card-picture", alt: title });
+    const card = h("button", { class: "image-card", type: "button", title: "Abrir a tamaño completo", "aria-label": `Imagen: ${name}` }, picture);
+    void invoke<string | null>("image_preview", { path }).then((url) => { if (url) picture.setAttribute("src", url); }).catch(() => {});
+    card.addEventListener("click", () => void invoke("open_document", { path }).catch((e) => { card.title = `No se pudo abrir: ${e}`; }));
+    return card;
+  }
   const card = h("button", { class: "doc-card", type: "button", title: "Abrir", "aria-label": `${KINDS[ext]?.[2] ?? "Archivo"}: ${name}` },
     documentIcon(ext),
     h("span", { class: "doc-text" }, h("span", { class: "doc-name", text: title }), h("span", { class: "doc-kind", text: KINDS[ext]?.[2] ?? ext.toUpperCase() })),
@@ -260,13 +277,15 @@ function documentCard(path: string): HTMLElement {
   return card;
 }
 
-function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false, documents: string[] = [], model: string | null = null, agentId = "buddy") {
+function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false, documents: string[] = [], model: string | null = null, agentId = "buddy", took: string | null = null) {
   const authorEl = h("div", { class: "msg-author" });
   setAuthor(authorEl, name, agentId, false, failed);
+  setTook(authorEl, took);
   const activityEl = h("div", { class: "activity", role: "status" });
   activityEl.hidden = true;
   const wrap = h("div", { class: "msg-assistant" }, authorEl, activityEl);
   const view = new AnswerView();
+  view.onSend = (prompt) => { input.value = prompt; void submit(); };
   const state = { text };
   const actions = actionsFor(() => state.text);
   setMark(actions, provider, model);
@@ -301,6 +320,8 @@ async function submit() {
   let text = input.value.trim();
   if (!text && !files.length) return;
   if (!text) text = files.length === 1 ? "Revisa este archivo." : "Revisa estos archivos.";
+  // The token travels as the command it stands for («/banana un gato»).
+  if (picked) { text = `${picked.command} ${text}`; setCommand(null); }
   const sending = files;
   files = [];
   drawFiles();
@@ -349,14 +370,23 @@ async function regenerate() {
   }
 }
 
-function finish(failureText: string | null) {
+/** `savedId`: the id of the message the core kept for this answer (0: none was kept). */
+function finish(failureText: string | null, savedId = 0) {
   // Documents the agent made in this turn come saved with the answer: show them as cards.
-  if (live && !failureText && chatId) {
+  if (live && !failureText && chatId && savedId > 0) {
     const actionsEl = live.actions;
+    const authorEl = live.author;
+    const { view, state, sources } = { view: live.view, state: liveState, sources: live.sources };
     void invoke<SavedMessage[]>("messages", { chatId }).then((saved) => {
-      const last = [...saved].reverse().find((m) => m.role === "assistant");
+      const last = saved.find((m) => m.id === savedId);
       for (const d of last?.attachments ?? []) actionsEl.before(documentCard(d));
       if (last?.model) setMark(actionsEl, last.provider, last.model);
+      setTook(authorEl, last?.took);
+      // What stays on screen is what was saved (a card signed by its model, lines meant for the core gone).
+      if (last && !last.failed && last.text && last.text !== state.text) {
+        state.text = last.text;
+        view.update(last.text, { sources });
+      }
     }).catch(() => {});
   }
   if (live) {
@@ -414,7 +444,7 @@ function onCore(event: CoreEvent) {
       break;
     }
     case "chatDone":
-      return finish(null);
+      return finish(null, (event as Extract<CoreEvent, { type: "chatDone" }>).messageId);
     case "chatFailed":
       return finish((event as Extract<CoreEvent, { type: "chatFailed" }>).message);
     default:
@@ -442,7 +472,7 @@ async function openChat(id: string) {
     if (m.role === "user") addUser(m.text, m.attachments ?? []);
     else {
       const sources = m.sources.map((s) => makeSource(s.title, s.url)).filter((s): s is ChatSource => !!s);
-      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed, m.attachments ?? [], m.model ?? null, m.agent);
+      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed, m.attachments ?? [], m.model ?? null, m.agent, m.took ?? null);
     }
   }
   render();
@@ -472,8 +502,66 @@ $("composer").addEventListener("submit", (e) => {
   e.preventDefault();
   void submit();
 });
+/** The composer's «/» commands: one per specialist («/niko», «/banana»…). */
+interface ChatCommand { command: string; agentId: string; name: string; description: string }
+let commands: ChatCommand[] = [];
+void invoke<ChatCommand[]>("chat_commands").then((list) => { commands = list; }).catch(() => {});
+const commandsEl = $("commands");
+
+/** The commands that fit what is being typed: only while the field is «/» and the start of a name. */
+function matchingCommands(): ChatCommand[] {
+  const typed = input.value.toLowerCase();
+  if (picked || !typed.startsWith("/") || /\s/.test(typed)) return [];
+  return commands.filter((c) => c.command.startsWith(typed) || `/${c.name.toLowerCase()}`.startsWith(typed));
+}
+
+/** The command picked for the message being written: a token before the text, not typed text. */
+let picked: ChatCommand | null = null;
+const tokenEl = $<HTMLButtonElement>("command");
+
+function setCommand(command: ChatCommand | null) {
+  picked = command;
+  tokenEl.hidden = !command;
+  tokenEl.textContent = command?.command ?? "";
+  tokenEl.title = command ? `Este mensaje va directo a ${command.name}. Clic o Retroceso para quitarlo` : "";
+  input.placeholder = command ? `Pídele algo a ${command.name}` : "Pregúntale a Buddy";
+}
+
+function pickCommand(command: ChatCommand) {
+  setCommand(command);
+  input.value = "";
+  autosize(); render(); drawCommands(); input.focus();
+}
+tokenEl.addEventListener("click", () => { setCommand(null); input.focus(); });
+
+function drawCommands() {
+  const list = matchingCommands();
+  commandsEl.hidden = list.length === 0;
+  commandsEl.replaceChildren(...list.map((c, i) => {
+    const face = h("img", { class: "avatar", alt: "" });
+    void faceForName(c.name).then((url) => { if (url) face.setAttribute("src", url); });
+    const row = h("button", { class: `command-item${i === 0 ? " first" : ""}`, type: "button", role: "option", title: `Llamar a ${c.name}` },
+      face, h("span", { class: "command-name", text: c.command }), h("span", { class: "command-about", text: c.description }));
+    row.addEventListener("click", () => pickCommand(c));
+    return row;
+  }));
+}
+
 input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
+  if (e.key === "Backspace" && picked && !input.value) {
+    e.preventDefault();
+    setCommand(null);
+    return;
+  }
+  if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+    // Enter (or Tab) over the command list completes the first one instead of sending half a command.
+    const first = matchingCommands()[0];
+    if (first) {
+      e.preventDefault();
+      pickCommand(first);
+      return;
+    }
+    if (e.key === "Tab") return;
     e.preventDefault();
     void submit();
   }
@@ -481,6 +569,7 @@ input.addEventListener("keydown", (e) => {
 input.addEventListener("input", () => {
   autosize();
   render();
+  drawCommands();
 });
 $("new").addEventListener("click", newChat);
 $("history").addEventListener("click", () => void invoke("open_history"));

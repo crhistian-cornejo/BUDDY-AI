@@ -46,6 +46,8 @@ struct LiveMessage: Identifiable, Equatable, Sendable {
     var failed = false
     /// The model that wrote an answer, in words («Opus 5.5 · esfuerzo alto»); shown in the mark's tooltip.
     var model: String?
+    /// How long the answer took, in words («4.2 s»).
+    var took: String?
 }
 
 /// A live line under the author: thinking, searching, reading, handing off.
@@ -70,6 +72,8 @@ struct ChatActivity: Equatable, Sendable {
             return ChatActivity(symbol: "paperplane", text: summary)
         case "Cuotas":
             return ChatActivity(symbol: "chart.line.uptrend.xyaxis", text: summary)
+        case "Imagen":
+            return ChatActivity(symbol: "photo", text: "\(summary)…")
         default:
             return ChatActivity(symbol: "gearshape", text: "Trabajando…")
         }

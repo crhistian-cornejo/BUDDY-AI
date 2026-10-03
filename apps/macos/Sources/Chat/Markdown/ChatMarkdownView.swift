@@ -69,7 +69,23 @@ struct AssistantBubble: View, Equatable {
         let sources = message.sources + cleaned.sources.filter { s in !message.sources.contains { $0.url == s.url } }
         VStack(alignment: .leading, spacing: 7) {
             if let status = message.status { AnswerStatusView(text: status) }
-            if !cleaned.text.isEmpty { MarkdownView(text: cleaned.text, streaming: message.isStreaming) }
+            // «```bu»: from its first characters, so the fence never shows as text while it is typed.
+            if cleaned.text.contains("```bu") {
+                // Text and cards, in the order the answer has them (the core cuts and checks them).
+                ForEach(Array(messageParts(text: cleaned.text).enumerated()), id: \.offset) { _, part in
+                    if let card = part.card {
+                        // Still arriving: what it has so far, growing as the model writes it.
+                        CardView(card: card, interactive: !message.isStreaming && !part.pending, drawing: part.pending)
+                            .transition(.opacity)
+                    } else if part.pending {
+                        CardSkeleton().transition(.opacity)
+                    } else {
+                        MarkdownView(text: part.text, streaming: message.isStreaming)
+                    }
+                }
+            } else if !cleaned.text.isEmpty {
+                MarkdownView(text: cleaned.text, streaming: message.isStreaming)
+            }
             SourcesRow(sources: sources)
         }
         .animation(.easeOut(duration: 0.2), value: sources.count)

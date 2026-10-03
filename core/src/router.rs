@@ -210,6 +210,15 @@ pub fn route(store: &Store, text: &str, files: &[PathBuf]) -> Route {
     if mode != "auto" {
         return build(&mode, &tier_effort, tier, "modelo fijo en Ajustes".into());
     }
+    // A picture is looked at by Gemini first: Flash for a plain question, Pro when it asks for analysis.
+    // (Work and Code keep their models, which see pictures too.)
+    if files.iter().any(|f| crate::images::is_image(f)) {
+        match tier {
+            Tier::Deep => return build("antigravity:gemini-3.1-pro", "high", tier, format!("imagen · {reason}")),
+            Tier::Light | Tier::Normal => return build("antigravity:gemini-3.8-flash", "low", tier, "imagen · pregunta sencilla".into()),
+            _ => {}
+        }
+    }
     // Code that also asks for depth gets more thinking, on the code model.
     let effort = if tier == Tier::Code && deep_reason(&fold(text), files).is_some() { "high".to_string() } else { tier_effort };
     build(&tier_model, &effort, tier, reason.into())
@@ -254,6 +263,9 @@ pub fn classify(text: &str, files: &[PathBuf]) -> (Tier, &'static str) {
     }
     if let Some(reason) = deep_reason(&t, files) {
         return (Tier::Deep, reason);
+    }
+    if crate::cards::asks_for_card(text) {
+        return (Tier::Normal, "pide una tarjeta");
     }
     (Tier::Normal, "pregunta normal")
 }
@@ -357,7 +369,10 @@ fn deep_reason(t: &str, files: &[PathBuf]) -> Option<&'static str> {
         "arquitectura", "disena", "plan de", "planifica", "paso a paso", "razona", "piensa bien", "demuestra", "evalua",
         "pros y contras", "ventajas y desventajas", "investigacion", "ensayo", "profund", "think hard",
     ];
-    if CUES.iter().any(|c| t.contains(c)) {
+    // A drawing of a plain comparison or of some steps is everyday work, done by the model that draws the cards.
+    const SOFT: [&str; 3] = ["compara", "comparacion", "paso a paso"];
+    let drawing = crate::cards::asks_for_card(t);
+    if CUES.iter().any(|c| t.contains(c) && !(drawing && SOFT.contains(c))) {
         return Some("pide análisis");
     }
     if t.chars().count() > 700 {
@@ -367,7 +382,10 @@ fn deep_reason(t: &str, files: &[PathBuf]) -> Option<&'static str> {
         return Some("varias preguntas");
     }
     let documents = files.iter().filter(|f| !crate::images::is_image(f)).count();
-    (documents >= 2).then_some("varios documentos")
+    if documents >= 2 {
+        return Some("varios documentos");
+    }
+    (files.len() - documents >= 3).then_some("varias imágenes")
 }
 
 /// True for small talk: short, no question to research, made of greetings or acknowledgements.
@@ -406,6 +424,29 @@ mod tests {
     fn store() -> (Store, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         (Store::open(&dir.path().join("t.sqlite")).unwrap(), dir)
+    }
+
+    #[test]
+    fn a_plain_drawing_goes_to_the_model_that_draws_cards() {
+        let (s, _d) = store();
+        let none: &[PathBuf] = &[];
+        let r = route(&s, "compárame en un gráfico la población de Perú, Chile y Colombia", none);
+        assert_eq!((r.provider, r.model.as_str(), r.reason.as_str()), (ProviderId::Antigravity, "gemini-3.8-flash", "pide una tarjeta"));
+        // Real analysis stays where analysis goes; its card is drawn afterwards.
+        assert_eq!(route(&s, "analiza a fondo mis ventas y hazme un dashboard", none).tier, Tier::Deep);
+        assert_eq!(route(&s, "compara estas dos estrategias", none).tier, Tier::Deep);
+    }
+
+    #[test]
+    fn a_picture_goes_to_gemini_flash_or_pro_by_what_is_asked() {
+        let (s, _d) = store();
+        let photo = [PathBuf::from("/x/foto.png")];
+        let r = route(&s, "¿qué dice aquí?", &photo);
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Antigravity, "gemini-3.8-flash", "low"));
+        let r = route(&s, "analiza este gráfico y compara las tendencias", &photo);
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Antigravity, "gemini-3.1-pro", "high"));
+        // Real work keeps its model, which sees pictures too.
+        assert_eq!(route(&s, "crea un powerpoint con esta imagen", &photo).tier, Tier::Work);
     }
 
     #[test]

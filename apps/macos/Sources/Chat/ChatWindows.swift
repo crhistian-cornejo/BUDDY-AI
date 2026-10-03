@@ -67,7 +67,7 @@ final class ChatWindows {
     /// Long text makes the field taller: the capsule follows.
     private func trackDraft() {
         guard composer != nil else { return }
-        withObservationTracking { _ = chat.draft; _ = chat.attachments; _ = chat.suggestions; _ = chat.streaming } onChange: { [weak self] in
+        withObservationTracking { _ = chat.draft; _ = chat.attachments; _ = chat.suggestions; _ = chat.streaming; _ = chat.command } onChange: { [weak self] in
             Task { @MainActor in self?.layout(); self?.trackDraft() }
         }
     }

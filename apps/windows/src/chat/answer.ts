@@ -12,6 +12,7 @@ import { logoFor, fallbackColor, fallbackInitial, type Logo } from "./logos";
 import { parseMarkdown, inlineSegments, cleanSources, taskMarker, matchLink, linkHost, linkKept, linkService, type ChatSource, type MdBlock, type MdItem } from "./markdown";
 import { highlight } from "./highlight";
 import { SERVICE_MARKS } from "./service-marks";
+import { splitCards, cardFrom, cardPartial, cardView, cardSkeleton } from "./card";
 import { parseTex, SPACED_OPERATORS, type MathNode } from "./tex";
 
 // ---- inline: bold, italic, code, strike, equations
@@ -311,14 +312,41 @@ export class AnswerView {
   private readonly md = new MarkdownView();
   private sourcesEl: HTMLElement | null = null;
   private sourcesKey = "";
+  private readonly cardsEl = h("div", { class: "answer-cards" });
+  private cardsKey = "";
+  /** A card's follow-up button: sends that message for the user. */
+  onSend: ((text: string) => void) | null = null;
 
   constructor() {
     this.statusEl.hidden = true;
-    this.el.append(this.statusEl, this.md.el);
+    this.el.append(this.statusEl, this.md.el, this.cardsEl);
+  }
+
+  /** The parts already on screen of each card that was seen arriving (by its place in the answer): when it grows
+   *  or ends, only what is new comes in. A card that was never seen arriving (the history) just appears. */
+  private readonly seen = new Map<number, Set<string>>();
+
+  /** Draws the answer's cards after its text: each block checked by the core; the one still arriving shows what
+   *  it has so far, or a skeleton while it has nothing. */
+  private drawCards(blocks: string[], partial: string | null) {
+    const key = `${blocks.join("\u{1f}")}|${partial ?? "\u{0}"}`;
+    if (key === this.cardsKey) return;
+    this.cardsKey = key;
+    if (partial !== null && !this.seen.has(blocks.length)) this.seen.set(blocks.length, new Set());
+    const arriving = partial === null ? Promise.resolve(null) : cardPartial(partial);
+    void Promise.all([Promise.all(blocks.map(cardFrom)), arriving]).then(([cards, growing]) => {
+      if (key !== this.cardsKey) return;
+      const send = this.onSend ?? undefined;
+      const views = cards.map((card, i) => card && cardView(card, send, { seen: this.seen.get(i) })).filter((v) => v !== null);
+      if (partial !== null) views.push(growing ? cardView(growing, undefined, { drawing: true, seen: this.seen.get(blocks.length) }) : cardSkeleton());
+      this.cardsEl.replaceChildren(...(views as HTMLElement[]));
+    });
   }
 
   update(text: string, opts: { status?: string | null; sources?: ChatSource[] } = {}) {
-    const cleaned = cleanSources(text);
+    const cut = splitCards(text);
+    this.drawCards(cut.blocks, cut.partial);
+    const cleaned = cleanSources(cut.text);
     this.md.update(cleaned.text);
     this.md.el.hidden = !cleaned.text;
     const status = opts.status ?? null;

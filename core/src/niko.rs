@@ -1761,6 +1761,26 @@ pub fn quick_answer(store: &Store, question: &str) -> Option<String> {
     if let Some(at) = last {
         out.push_str(&format!("\n\n*Según lo registrado hasta la última revisión del correo ({}).*", lima_text(at)));
     }
+    // The same figures, drawn: the three totals and where the money went.
+    let top: Vec<&(String, f64)> = s.by_category.iter().filter(|(_, v)| *v > 0.0).take(8).collect();
+    let card = crate::cards::Card {
+        title: "Tus gastos".into(),
+        subtitle: if cycle_day() > 1 { format!("Periodo desde el {}", &lima_text(month_start(now))[..10]) } else { s.month.clone() },
+        metrics: [("Hoy", s.today), ("Semana", s.week), ("Periodo", s.month_out)]
+            .iter()
+            .map(|(label, value)| crate::cards::Metric { label: (*label).into(), value: money(*value, "PEN"), ..Default::default() })
+            .collect(),
+        chart: (!top.is_empty()).then(|| crate::cards::Chart {
+            style: "barras".into(),
+            labels: top.iter().map(|(c, _)| c.clone()).collect(),
+            series: vec![crate::cards::Series { name: "Soles".into(), values: top.iter().map(|(_, v)| *v).collect() }],
+            unit: "S/.".into(),
+        }),
+        source: "Movimientos que Niko registró en este equipo".into(),
+        actions: vec!["¿Cuánto gasté esta semana?".into(), "Niko, ¿en qué puedo ahorrar?".into()],
+        ..Default::default()
+    };
+    out.push_str(&format!("\n\n{}", card.block()));
     Some(out)
 }
 

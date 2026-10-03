@@ -26,7 +26,7 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: -10) {
-            if !chat.queued.isEmpty { queue } else if showsSuggestions { suggestions }
+            if !chat.matchingCommands.isEmpty { commands } else if !chat.queued.isEmpty { queue } else if showsSuggestions { suggestions }
             VStack(alignment: .leading, spacing: 8) {
                 if let error = chat.queueError ?? dictation.problem {
                     Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 8)
@@ -74,6 +74,11 @@ struct ComposerView: View {
     private func installPasteMonitor() {
         removePasteMonitor()
         pasteMonitor.value = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // ⌫ on an empty field takes the command token away (the text view itself swallows that key).
+            if event.keyCode == 51, focused, chat.command != nil, chat.draft.isEmpty {
+                chat.dropCommand()
+                return nil
+            }
             guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
                   event.charactersIgnoringModifiers == "v",
                   focused else { return event }
@@ -129,7 +134,42 @@ struct ComposerView: View {
 
     /// Offered only over an empty field, with nothing being written or waiting.
     private var showsSuggestions: Bool {
-        empty && !chat.streaming && !chat.suggestions.isEmpty && !dictation.recording && !dictation.preparing
+        empty && chat.command == nil && !chat.streaming && !chat.suggestions.isEmpty && !dictation.recording && !dictation.preparing
+    }
+
+    /// «/»: the specialists that can be called by command. A click (or ↩ on the first) writes it in the field.
+    private var commands: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(chat.matchingCommands.enumerated()), id: \.element.command) { index, command in
+                Button {
+                    chat.pick(command)
+                    focused = true
+                } label: {
+                    HStack(spacing: 8) {
+                        AgentAvatarView(agentId: command.agentId, size: 18)
+                        Text(command.command).font(.callout.weight(.semibold))
+                        Text(command.description).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        if index == 0 {
+                            Text("↩").font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(index == 0 ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .tip("Llamar a \(command.name)")
+            }
+        }
+        .padding(.top, 6)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 16)
+        .frame(width: ChatMetrics.composerWidth - 24)
+        .background(Color.dynamic(light: "#F1F1F3", dark: "#303034"), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.16), lineWidth: 1))
+        .accessibilityLabel("Comandos de agentes")
     }
 
     /// What the user asks often: one click sends it.
@@ -174,12 +214,33 @@ struct ComposerView: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             .tip("Adjuntar archivos (imágenes, PDF, texto)")
-            TextField("Pregúntale a Buddy", text: $chat.draft, axis: .vertical)
+            if let command = chat.command {
+                // The picked command: a token, told apart from what is typed after it. ⌫ on an empty field removes it.
+                Button(action: chat.dropCommand) {
+                    Text(command.command)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(Color.blue)
+                        .padding(.horizontal, 7)
+                        .frame(height: 22)
+                        .background(Color.blue.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .frame(height: 28)
+                .tip("Este mensaje va directo a \(command.name). Clic o ⌫ para quitarlo")
+                .accessibilityLabel("Comando \(command.name)")
+            }
+            TextField(chat.command.map { "Pídele algo a \($0.name)" } ?? "Pregúntale a Buddy", text: $chat.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.body)
                 .lineLimit(1...6)
                 .focused($focused)
                 .onSubmit { send() }
+                .onKeyPress(.tab) {
+                    guard let first = chat.matchingCommands.first else { return .ignored }
+                    chat.pick(first)
+                    return .handled
+                }
+
                 .padding(.vertical, 5)
                 .frame(minHeight: 28)
             Button { dictation.toggle(into: chat); focused = true } label: {
@@ -225,6 +286,12 @@ struct ComposerView: View {
 
     /// Sending ends the dictation: the next words belong to the next message.
     private func send() {
+        // ↩ over the command list completes the first one instead of sending half a command.
+        if let first = chat.matchingCommands.first {
+            chat.pick(first)
+            focused = true
+            return
+        }
         if dictation.recording || dictation.preparing { dictation.stop(discard: true) }
         chat.send()
     }
@@ -265,6 +332,11 @@ struct ChatView: View {
                                    isLastAnswer: message.id == chat.messages.last(where: { $0.role == "assistant" })?.id,
                                    canRegenerate: !chat.streaming,
                                    onRegenerate: chat.regenerate)
+                    }
+                    // A card's follow-up button sends its message as if the user had typed it.
+                    .environment(\.sendPrompt) { text in
+                        chat.draft = text
+                        chat.send()
                     }
                 }
                 .padding(16)
@@ -348,7 +420,8 @@ private struct MessageRow: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                AuthorLine(name: message.author ?? "Buddy", agentID: message.agentID, active: message.isStreaming, failed: message.failed)
+                AuthorLine(name: message.author ?? "Buddy", agentID: message.agentID, active: message.isStreaming, failed: message.failed,
+                           took: message.isStreaming ? nil : message.took)
                 if let activity = message.activity {
                     ActivityLine(activity: activity)
                 }
@@ -361,7 +434,7 @@ private struct MessageRow: View {
                 }
                 ForEach(message.files, id: \.self) { DocumentCard(path: $0) }
                 if !message.isStreaming && !message.content.isEmpty {
-                    MessageActions(text: message.content, provider: message.provider, model: message.model, canRegenerate: isLastAnswer && canRegenerate,
+                    MessageActions(text: messagePlain(text: message.content), provider: message.provider, model: message.model, canRegenerate: isLastAnswer && canRegenerate,
                                    onRegenerate: onRegenerate)
                         .opacity(isLastAnswer || hovering ? 1 : 0)
                 }
@@ -379,6 +452,7 @@ private struct AuthorLine: View {
     let agentID: String
     let active: Bool
     let failed: Bool
+    var took: String? = nil
 
     var body: some View {
         HStack(spacing: 6) {
@@ -399,6 +473,13 @@ private struct AuthorLine: View {
                         .foregroundStyle(.tint)
                         .lineLimit(1)
                 }
+            }
+            if let took {
+                Text("· \(took)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .tip("Lo que tardó esta respuesta")
             }
         }
         .accessibilityElement(children: .ignore)
@@ -562,7 +643,43 @@ struct DocumentCard: View {
         NSWorkspace.shared.urlForApplication(toOpen: url).map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
     }
 
+    /// A picture an agent made: it shows itself, as it was made (the file is never resized).
+    private var picture: NSImage? {
+        guard ["png", "jpg", "jpeg", "webp", "gif", "heic"].contains(url.pathExtension.lowercased()) else { return nil }
+        return NSImage(contentsOfFile: path)
+    }
+
     var body: some View {
+        if let picture {
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                Image(nsImage: picture)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 360, maxHeight: 300, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
+            }
+            .buttonStyle(.plain)
+            .tip("Abrir a tamaño completo · \(Int(picture.representations.first?.pixelsWide ?? 0)) × \(Int(picture.representations.first?.pixelsHigh ?? 0))")
+            .contextMenu {
+                Button("Abrir") { NSWorkspace.shared.open(url) }
+                Button("Mostrar en el Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                Button("Copiar imagen") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.writeObjects([picture])
+                }
+            }
+            .accessibilityLabel("Imagen: \(url.lastPathComponent)")
+            .accessibilityHint("Abre la imagen")
+        } else {
+            card
+        }
+    }
+
+    private var card: some View {
         Button {
             NSWorkspace.shared.open(url)
         } label: {

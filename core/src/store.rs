@@ -90,6 +90,8 @@ const MIGRATIONS: &[&str] = &[
         added_at  INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX finance_records_by_time ON finance_records(at);",
+    // v8: how long each answer took, for the chat's author line.
+    "ALTER TABLE messages ADD COLUMN elapsed_ms INTEGER;",
 ];
 
 /// Tokens spent by one feature (and provider) over a period.
@@ -155,6 +157,17 @@ pub struct ChatMessage {
     pub attachments: Vec<String>,
     /// The model that wrote an answer, in words («Opus 5.5 · esfuerzo alto»); None for older ones.
     pub model: Option<String>,
+    /// How long the answer took, in words («850 ms», «4.2 s», «1 min 5 s»); None for older ones.
+    pub took: Option<String>,
+}
+
+/// A duration as the chat shows it next to the author.
+pub fn took_label(ms: i64) -> String {
+    match ms.max(0) {
+        ms if ms < 1000 => format!("{ms} ms"),
+        ms if ms < 60_000 => format!("{:.1} s", ms as f64 / 1000.0),
+        ms => format!("{} min {} s", ms / 60_000, ms % 60_000 / 1000),
+    }
 }
 
 /// What a new message carries.
@@ -228,8 +241,9 @@ impl Store {
     }
 }
 
-/// A one-line preview without Markdown marks or Buddy's hand-off line.
+/// A one-line preview without Markdown marks, cards or Buddy's hand-off line.
 pub fn plain_preview(text: &str) -> String {
+    let text = crate::cards::plain(text);
     let mut out = String::new();
     for line in text.lines() {
         let mut line = line.trim();
@@ -288,6 +302,12 @@ impl Store {
         Ok(id)
     }
 
+    /// Notes how long a saved answer took.
+    pub fn set_message_elapsed(&self, message_id: i64, ms: i64) -> Result<(), CoreError> {
+        self.conn.execute("UPDATE messages SET elapsed_ms = ?2 WHERE id = ?1", params![message_id, ms])?;
+        Ok(())
+    }
+
     /// Notes which model wrote a saved answer.
     pub fn set_message_model(&self, message_id: i64, model: &str) -> Result<(), CoreError> {
         self.conn.execute("UPDATE messages SET model = ?2 WHERE id = ?1", params![message_id, model])?;
@@ -335,7 +355,7 @@ impl Store {
 
     pub fn messages(&self, chat_id: &str) -> Result<Vec<ChatMessage>, CoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, role, agent, provider, text, sources, failed, created_at, attachments, model FROM messages WHERE chat_id = ?1 ORDER BY id",
+            "SELECT id, role, agent, provider, text, sources, failed, created_at, attachments, model, elapsed_ms FROM messages WHERE chat_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![chat_id], |r| {
             let sources: String = r.get(5)?;
@@ -350,6 +370,7 @@ impl Store {
                 created_at: r.get(7)?,
                 attachments: serde_json::from_str(&r.get::<_, String>(8)?).unwrap_or_default(),
                 model: r.get(9)?,
+                took: r.get::<_, Option<i64>>(10)?.map(took_label),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -555,6 +576,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_duration_reads_as_ms_seconds_or_minutes() {
+        assert_eq!(took_label(850), "850 ms");
+        assert_eq!(took_label(4_230), "4.2 s");
+        assert_eq!(took_label(65_400), "1 min 5 s");
+    }
+
+    #[test]
     fn a_new_base_reaches_the_latest_version() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.schema_version().unwrap() as usize, MIGRATIONS.len());
@@ -635,6 +663,7 @@ mod tests {
     fn previews_are_plain_text() {
         assert_eq!(plain_preview("## Hola\n\n1. **Usa `let`** por defecto"), "Hola 1. Usa let por defecto");
         assert_eq!(plain_preview("[[pasar:parley]] Analiza"), "Analiza");
+        assert_eq!(plain_preview("Así vas.\n\n```buddy-ui\n{\"pasos\":[\"uno\"]}\n```"), "Así vas.");
         assert_eq!(plain_preview("| a | b |\n|---|---|\nTexto"), "Texto");
     }
 

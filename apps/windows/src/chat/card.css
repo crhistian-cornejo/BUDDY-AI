@@ -1,0 +1,88 @@
+/* A card of an answer. Twin of CardView.swift on macOS: same order, same measures (assets/design-tokens.json › card),
+   same colours (color / colorLight / chart). */
+.ui-card {
+  box-sizing: border-box;
+  max-width: var(--ui-max, 380px);
+  margin-top: 7px;
+  overflow: hidden;
+  border: 1px solid var(--color-stroke);
+  border-radius: var(--ui-radius, 12px);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.ui-body { display: flex; flex-direction: column; gap: var(--ui-gap, 12px); padding: var(--ui-padding, 14px); }
+/* A part of the card that just arrived. Twin of `CardView.enter` on macOS. */
+.ui-enter { animation: ui-enter 0.25s ease-out both; }
+@keyframes ui-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* Grey blocks that stand for what is still to come. Twin of `SkeletonBlock` / `CardSkeleton` on macOS. */
+.ui-skel { display: block; border-radius: 4px; background: var(--color-stroke); animation: ui-pulse 1.6s ease-in-out infinite; }
+@keyframes ui-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.ui-skel-lines { display: flex; flex-direction: column; gap: 6px; }
+.ui-skel-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ui-gap, 12px); }
+.ui-skel-metric { display: flex; flex-direction: column; gap: 5px; }
+.ui-skel-bars { display: flex; align-items: flex-end; gap: 10px; height: 84px; }
+@media (prefers-reduced-motion: reduce) { .ui-enter, .ui-skel { animation: none; } }
+.ui-header { display: flex; flex-direction: column; gap: 2px; }
+.ui-title { font-size: var(--ui-title); font-weight: 600; }
+.ui-subtitle { font-size: calc(var(--ui-label) + 1px); color: var(--color-text-muted); }
+
+.ui-metrics { display: grid; gap: var(--ui-gap); }
+.ui-metric { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-metric-label { font-size: var(--ui-label); font-weight: 500; color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-metric-value { font-size: var(--ui-metric); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-metric-note { font-size: var(--ui-label); color: var(--color-text-muted); }
+.ui-metric-note.bien { color: var(--color-success); }
+.ui-metric-note.mal { color: var(--color-danger); }
+.ui-metric-note.aviso { color: var(--color-warning); }
+
+.ui-chart { display: flex; flex-direction: column; gap: 8px; }
+.ui-grid { stroke: var(--color-stroke); stroke-width: 1; }
+.ui-axis { fill: var(--color-text-muted); font-size: calc(var(--ui-label) - 1px); }
+.ui-legend { display: flex; gap: 12px; }
+.ui-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: var(--ui-label); color: var(--color-text-muted); }
+.ui-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.ui-pie { display: flex; align-items: center; gap: 14px; }
+.ui-pie-legend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ui-legend-row { display: flex; align-items: center; gap: 6px; font-size: calc(var(--ui-label) + 1px); }
+.ui-legend-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-legend-value { color: var(--color-text-muted); }
+
+.ui-table { width: 100%; border-collapse: collapse; }
+.ui-table th { padding: 6px 12px 6px 0; text-align: left; font-size: var(--ui-label); font-weight: 500; color: var(--color-text-muted); white-space: nowrap; }
+.ui-table td { padding: 6px 12px 6px 0; border-top: 1px solid var(--color-stroke); font-size: calc(var(--ui-body) - 1px); vertical-align: top; }
+
+.ui-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.ui-steps li { display: flex; align-items: baseline; gap: 8px; }
+.ui-step-number { display: inline-grid; place-items: center; width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; background: var(--color-surface-raised); color: var(--color-text-muted); font-size: var(--ui-label); font-weight: 600; }
+.ui-step-text { font-size: var(--ui-body); }
+
+/* The weather's sky, edge to edge at the top of the card, with the words over it. */
+.ui-hero-banner { position: relative; display: flex; align-items: center; box-sizing: border-box; min-height: var(--ui-scene, 120px); padding: var(--ui-padding, 14px); overflow: hidden; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); background: #4F6175; }
+.ui-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ui-hero-text { position: relative; min-width: 0; }
+.ui-weather-place { font-size: calc(var(--ui-label) + 1px); font-weight: 500; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-hero { font-size: var(--ui-hero); font-weight: 600; line-height: 1.15; }
+.ui-weather-condition { font-size: var(--ui-body); font-weight: 500; white-space: nowrap; }
+
+.ui-weather { display: flex; flex-direction: column; gap: var(--ui-gap); }
+.ui-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ui-fact { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ui-fact-label { font-size: calc(var(--ui-label) - 1px); font-weight: 500; color: var(--color-text-muted); }
+.ui-fact-value { font-size: calc(var(--ui-label) + 1px); font-weight: 600; }
+.ui-rule { height: 1px; background: var(--color-stroke); }
+.ui-days { display: flex; }
+.ui-day { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.ui-day-label { font-size: var(--ui-label); font-weight: 500; color: var(--color-text-muted); }
+.ui-day-high { font-size: calc(var(--ui-label) + 1px); font-weight: 600; }
+.ui-day-low { font-size: var(--ui-label); color: var(--color-text-muted); }
+.ui-day-rain { font-size: calc(var(--ui-label) - 1px); font-weight: 500; color: var(--chart-4); }
+
+.ui-footer { display: flex; justify-content: space-between; gap: 8px; font-size: calc(var(--ui-label) - 1px); color: var(--color-text-muted); }
+.ui-source { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui-drawn-by { flex-shrink: 0; }
+
+.ui-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ui-action { height: var(--ui-action); padding: 0 10px; border: 1px solid var(--color-stroke); border-radius: 8px; background: transparent; color: var(--color-text); font-size: calc(var(--ui-label) + 1px); font-weight: 500; white-space: nowrap; cursor: pointer; }
+.ui-action:hover { background: var(--color-surface-raised); }

@@ -4,6 +4,10 @@
 //! NDJSON (`init`, `step_update`…, `result`), keeping the conversation. The CLI's start-up (≈6 s) happens while the
 //! user types (prewarm) or once per conversation; a cold one resumes with `--conversation <id>`.
 //!
+//! The CLI does nothing until its first message (measured, agy 1.2.16: start ≈5 s, plus each remote MCP server's
+//! handshake, DeepWiki's alone ≈16 s; later turns ≈3 s). So the prewarm opens the conversation itself: it sends
+//! Buddy's instructions as the first message, and the user's first message is already a warm turn.
+//!
 //! Permissions live in the agent workspace's `.agents/` folder (project-level settings the CLI reads): shell commands
 //! are always denied (the CLI cannot route an approval to Buddy's card, and headless mode would soft-deny them
 //! anyway), the web is allowed or denied by the agent's permission, read-only folders get a `write_file` deny, and
@@ -41,7 +45,12 @@ pub struct Gemini {
     /// Warm `agy` processes: one per conversation, plus a spare made ready while the user types.
     pool: Arc<Mutex<Vec<Live>>>,
     reaper: Arc<AtomicBool>,
+    /// Signatures of the spares being opened right now: a turn that arrives meanwhile waits for its spare.
+    opening: Arc<Mutex<Vec<String>>>,
 }
+
+/// How long the opening message may take, and how long a turn waits for a spare that is being opened.
+const OPENING: Duration = Duration::from_secs(60);
 
 /// One running `agy` in stream-json mode, waiting for its next message.
 struct Live {
@@ -53,6 +62,8 @@ struct Live {
     signature: String,
     /// The conversation it holds (None: a fresh spare).
     session: Option<String>,
+    /// A spare whose conversation is already open: the instructions it was given and the conversation's id.
+    opened: Option<(String, String)>,
     used: Instant,
 }
 
@@ -71,7 +82,7 @@ impl Drop for Live {
 
 impl Gemini {
     pub fn new() -> Self {
-        Self { exe: locate(), pool: Arc::default(), reaper: Arc::default() }
+        Self { exe: locate(), pool: Arc::default(), reaper: Arc::default(), opening: Arc::default() }
     }
 
     /// The command line. The prompt never goes here (it travels on stdin), nor do secrets.
@@ -249,7 +260,56 @@ MCP «buddy»; no uses otros servidores MCP (no están permitidos aquí). Respon
 
 /// The stdin line for one turn (text blocks only: the CLI's stream-json input takes no images).
 pub fn user_line(request: &TurnRequest) -> String {
-    json!({ "event": "user", "message": { "content": prompt(request) } }).to_string()
+    message_line(&prompt(request))
+}
+
+fn message_line(text: &str) -> String {
+    json!({ "event": "user", "message": { "content": text } }).to_string()
+}
+
+/// The message that opens a spare's conversation: the instructions, and nothing to answer yet.
+pub fn opening_line(request: &TurnRequest) -> String {
+    let waiting = TurnRequest {
+        prompt: "(Todavía no ha escrito nada. No uses herramientas; responde solo «ok» y espera su mensaje.)".into(),
+        ..request.clone()
+    };
+    user_line(&waiting)
+}
+
+/// Sends the instructions to a fresh spare and waits for its answer, so the start-up and the MCP handshakes are
+/// done before the user's message. A spare that fails to open stays a plain one (or dies, and is dropped).
+fn open_conversation(live: &mut Live, request: &TurnRequest) {
+    if request.system.trim().is_empty() {
+        return;
+    }
+    if writeln!(live.stdin, "{}", opening_line(request)).and_then(|_| live.stdin.flush()).is_err() {
+        return;
+    }
+    let mut parser = StreamParser::default();
+    let started = Instant::now();
+    while started.elapsed() < OPENING {
+        match live.lines.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                for event in parser.feed(&line) {
+                    match event {
+                        TurnEvent::Done => {
+                            live.opened = parser.conversation.clone().map(|id| (request.system.clone(), id));
+                            return;
+                        }
+                        TurnEvent::Failed(_) => {
+                            let _ = live.child.kill();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+    // Still busy after all this time: not a spare worth keeping.
+    let _ = live.child.kill();
 }
 
 /// A failure from the CLI's words: quota and credits are a limit (the next provider takes the turn), sign-in
@@ -280,6 +340,11 @@ impl Provider for Gemini {
         self.exe.is_some()
     }
 
+    /// It opens an attached picture with its own file tool (the path rides in the message; live check, agy 1.2.16).
+    fn sees_images(&self) -> bool {
+        true
+    }
+
     fn prewarm(&self, request: &TurnRequest) {
         let Some(exe) = &self.exe else { return };
         let fresh = TurnRequest { resume: None, ..request.clone() };
@@ -287,9 +352,21 @@ impl Provider for Gemini {
         if self.pool.lock().unwrap().iter().any(|l| l.session.is_none() && l.signature == signature) {
             return;
         }
-        if let Ok(live) = spawn_live(exe, &fresh) {
-            self.put(live);
+        {
+            let mut opening = self.opening.lock().unwrap();
+            if opening.contains(&signature) {
+                return;
+            }
+            opening.push(signature.clone());
         }
+        if let Ok(mut live) = spawn_live(exe, &fresh) {
+            open_conversation(&mut live, &fresh);
+            if live.alive() {
+                live.used = Instant::now();
+                self.put(live);
+            }
+        }
+        self.opening.lock().unwrap().retain(|s| *s != signature);
     }
 
     fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
@@ -297,7 +374,16 @@ impl Provider for Gemini {
             emit(TurnEvent::Failed(Failure { kind: FailureKind::Missing, message: format!("{EXE} no está instalado") }));
             return;
         };
-        let message = user_line(request);
+        // A spare is being opened for this very request: waiting for it is shorter than starting another.
+        let signature = signature(request);
+        let started = Instant::now();
+        while request.resume.as_ref().is_none_or(|r| r.is_empty())
+            && self.opening.lock().unwrap().contains(&signature)
+            && started.elapsed() < OPENING
+            && !cancel.is_cancelled()
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         // A warm process for this conversation (or a spare), else a new one; a dead one is replaced once.
         let mut live = None;
         for attempt in 0..2 {
@@ -307,6 +393,15 @@ impl Provider for Gemini {
                     Ok(l) => l,
                     Err(e) => return emit(TurnEvent::Failed(Failure::new(e))),
                 },
+            };
+            // An opened spare already holds these instructions: only the message goes.
+            let message = match candidate.opened.take() {
+                Some((system, id)) if system == request.system => {
+                    candidate.session = Some(id.clone());
+                    emit(TurnEvent::Session(id));
+                    message_line(&request.prompt)
+                }
+                _ => user_line(request),
             };
             if writeln!(candidate.stdin, "{message}").and_then(|_| candidate.stdin.flush()).is_ok() {
                 live = Some(candidate);
@@ -459,6 +554,7 @@ fn spawn_live(exe: &Path, request: &TurnRequest) -> Result<Live, String> {
         stderr: err_text,
         signature: signature(request),
         session: request.resume.clone().filter(|r| !r.is_empty()),
+        opened: None,
         used: Instant::now(),
     })
 }
@@ -743,6 +839,18 @@ mod tests {
         assert_eq!(model_id("gemini-3.8-flash", None), "gemini-3.8-flash-high");
         assert_eq!(model_id("gemini-3.1-pro-low", Some("high")), "gemini-3.1-pro-low", "an explicit level wins");
         assert_eq!(model_id("claude-sonnet-4-6", Some("high")), "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn a_spare_is_opened_with_the_instructions_and_nothing_to_answer() {
+        let request = TurnRequest { system: "Eres Buddy.".into(), prompt: "hola".into(), ..Default::default() };
+        let line: Value = serde_json::from_str(&opening_line(&request)).unwrap();
+        let text = line["message"]["content"].as_str().unwrap();
+        assert!(text.contains("Eres Buddy.") && text.contains("responde solo «ok»"), "{text}");
+        assert!(!text.contains("hola"), "{text}");
+        // The user's message then travels alone.
+        let line: Value = serde_json::from_str(&message_line("hola")).unwrap();
+        assert_eq!(line["message"]["content"], "hola");
     }
 
     #[test]

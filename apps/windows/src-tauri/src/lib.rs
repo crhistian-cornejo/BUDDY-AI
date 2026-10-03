@@ -194,6 +194,10 @@ pub fn run() {
             queued_messages,
             redirect_queued,
             queued_thumbnail,
+            image_preview,
+            card_from_json,
+            card_partial,
+            weather_backdrop,
             take_queued,
             remove_queued,
             resume_queue,
@@ -246,6 +250,7 @@ pub fn run() {
             refresh_usage,
             messages,
             agents,
+            chat_commands,
             open_url,
             briefing,
             open_settings,
@@ -703,6 +708,29 @@ fn queued_thumbnail(state: State<'_, AppCore>, chat_id: String, message_id: Stri
     state.core.queued_thumbnail(chat_id, message_id)
 }
 
+/// One card block's JSON, checked by the core (the chat cuts the answer's text itself).
+#[tauri::command]
+fn card_from_json(json: String) -> Option<buddy_core::Card> {
+    buddy_core::cards::card_from_json(&json)
+}
+
+/// What a card has so far, from the JSON of a block that is still arriving (the card fills in as it is written).
+#[tauri::command]
+fn card_partial(json: String) -> Option<buddy_core::Card> {
+    buddy_core::cards::card_partial(&json)
+}
+
+/// The sky of a weather card, as the core draws it (the same shapes the Mac paints).
+#[tauri::command]
+fn weather_backdrop(icon: String, night: bool) -> buddy_core::cards::Backdrop {
+    buddy_core::cards::weather_backdrop(icon, night)
+}
+
+#[tauri::command]
+fn image_preview(state: State<'_, AppCore>, path: String) -> Option<String> {
+    state.core.image_preview(path)
+}
+
 #[tauri::command]
 fn redirect_queued(state: State<'_, AppCore>, chat_id: String, message_id: String) -> Result<(), String> {
     state.core.redirect_queued(chat_id, message_id).map_err(|e| e.to_string())
@@ -1009,6 +1037,11 @@ fn history_pick(app: AppHandle, chat_id: String) -> Result<(), String> {
 #[tauri::command]
 fn messages(state: State<'_, AppCore>, chat_id: String) -> Result<Vec<ChatMessage>, String> {
     state.core.messages(chat_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn chat_commands(state: State<'_, AppCore>) -> Vec<buddy_core::ChatCommand> {
+    state.core.chat_commands()
 }
 
 #[tauri::command]

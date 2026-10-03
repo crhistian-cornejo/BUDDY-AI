@@ -55,5 +55,23 @@
     "success": "#16A34A",
     "warning": "#D97706",
     "danger": "#DC2626"
+  },
+  "card": {
+    "padding": 14,
+    "gap": 12,
+    "radius": 12,
+    "maxWidth": 380,
+    "titleSize": 14,
+    "labelSize": 11,
+    "bodySize": 13,
+    "metricSize": 20,
+    "heroSize": 40,
+    "sceneHeight": 120,
+    "chartHeight": 150,
+    "actionHeight": 26
+  },
+  "chart": {
+    "dark": ["#6EE7A0", "#7C8CFF", "#FFB547", "#F87171", "#38BDF8", "#C084FC"],
+    "light": ["#1F9D57", "#4F5BD5", "#E8890C", "#DC2626", "#0284C7", "#9333EA"]
   }
 }

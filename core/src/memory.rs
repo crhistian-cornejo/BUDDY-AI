@@ -7,8 +7,9 @@ use crate::store::Store;
 
 const KEY: &str = "memory.notes";
 pub const MARK: &str = "[[recuerda]]";
-/// Lines the core takes out of an answer (this one and Niko's `[[anotado]]`): never shown while streaming.
-const HIDDEN: [&str; 2] = [MARK, crate::niko::RECORDED_MARK];
+/// Lines the core takes out of an answer (this one, Niko's `[[anotado]]` and a card request): never shown while
+/// streaming.
+const HIDDEN: [&str; 3] = [MARK, crate::niko::RECORDED_MARK, crate::cards::MARK];
 const MAX_NOTES: usize = 40;
 const MAX_CHARS: usize = 220;
 
@@ -135,6 +136,7 @@ mod tests {
         assert_eq!(visible_len("Hola\n[[rec"), 5);
         assert_eq!(visible_len("Hola\n[[recuerda]] algo\n"), 5);
         assert_eq!(visible_len("Hola\n[[anotado]] [{}]"), 5);
+        assert_eq!(visible_len("Hola\n[[tarjeta]] barras"), 5);
         assert_eq!(visible_len("Hola [[recuerda]] en medio"), 26, "only a line that starts with it");
         assert_eq!(visible_len("Mira [[esto]]\n[["), 14);
         assert_eq!(visible_len("Lista:\n[1] uno"), 14);

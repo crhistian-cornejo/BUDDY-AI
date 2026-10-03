@@ -15,6 +15,7 @@ pub(crate) const BUILT_INS: &[(&str, &str)] = &[
     ("buddy", include_str!("../agents/buddy.md")),
     ("parley", include_str!("../agents/parley.md")),
     ("niko", include_str!("../agents/niko.md")),
+    ("banana", include_str!("../agents/banana.md")),
 ];
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -35,7 +36,7 @@ pub struct Agent {
 }
 
 /// Every permission an agent can hold, with the words Settings shows.
-pub const PERMISSIONS: [(&str, &str, &str); 10] = [
+pub const PERMISSIONS: [(&str, &str, &str); 11] = [
     ("web", "Web", "Buscar y leer páginas"),
     ("leer", "Leer carpetas", "Leer en tus carpetas autorizadas"),
     ("editar", "Editar carpetas", "Cambiar archivos en las carpetas que marcaste como editables"),
@@ -46,12 +47,13 @@ pub const PERMISSIONS: [(&str, &str, &str); 10] = [
     ("cuentas", "Cuentas", "Usar tus cuentas conectadas en Claude o ChatGPT: Gmail, Drive, Notion"),
     ("telegram", "Telegram", "PARLEY: leer mensajes del bot vinculado y tus grupos seleccionados"),
     ("cuotas", "Cuotas deportivas", "PARLEY: consultar calendario y cuotas desde OddsPapi"),
+    ("imagenes", "Imágenes", "Banana: crear y editar imágenes con Gemini (Nano Banana) o ChatGPT"),
 ];
 
 /// Buddy holds them all but the user's accounts (it hands money matters to the agent that has them); a specialist
 /// without `permisos:` gets the web and documents.
 fn default_permissions(id: &str) -> Vec<String> {
-    let all: Vec<&str> = PERMISSIONS.iter().map(|p| p.0).filter(|p| !matches!(*p, "cuentas" | "telegram" | "cuotas")).collect();
+    let all: Vec<&str> = PERMISSIONS.iter().map(|p| p.0).filter(|p| !matches!(*p, "cuentas" | "telegram" | "cuotas" | "imagenes")).collect();
     let list = if id == ORCHESTRATOR { all } else { vec!["web", "documentos"] };
     list.into_iter().map(String::from).collect()
 }
@@ -209,7 +211,8 @@ pub fn task_prompt(agent_name: &str, task: &str, question: &str) -> String {
 
 /// Prepended to Buddy's next turn so the conversation keeps making sense after a hand-off.
 pub fn followup_note(agent_name: &str, answer: &str) -> String {
-    let answer: String = answer.chars().take(1500).collect();
+    // A card in that answer goes as words: its data, not its block.
+    let answer: String = crate::cards::told(answer).chars().take(1500).collect();
     format!("[Nota de Buddy, no del usuario] En tu turno anterior pasaste la petición a {agent_name}, que respondió (datos):\n{answer}\n\n")
 }
 

@@ -370,3 +370,37 @@ button {
   color: var(--color-text-muted);
   font-size: 12px;
 }
+
+.msg-author .took {
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+}
+
+.image-card {
+  display: block;
+  max-width: 360px;
+  padding: 0;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  border-radius: 12px;
+  overflow: hidden;
+  background: transparent;
+  cursor: pointer;
+}
+.image-card-picture {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+}
+
+#commands { width: calc(100% - 24px); padding: 4px 4px 14px; margin-bottom: -10px; background: var(--color-surface-raised); border: 1px solid var(--color-stroke); border-radius: 16px 16px 12px 12px; display: flex; flex-direction: column; gap: 2px; }
+#commands[hidden] { display: none; }
+.command-item { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: none; color: var(--color-text); text-align: left; }
+.command-item.first, .command-item:hover { background: var(--color-surface-hover, rgba(127, 127, 127, 0.16)); }
+.command-item .avatar { width: 18px; height: 18px; }
+.command-name { font-size: 13px; font-weight: 600; }
+.command-about { flex: 1; min-width: 0; font-size: 12px; color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.command-token { align-self: center; height: 22px; padding: 0 7px; border: 0; border-radius: 6px; font-size: 13px; font-weight: 500; color: #4c8dff; background: color-mix(in srgb, #4c8dff 16%, transparent); cursor: pointer; }
+.command-token[hidden] { display: none; }

@@ -17,6 +17,8 @@ pub mod look;
 pub mod mailwatch;
 pub mod media;
 pub mod memory;
+pub mod banana;
+pub mod cards;
 pub mod niko;
 pub mod notch;
 pub mod orchestrator;
@@ -40,7 +42,8 @@ pub mod voice;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-pub use chat::{ChatEngine, QueuedMessage};
+pub use cards::{Card, MessagePart};
+pub use chat::{ChatCommand, ChatEngine, QueuedMessage};
 pub use events::{Event, EventBus};
 pub use folders::AuthorizedFolder;
 pub use orchestrator::Agent;
@@ -259,6 +262,11 @@ impl BuddyCore {
         self.with_store(|s| s.frequent_questions(3)).unwrap_or_default()
     }
 
+    /// The composer's «/» commands: one per specialist («/niko», «/banana»…).
+    pub fn chat_commands(&self) -> Vec<ChatCommand> {
+        chat::commands(&self.agents())
+    }
+
     /// Dictated text as Spanish writes it (see `voice::tidy`).
     pub fn voice_tidy(&self, text: String) -> String {
         voice::tidy(&text)
@@ -314,6 +322,11 @@ impl BuddyCore {
 
     pub fn queued_thumbnail(&self, chat_id: String, message_id: String) -> Option<String> {
         self.chat.queued_thumbnail(&chat_id, &message_id)
+    }
+
+    /// A small preview of one of Buddy's own pictures (documents or attachments), as a data URL.
+    pub fn image_preview(&self, path: String) -> Option<String> {
+        self.chat.image_preview(&path)
     }
 
     pub fn redirect_queued(&self, chat_id: String, message_id: String) -> Result<(), CoreError> {

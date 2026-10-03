@@ -28,6 +28,7 @@ pub fn of_tool(name: &str) -> (&'static str, &'static str) {
         "look_at_screen" => ("screen", "Mirando tu pantalla"),
         "media_control" | "media_play" | "media_search" | "now_playing" | "spotify_search" | "spotify_playlist" => ("music", "Con la música"),
         "use_skill" => ("skill", "Usando una habilidad"),
+        "generate_image" | "image_gen" | "imagegen" => ("image", "Creando la imagen"),
         _ => ("tool", "Usando una herramienta"),
     }
 }
