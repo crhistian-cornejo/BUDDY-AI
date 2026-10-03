@@ -41,6 +41,10 @@ final class NotchModel {
         var always: String = ""
         /// A click on the card goes here (a session's terminal) instead of only closing it.
         var place: Place?
+        /// The mail a money movement came from, to open it in Gmail (empty: none).
+        var link: String = ""
+        /// What Buddy is asked when the user does not recognise the movement (empty: no question on the card).
+        var ask: String = ""
     }
 
     struct Session: Identifiable, Equatable {
@@ -88,7 +92,7 @@ final class NotchModel {
     static let noticeSeconds: Double = 6
 
     var mode: Mode {
-        if let notice, notice.isApproval || pinned || (hovering && !collapsedByUser) { return .notice }
+        if let notice, notice.isApproval || notice.asks || pinned || (hovering && !collapsedByUser) { return .notice }
         if dragging { return .drop }
         return pinned || (hovering && !collapsedByUser) ? .open : .idle
     }
@@ -188,7 +192,8 @@ final class NotchModel {
 
     private func present(_ notice: Notice) {
         self.notice = notice
-        if !notice.isApproval { scheduleDismiss(after: Self.noticeSeconds) }
+        // A movement that asks «¿fuiste tú?» stays long enough to be read and answered.
+        if !notice.isApproval { scheduleDismiss(after: notice.asks ? 20 : Self.noticeSeconds) }
     }
 
     private func scheduleDismiss(after seconds: Double) {
@@ -204,6 +209,9 @@ final class NotchModel {
 
 extension NotchModel.Notice {
     var isApproval: Bool { if case .approval = kind { return true } else { return false } }
+
+    /// It opens by itself with its buttons (a money movement found in the mail).
+    var asks: Bool { !ask.isEmpty }
 
     var agentName: String { agent == "buddy" ? "Buddy" : agent == "niko" ? "Niko" : AgentNames.name(agent) }
 }

@@ -51,6 +51,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 chat.draft = chat.draft.isEmpty ? text : chat.draft + "\n" + text
                 windows?.open()
             }
+            notch.onAskBuddy = { [weak chat, weak windows] text in
+                guard let chat else { return }
+                windows?.open()
+                chat.draft = text
+                chat.send()
+            }
             // Chat events draw the chat, session events the notch; mascot events animate Buddy.
             core.subscribe(listener: CoreEvents { [weak chat, weak pet, weak notch] event in
                 chat?.handle(event)
@@ -139,6 +145,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     windows.open()
                     chat.draft = draft
+                }
+            }
+            // BUDDY_DEBUG_MONEY=1: shows the card of a charge found in the mail (to look at it).
+            if ProcessInfo.processInfo.environment["BUDDY_DEBUG_MONEY"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    notch.handle(.financeRecorded(monto: "US$ 110.00", moneda: "USD", tipo: "suscripción", concepto: "Claude Max", comercio: "Anthropic",
+                                                  enlace: "https://mail.google.com/mail/#all/1a2b"))
                 }
             }
             if let prompt = ProcessInfo.processInfo.environment["BUDDY_DEBUG_PROMPT"] {

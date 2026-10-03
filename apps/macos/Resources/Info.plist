@@ -30,5 +30,9 @@
 	<string>Buddy muestra en el notch cuándo activas o desactivas Concentración y silencias las notificaciones.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Buddy escribe en el chat lo que le dictas mientras el micrófono del compositor está encendido. El audio no sale de este Mac.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Buddy convierte en texto lo que le dictas, con el reconocimiento de voz de este Mac.</string>
 </dict>
 </plist>

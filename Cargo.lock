@@ -457,6 +457,7 @@ dependencies = [
  "libc",
  "rrule",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
@@ -464,6 +465,7 @@ dependencies = [
  "tokio",
  "uniffi",
  "ureq",
+ "webpki-roots",
  "windows 0.61.3",
 ]
 

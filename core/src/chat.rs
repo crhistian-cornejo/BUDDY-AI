@@ -17,6 +17,20 @@ use crate::store::{NewMessage, SourceLink, Store};
 
 /// Setting: "false" means the agents never get to run commands, not even with a click.
 pub const COMMANDS_SETTING: &str = "commands.enabled";
+const NIKO_COLLABORATION_MODEL: &str = "claude-sonnet-5-5";
+const NIKO_COLLABORATION_EFFORT: &str = "medium";
+
+/// The specialist a message addresses by name at its very start («Niko, anota…», «Parley: ¿quién gana?»).
+fn direct_agent(question: &str, agents: &[orchestrator::Agent]) -> Option<String> {
+    let text = crate::store::fold(question.trim_start());
+    agents.iter().filter(|a| a.id != ORCHESTRATOR).find_map(|a| {
+        [crate::store::fold(&a.name), a.id.clone()].iter().find_map(|name| {
+            let rest = text.strip_prefix(name.as_str())?;
+            // The name, then a separator and something to do: «niko» alone or «nikolas» is not a call.
+            (rest.starts_with([',', ':', ' ']) && rest.chars().any(char::is_alphanumeric)).then(|| a.id.clone())
+        })
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -426,6 +440,18 @@ impl ChatEngine {
         let buddy = agents.iter().find(|a| a.id == ORCHESTRATOR).cloned().expect("orchestrator::load always has buddy");
         let known: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
         let documents_before = documents_in(&self.data_dir.join("documentos"));
+        // «¿Cuánto voy gastando?»: Niko answers from what this device already recorded, with no model turn.
+        if files.is_empty()
+            && let Some(text) = crate::niko::quick_answer(&self.lock(), question)
+            && let Some(niko) = agents.iter().find(|a| a.id == crate::niko::AGENT)
+        {
+            self.emit(Event::ChatStarted { chat_id: chat_id.into(), agent: niko.id.clone(), agent_name: niko.name.clone(), provider: String::new() });
+            self.emit(Event::ChatDelta { chat_id: chat_id.into(), text: text.clone() });
+            let saved = self.lock().add_message(NewMessage { chat_id, role: "assistant", agent: &niko.id, provider: None, text: &text, sources: &[], failed: false, attachments: &[] });
+            self.emit(Event::ChatDone { chat_id: chat_id.into(), message_id: saved.unwrap_or(0) });
+            self.mascot("done");
+            return true;
+        }
         self.mascot("think");
 
         // Buddy's turn: a specialist's last answer rides along as a note, so the conversation keeps making sense.
@@ -454,13 +480,30 @@ impl ChatEngine {
                 summary: format!("{} · {}", route.model_name, route.reason),
             });
         }
-        let answer = self.run_agent(chat_id, &buddy_turn, &prompt, &system, files, cancel, true);
+        // «Niko, …»: a message that starts with a specialist's name goes straight to it. Buddy's own turn would only
+        // write the hand-off line, and cost a model turn to do it.
+        let answer = match direct_agent(question, &agents) {
+            Some(id) => {
+                let text = format!("[[pasar:{id}]] {question}");
+                Answer { shown: text.len(), text, sources: Vec::new(), provider: buddy_turn.provider, failure: None, model: String::new() }
+            }
+            None => self.run_agent(chat_id, &buddy_turn, &prompt, &system, files, cancel, true),
+        };
 
         let (agent, answer) = match orchestrator::parse_handoff(&answer.text, &known) {
             Some((id, task)) if answer.failure.is_none() && !cancel.is_cancelled() => {
                 let mut specialist = agents.iter().find(|a| a.id == id).cloned().expect("parse_handoff checks known ids");
                 // `model: auto` (or a model picked in Settings): the router decides for this task too.
-                let routed = crate::router::route_agent(&self.lock(), specialist.model.as_deref(), &format!("{task}\n{question}"), files);
+                let routed = if specialist.id == "niko" {
+                    specialist.provider = ProviderId::Claude;
+                    specialist.model = Some(NIKO_COLLABORATION_MODEL.into());
+                    specialist.effort = Some(NIKO_COLLABORATION_EFFORT.into());
+                    self.emit(Event::ChatTool { chat_id: chat_id.into(), name: "Modelo".into(),
+                        summary: "Sonnet 5.5 · esfuerzo medio".into() });
+                    None
+                } else {
+                    crate::router::route_agent(&self.lock(), specialist.model.as_deref(), &format!("{task}\n{question}"), files)
+                };
                 if let Some(route) = routed {
                     crate::log::line(format!("router ({}): {} → {} ({})", specialist.name, route.tier.label(), route.model_name, route.reason));
                     self.emit(Event::ChatTool {
@@ -475,7 +518,19 @@ impl ChatEngine {
                 route_accounts(&mut specialist);
                 let prompt = attachments_note(files) + &orchestrator::task_prompt(&specialist.name, &task, question);
                 let system = format!("{}{}", specialist.prompt, self.notes_for(&specialist, &folders));
-                let answer = self.run_agent(chat_id, &specialist, &prompt, &system, files, cancel, false);
+                let mut answer = self.run_agent(chat_id, &specialist, &prompt, &system, files, cancel, false);
+                if specialist.id == crate::niko::AGENT && answer.failure.is_none() {
+                    // What Niko created ends his answer as data: kept on this device, never shown.
+                    let store = self.lock();
+                    for record in crate::niko::take_recorded(&mut answer.text) {
+                        let _ = store.add_finance_record(&record);
+                    }
+                    answer.shown = answer.shown.min(answer.text.len());
+                }
+                // Niko's text is held while the turn may still move to another provider: shown once it is final.
+                if answer.failure.is_none() && answer.shown < answer.text.len() {
+                    self.emit(Event::ChatDelta { chat_id: chat_id.into(), text: answer.text[answer.shown..].to_string() });
+                }
                 (specialist, answer)
             }
             _ => {
@@ -653,14 +708,18 @@ impl ChatEngine {
                 workspace: orchestrator::workspace(&self.data_dir, &agent.id),
                 resume,
                 // A model name belongs to its provider; another provider uses its own default.
-                model: if agent.id == "niko" || (agent.can(crate::accounts::PERMISSION) && !same_provider) {
+                model: if agent.id == "niko" && agent.model.as_deref() == Some(NIKO_COLLABORATION_MODEL) && provider.id() == ProviderId::Claude {
+                    agent.model.clone()
+                } else if agent.id == "niko" || (agent.can(crate::accounts::PERMISSION) && !same_provider) {
                     Some(crate::account_router::model(provider.id(), false).into())
                 } else if provider.id() == ProviderId::Codex && !same_provider {
                     Some(crate::providers::codex::DEFAULT_MODEL.into())
                 } else {
                     agent.model.clone().filter(|_| same_provider)
                 },
-                effort: if agent.id == "niko" { Some("low".into()) } else { agent.effort.clone() },
+                effort: if agent.id == "niko" && agent.model.as_deref() == Some(NIKO_COLLABORATION_MODEL) && provider.id() == ProviderId::Claude {
+                    agent.effort.clone()
+                } else if agent.id == "niko" { Some("low".into()) } else { agent.effort.clone() },
                 attachments: files.to_vec(),
                 folders,
                 gate: self.gate().filter(|_| agent.can("comandos")),
@@ -937,6 +996,7 @@ mod tests {
         script: Mutex<Vec<Vec<TurnEvent>>>,
         prompts: Mutex<Vec<(String, String)>>,
         models: Mutex<Vec<Option<String>>>,
+        efforts: Mutex<Vec<Option<String>>>,
         access: Mutex<Vec<(bool, bool)>>,
     }
 
@@ -949,6 +1009,7 @@ mod tests {
                 script: Mutex::new(scripts),
                 prompts: Mutex::default(),
                 models: Mutex::default(),
+                efforts: Mutex::default(),
                 access: Mutex::default(),
             })
         }
@@ -961,6 +1022,7 @@ mod tests {
                 script: Mutex::new(scripts),
                 prompts: Mutex::default(),
                 models: Mutex::default(),
+                efforts: Mutex::default(),
                 access: Mutex::default(),
             })
         }
@@ -979,6 +1041,7 @@ mod tests {
         fn run(&self, request: &TurnRequest, _: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
             self.prompts.lock().unwrap().push((request.prompt.clone(), request.system.clone()));
             self.models.lock().unwrap().push(request.model.clone());
+            self.efforts.lock().unwrap().push(request.effort.clone());
             self.access.lock().unwrap().push((request.no_web, request.accounts));
             let mut scripts = self.script.lock().unwrap();
             let events = if scripts.is_empty() { vec![TurnEvent::Done] } else { scripts.remove(0) };
@@ -1489,6 +1552,53 @@ mod tests {
         assert_eq!(engine.lock().chats(5).unwrap()[0].title, "Telegram · PARLEY");
         assert!(!engine.running.lock().unwrap().contains_key("telegram-parley"));
         assert!(engine.run_direct("telegram-parley", "x", "nadie", "hola", true).is_err());
+    }
+
+    #[test]
+    fn a_message_that_names_a_specialist_skips_buddys_turn() {
+        let claude = Fake::new(ProviderId::Claude, vec![vec![TurnEvent::Delta("Anotado".into()), TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![claude.clone()]);
+        engine.send(None, "Niko, anota 45 de almuerzo".into(), vec![]).unwrap();
+        until_end(&rx);
+        // One turn only, and it is Niko's.
+        assert_eq!(claude.models.lock().unwrap().len(), 1);
+        assert_eq!(claude.models.lock().unwrap()[0].as_deref(), Some(NIKO_COLLABORATION_MODEL));
+        let agents = engine.agents();
+        assert_eq!(direct_agent("  niko: ¿cuánto gasté?", &agents).as_deref(), Some("niko"));
+        for other in ["Niko", "nikolas viene mañana", "dile a Niko que anote 45", "Buddy, hola"] {
+            assert_eq!(direct_agent(other, &agents), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn buddy_delegates_to_niko_with_pinned_sonnet_at_medium_effort() {
+        let claude = Fake::new(ProviderId::Claude, vec![
+            vec![TurnEvent::Delta("[[pasar:niko]] Revisa mis gastos y presupuestos".into()), TurnEvent::Done],
+            vec![TurnEvent::Delta("Revisado".into()), TurnEvent::Done],
+        ]);
+        let (engine, rx, _dir) = engine(vec![claude.clone()]);
+        engine.send(None, "Revisa mis finanzas".into(), vec![]).unwrap();
+        until_end(&rx);
+        assert_eq!(claude.models.lock().unwrap()[1].as_deref(), Some(NIKO_COLLABORATION_MODEL));
+        assert_eq!(claude.efforts.lock().unwrap()[1].as_deref(), Some(NIKO_COLLABORATION_EFFORT));
+        assert!(claude.access.lock().unwrap()[1].1);
+    }
+
+    #[test]
+    fn delegated_niko_keeps_the_existing_gpt_fallback_without_claude_effort() {
+        let claude = Fake::new(ProviderId::Claude, vec![
+            vec![TurnEvent::Delta("[[pasar:niko]] Revisa mis finanzas".into()), TurnEvent::Done],
+            vec![TurnEvent::Failed(Failure::new("usage limit reached"))],
+        ]);
+        let codex = Fake::new(ProviderId::Codex, vec![vec![TurnEvent::Delta("Revisado".into()), TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![claude.clone(), codex.clone()]);
+        engine.send(None, "Revisa mis finanzas".into(), vec![]).unwrap();
+        until_end(&rx);
+        assert_eq!(claude.models.lock().unwrap()[1].as_deref(), Some(NIKO_COLLABORATION_MODEL));
+        assert_eq!(claude.efforts.lock().unwrap()[1].as_deref(), Some(NIKO_COLLABORATION_EFFORT));
+        assert_eq!(codex.models.lock().unwrap()[0].as_deref(), Some("gpt-6-luna"));
+        assert_eq!(codex.efforts.lock().unwrap()[0].as_deref(), Some("low"));
+        assert!(codex.access.lock().unwrap()[0].1);
     }
 
     #[test]

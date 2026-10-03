@@ -14,6 +14,7 @@ pub mod folders;
 pub mod images;
 pub mod log;
 pub mod look;
+pub mod mailwatch;
 pub mod media;
 pub mod niko;
 pub mod notch;
@@ -110,6 +111,7 @@ pub struct BuddyCore {
     telegram_account: Arc<telegram_account::Account>,
     odds: Arc<odds::Odds>,
     niko: Arc<niko::Niko>,
+    mail: Arc<mailwatch::MailWatch>,
 }
 
 impl BuddyCore {
@@ -133,6 +135,8 @@ impl BuddyCore {
         core.telegram.start_if_configured();
         // Niko's mail review runs only where the user switched it on.
         core.niko.start();
+        // The mail watch runs only when the user connected a Gmail address.
+        core.mail.start();
         Ok(core)
     }
 
@@ -196,7 +200,16 @@ impl BuddyCore {
                 }
             });
         }));
-        Ok(Self { telegram_account, odds, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram, niko })
+        let mail = Arc::new(mailwatch::MailWatch::new(store.clone(), bus.clone()));
+        let reader = niko.clone();
+        mail.set_handler(Box::new(move |mails| {
+            // Off the watch's thread: the connection keeps listening while Niko works.
+            let (reader, mails) = (reader.clone(), mails.to_vec());
+            std::thread::spawn(move || {
+                let _ = reader.mail_arrived(&mails);
+            });
+        }));
+        Ok(Self { telegram_account, odds, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram, niko, mail })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -220,6 +233,22 @@ impl BuddyCore {
     /// The same greeting on both platforms: proof that the app is talking to the core.
     pub fn hello(&self) -> String {
         hello()
+    }
+
+    /// Dictated text as Spanish writes it (see `voice::tidy`).
+    pub fn voice_tidy(&self, text: String) -> String {
+        voice::tidy(&text)
+    }
+
+    /// Names a recogniser should expect (see `voice::VOCABULARY`), plus the agents' own.
+    pub fn voice_vocabulary(&self) -> Vec<String> {
+        let mut words: Vec<String> = voice::VOCABULARY.iter().map(|w| w.to_string()).collect();
+        for agent in self.agents() {
+            if !words.contains(&agent.name) {
+                words.push(agent.name);
+            }
+        }
+        words
     }
 
     pub fn data_dir(&self) -> String {
@@ -674,6 +703,7 @@ impl Drop for BuddyCore {
     fn drop(&mut self) {
         self.telegram.shutdown();
         self.niko.shutdown();
+        self.mail.shutdown();
     }
 }
 

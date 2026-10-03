@@ -140,17 +140,31 @@ impl Claude {
         for dir in &dirs {
             args.extend(["--add-dir".into(), dir.clone()]);
         }
+        let extended_haiku = request.effort.as_deref() == Some("xhigh")
+            && request.model.as_deref().is_some_and(|model| model == "haiku" || model.starts_with("claude-haiku-4-5"));
+        let mut settings = serde_json::json!({});
+        if extended_haiku {
+            // Haiku 4.5 has manual extended thinking, not an effort parameter.
+            // Keep this turn-local so Buddy and background finance reviews keep their own profiles.
+            settings["alwaysThinkingEnabled"] = serde_json::json!(true);
+            settings["env"] = serde_json::json!({
+                "MAX_THINKING_TOKENS": "31999",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+                "CLAUDE_CODE_DISABLE_THINKING": "0",
+                "CLAUDE_CODE_EFFORT_LEVEL": "auto"
+            });
+        }
         if let Some(gate) = &request.gate {
             let command = format!("\"{}\" --gate PreToolUse", gate.relay.to_string_lossy().replace('\\', "/"));
-            let settings = serde_json::json!({
-                "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": command, "timeout": 120 }] }] }
-            });
+            settings["hooks"] = serde_json::json!({ "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": command, "timeout": 120 }] }] });
+        }
+        if settings.as_object().is_some_and(|settings| !settings.is_empty()) {
             args.extend(["--settings".into(), settings.to_string()]);
         }
         if let Some(model) = &request.model {
             args.extend(["--model".into(), model.clone()]);
         }
-        if let Some(effort) = &request.effort {
+        if !extended_haiku && let Some(effort) = &request.effort {
             args.extend(["--effort".into(), effort.clone()]);
         }
         if !request.system.is_empty() {
@@ -798,6 +812,20 @@ mod tests {
         assert!(args.contains("Read(//u/docs/**)") && args.contains("Read(//u/proyecto/**)"));
         assert!(args.contains("Edit(//u/proyecto/**),Write(//u/proyecto/**)") && !args.contains("Edit(//u/docs"));
         assert!(args.contains("--add-dir /u/docs") && args.contains("--add-dir /u/proyecto"));
+    }
+
+    #[test]
+    fn haiku_extra_uses_thinking_budget_instead_of_unsupported_effort() {
+        let request = TurnRequest { model: Some("claude-haiku-4-5-20251001".into()), effort: Some("xhigh".into()), ..Default::default() };
+        let args = Claude::arguments(&request);
+        assert!(!args.iter().any(|arg| arg == "--effort"));
+        let settings: serde_json::Value = serde_json::from_str(&args[args.iter().position(|arg| arg == "--settings").unwrap() + 1]).unwrap();
+        assert_eq!(settings["alwaysThinkingEnabled"], true);
+        assert_eq!(settings["env"]["MAX_THINKING_TOKENS"], "31999");
+        assert_eq!(settings["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "64000");
+        let ordinary = TurnRequest { effort: Some("low".into()), ..request.clone() };
+        assert!(Claude::arguments(&ordinary).iter().any(|arg| arg == "--effort"));
+        assert_ne!(signature(&request), signature(&ordinary));
     }
 
     #[test]

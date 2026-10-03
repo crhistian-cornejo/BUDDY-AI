@@ -19,6 +19,8 @@ struct ComposerView: View {
     var onClose: () -> Void
     @FocusState private var focused: Bool
     @State private var pasteMonitor = MonitorBox()
+    @State private var dictation = Dictation()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var empty: Bool { chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && chat.attachments.isEmpty }
 
@@ -26,7 +28,7 @@ struct ComposerView: View {
         VStack(spacing: -10) {
             if !chat.queued.isEmpty { queue }
             VStack(alignment: .leading, spacing: 8) {
-                if let error = chat.queueError {
+                if let error = chat.queueError ?? dictation.problem {
                     Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 8)
                 }
                 if !chat.attachments.isEmpty {
@@ -126,6 +128,7 @@ struct ComposerView: View {
     }
 
     private var field: some View {
+        // Every control sits in a 28-pt row at the bottom, so their centres line up whatever their own size.
         HStack(alignment: .bottom, spacing: 6) {
             Button(action: pickFiles) {
                 Image(systemName: "plus")
@@ -141,18 +144,38 @@ struct ComposerView: View {
                 .font(.body)
                 .lineLimit(1...6)
                 .focused($focused)
-                .onSubmit { chat.send() }
+                .onSubmit { send() }
                 .padding(.vertical, 5)
+                .frame(minHeight: 28)
+            Button { dictation.toggle(into: chat); focused = true } label: {
+                Image(systemName: dictation.recording ? "mic.fill" : "mic")
+                    .font(.system(size: 13, weight: .medium))
+                    .symbolEffect(.pulse, isActive: dictation.preparing && !reduceMotion)
+                    .frame(width: 28, height: 28)
+                    .background {
+                        // The halo grows with the voice while dictating.
+                        if dictation.recording {
+                            Circle().fill(Color.accentColor.opacity(0.22))
+                                .scaleEffect(0.7 + 0.5 * dictation.level)
+                                .animation(reduceMotion ? nil : .spring(response: 0.2, dampingFraction: 0.7), value: dictation.level)
+                        }
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(dictation.recording ? Color.accentColor : .secondary)
+            .tip(dictation.recording ? "Detener el dictado" : dictation.preparing ? "Preparando el micrófono…" : "Dictar (se transcribe en este Mac)")
+            .accessibilityLabel(dictation.recording ? "Detener el dictado" : "Dictar")
             if chat.streaming {
                 Button(action: chat.stop) {
-                    Image(systemName: "stop.fill").font(.system(size: 10, weight: .bold)).frame(width: 24, height: 24)
+                    Image(systemName: "stop.fill").font(.system(size: 10, weight: .bold)).frame(width: 28, height: 28)
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .tip("Detener y vaciar la cola")
             }
-            Button(action: chat.send) {
-                Image(systemName: chat.streaming ? "text.line.first.and.arrowtriangle.forward" : "arrow.up")
+            Button(action: send) {
+                Image(systemName: "arrow.up")
                     .font(.system(size: 12, weight: .bold))
                     .frame(width: 16, height: 16)
             }
@@ -161,7 +184,14 @@ struct ComposerView: View {
             .buttonStyle(.borderedProminent)
             .buttonBorderShape(.circle)
             .controlSize(.small)
+            .frame(width: 28, height: 28)
         }
+    }
+
+    /// Sending ends the dictation: the next words belong to the next message.
+    private func send() {
+        if dictation.recording || dictation.preparing { dictation.stop(discard: true) }
+        chat.send()
     }
 
     private func pickFiles() {

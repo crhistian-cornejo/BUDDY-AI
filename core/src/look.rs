@@ -473,6 +473,12 @@ fn anchor(grid: &[Vec<char>]) -> Option<(i32, i32)> {
     grid.iter().enumerate().find_map(|(y, row)| row.iter().position(|c| *c == 's').map(|x| (x as i32, y as i32)))
 }
 
+/// The face window of a frame where Buddy is upright. Lying down (asleep on his side) the first skin pixel is a paw
+/// and the hood would start outside the canvas: those frames are left as drawn, without accessory or eye style.
+fn upright_anchor(grid: &[Vec<char>]) -> Option<(i32, i32)> {
+    anchor(grid).filter(|a| a.0 >= 9 && a.1 >= 8)
+}
+
 /// Where a stamp's pixels land in a frame whose face window starts at `anchor` (hood top-left = anchor − (9, 8)).
 fn stamp_pixels(stamp: &Stamp, anchor: (i32, i32)) -> impl Iterator<Item = (i32, i32, char)> + '_ {
     let (hx, hy) = (anchor.0 - 9, anchor.1 - 8);
@@ -553,7 +559,7 @@ pub fn dress(base: &Character, look: &AgentLook) -> Character {
     for state in c.states.values_mut() {
         for frame in &mut state.frames {
             let mut g: Vec<Vec<char>> = frame.iter().map(|row| row.chars().collect()).collect();
-            let Some(a) = anchor(&g) else { continue };
+            let Some(a) = upright_anchor(&g) else { continue };
             draw_eyes(&mut g, a, &look.eyes);
             if let Some(stamp) = stamp {
                 if stamp.hides_sprout {
@@ -701,6 +707,14 @@ mod tests {
     }
 
     #[test]
+    fn asleep_on_his_side_buddy_keeps_the_frame_as_drawn() {
+        let base = crate::pixel::builtin("buddy-base").unwrap();
+        let dressed = dress(&base, &look("cielo", "gorra", "felices"));
+        assert_eq!(dressed.states["sleep-still"].frames, base.states["sleep-still"].frames, "no cap over a paw");
+        assert_ne!(dressed.states["idle"].frames, base.states["idle"].frames);
+    }
+
+    #[test]
     fn accessories_stay_inside_the_canvas_and_the_avatar() {
         let base = crate::pixel::builtin("buddy-base").unwrap();
         let face = base.face.unwrap();
@@ -708,7 +722,8 @@ mod tests {
             for (name, state) in &base.states {
                 for frame in &state.frames {
                     let g: Vec<Vec<char>> = frame.iter().map(|r| r.chars().collect()).collect();
-                    let a = anchor(&g).unwrap();
+                    // Lying down there is no upright face to dress (see `upright_anchor`).
+                    let Some(a) = upright_anchor(&g) else { continue };
                     for (x, y, _) in stamp_pixels(stamp, a) {
                         assert!((0..48).contains(&x) && (0..48).contains(&y), "{} in {name} at {x},{y}", stamp.id);
                     }

@@ -5,6 +5,9 @@
 	<!-- Hardened runtime: Apple Events to Spotify and Music only (the notch's music strip). -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!-- Dictation in the composer: the microphone, only while its button is on. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 	<key>com.apple.developer.usernotifications.communication</key>
 	<true/>
 </dict>

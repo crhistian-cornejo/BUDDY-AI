@@ -17,11 +17,11 @@ interface AccountStatus { id: string; name: string; state: string }
 const CONNECTORS = "https://claude.ai/settings/connectors";
 const INTERVALS = [10, 20, 30, 60];
 
-/** «S/ 45,90», «US$ 12,99» (the core formats the notices the same way). */
+/** «S/. 1,234.50», «US$ 12.99» (the core formats the notices the same way). */
 export function money(amount: number, currency: string): string {
   const [whole, cents] = Math.abs(amount).toFixed(2).split(".");
-  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  return `${amount < 0 ? "-" : ""}${currency === "USD" ? "US$" : "S/"} ${grouped},${cents}`;
+  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${amount < 0 ? "-" : ""}${currency === "USD" ? "US$" : "S/."} ${grouped}.${cents}`;
 }
 
 const STATE_TEXT: Record<string, string> = {

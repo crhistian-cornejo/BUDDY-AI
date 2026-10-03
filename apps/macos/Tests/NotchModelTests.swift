@@ -2,6 +2,66 @@ import XCTest
 @testable import Buddy
 
 final class NotchModelTests: XCTestCase {
+    @MainActor
+    func testSessionFlagStartsUnlockSynchronouslyAndOnlyOnce() {
+        var locked: Bool? = true
+        let state = NotchLockState()
+        let monitor = NotchUnlockMonitor(readLocked: { locked })
+        var events = 0
+        monitor.onUnlock = { events += 1; state.unlock() }
+        state.lock()
+        monitor.start()
+        locked = nil // A missing session/user switch is not an authenticated unlock.
+        monitor.check()
+        XCTAssertEqual(state.phase, .locked)
+        locked = false
+        monitor.check()
+        XCTAssertEqual(state.phase, .unlocking) // No task, geometry reset or delayed notification.
+        monitor.check()
+        XCTAssertEqual(events, 1)
+        state.stop()
+        locked = true
+        monitor.start()
+        monitor.stop()
+        locked = false
+        monitor.check()
+        XCTAssertEqual(events, 1)
+    }
+
+    @MainActor
+    func testLockAnimationRequiresLockAndIgnoresDuplicateUnlocks() async throws {
+        let state = NotchLockState()
+        var finishes = 0
+        state.onFinish = { finishes += 1 }
+        state.unlock(seconds: 0.02)
+        XCTAssertEqual(state.phase, .hidden)
+        state.lock()
+        state.unlock(seconds: 0.03)
+        state.unlock(seconds: 10)
+        XCTAssertEqual(state.phase, .unlocking)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(state.phase, .hidden)
+        XCTAssertEqual(finishes, 1)
+    }
+
+    @MainActor
+    func testRelockingAndStoppingCancelUnlockDismissal() async throws {
+        let state = NotchLockState()
+        var finishes = 0
+        state.onFinish = { finishes += 1 }
+        state.lock()
+        state.unlock(seconds: 0.02)
+        state.lock()
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(state.phase, .locked)
+        XCTAssertEqual(finishes, 0)
+        state.unlock(seconds: 0.02)
+        state.stop()
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(state.phase, .hidden)
+        XCTAssertEqual(finishes, 0)
+    }
+
     func testMediaKeysConsumeOnlySupportedActionsAndPreserveShortcuts() {
         func decode(_ code: Int, state: Int = 0x0a, option: Bool = false, shift: Bool = false,
                     command: Bool = false, control: Bool = false) -> NotchMediaKey.Press? {
@@ -39,7 +99,7 @@ final class NotchModelTests: XCTestCase {
         guard case .notice = model.ear else { return XCTFail("Show the compact notice") }
         model.showStatus(.init(kind: .brightness, title: "Pantalla", symbol: "sun.max.fill", level: 0.5))
         XCTAssertEqual(model.mode, .idle)
-        XCTAssertEqual(NotchLayout.size(model, notch: notch), CGSize(width: 366, height: 32))
+        XCTAssertEqual(NotchLayout.size(model, notch: notch), CGSize(width: 414, height: 32))
         guard case .system = model.ear else { return XCTFail("Latest system state takes the ears") }
         model.setHovering(true)
         XCTAssertEqual(model.mode, .notice)

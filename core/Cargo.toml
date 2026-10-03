@@ -26,6 +26,9 @@ uniffi = { workspace = true, optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 base64 = "0.23.1"
 ureq = "3"
+# Niko's mail watch (mailwatch.rs): TLS to imap.gmail.com with the bundled web roots.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 ical = { version = "0.11", default-features = false, features = ["ical"] }
 chrono-tz = "0.10"

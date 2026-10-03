@@ -42,7 +42,7 @@ enum NotchLayout {
             if let notice = model.notice, notice.isApproval {
                 extra = 120 + (notice.command.isEmpty ? 0 : 20 + CGFloat(commandLines(notice.command)) * 16)
             } else {
-                extra = 80
+                extra = 80 + (model.notice?.asks == true ? 40 : 0)
             }
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + extra)
         case .open:
@@ -82,6 +82,7 @@ extension NotchModel {
 
 /// What the island can ask the controller to do.
 struct NotchActions {
+    var askBuddy: (String) -> Void
     var answer: (String, Bool) -> Void
     var answerAlways: (String) -> Void
     var openPlace: (NotchModel.Place) -> Void
@@ -202,6 +203,7 @@ struct NotchView: View {
         case .notice:
             if let notice = model.notice ?? retainedNotice {
                 NoticeCard(notice: notice, onAnswer: actions.answer, onAlways: actions.answerAlways, onDismiss: { model.dismiss() },
+                           onAsk: { text in actions.askBuddy(text); model.dismiss() },
                            onOpen: { place in actions.openPlace(place); model.dismiss() })
             }
         case .open:
@@ -519,12 +521,28 @@ struct StateDot: View {
     }
 
     var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 7, height: 7)
-            .phaseAnimator([1.0, 0.35], trigger: state) { dot, phase in
-                dot.opacity(state == "working" && !reduceMotion ? phase : 1)
-            } animation: { _ in .easeInOut(duration: 0.9) }
+        if state == "working" && !reduceMotion {
+            SpinnerRing(color: color)
+        } else {
+            Circle().fill(color).frame(width: 7, height: 7)
+        }
+    }
+}
+
+/// A small arc turning around its centre; drawn only while an agent is working.
+struct SpinnerRing: View {
+    let color: Color
+    var size: CGFloat = 12
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9
+            Circle()
+                .trim(from: 0, to: 0.72)
+                .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(turn * 360))
+                .frame(width: size, height: size)
+        }
     }
 }
 
@@ -533,6 +551,7 @@ private struct NoticeCard: View {
     var onAnswer: (String, Bool) -> Void
     var onAlways: (String) -> Void = { _ in }
     var onDismiss: () -> Void
+    var onAsk: (String) -> Void = { _ in }
     var onOpen: (NotchModel.Place) -> Void
 
     var body: some View {
@@ -570,6 +589,22 @@ private struct NoticeCard: View {
                     .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .textSelection(.enabled)
             }
+            if notice.asks {
+                HStack(spacing: 8) {
+                    if let url = URL(string: notice.link), !notice.link.isEmpty {
+                        Button("Ver correo") { NSWorkspace.shared.open(url) }
+                            .buttonStyle(IslandButtonStyle(prominent: false))
+                            .tip("Abrir ese correo en Gmail")
+                    }
+                    Spacer()
+                    Button("No lo reconozco") { onAsk(notice.ask) }
+                        .buttonStyle(IslandButtonStyle(prominent: false))
+                        .tip("Buddy te dice qué hacer; no bloquea ni paga nada")
+                    Button("Sí, fui yo", action: onDismiss)
+                        .buttonStyle(IslandButtonStyle(prominent: true))
+                        .tip("Cerrar el aviso")
+                }
+            }
             if case let .approval(requestID, canAllow) = notice.kind {
                 HStack(spacing: 8) {
                     if !canAllow {
@@ -598,7 +633,7 @@ private struct NoticeCard: View {
         .padding(.bottom, 20)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !notice.isApproval else { return }
+            guard !notice.isApproval, !notice.asks else { return }
             if let place = notice.place { onOpen(place) } else { onDismiss() }
         }
         .tip(notice.place == nil ? "" : "Volver a \(notice.agentName)")

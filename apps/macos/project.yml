@@ -94,6 +94,8 @@ targets:
         NSAppleEventsUsageDescription: "Buddy pregunta a Spotify o Música qué suena y usa sus botones de anterior, pausa y siguiente en el notch. No toca nada más."
         NSHighResolutionCapable: YES
         NSBluetoothAlwaysUsageDescription: "Buddy muestra en el notch cuándo se conectan o desconectan tus auriculares y otros dispositivos. No inicia conexiones ni cambia tus dispositivos."
+        NSMicrophoneUsageDescription: "Buddy escribe en el chat lo que le dictas mientras el micrófono del compositor está encendido. El audio no sale de este Mac."
+        NSSpeechRecognitionUsageDescription: "Buddy convierte en texto lo que le dictas, con el reconocimiento de voz de este Mac."
         NSFocusStatusUsageDescription: "Buddy muestra en el notch cuándo activas o desactivas Concentración y silencias las notificaciones."
     settings:
       base:

@@ -78,13 +78,14 @@ impl Tier {
 
     fn default_choice(self) -> (&'static str, &'static str) {
         match self {
-            // Greetings on Haiku (answers in 1–2 s, streaming); chat, writing and web search on Gemini Flash (low:
-            // agy answers in ≈4–8 s; high doubles the thinking); real work on Claude and GPT; maths on Gemini Pro.
-            Tier::Light => ("claude:haiku", "low"),
+            // Gemini is the first filter: greetings, everyday chat, writing and web search on Gemini Flash (low: agy
+            // answers in ≈4–8 s), maths on Gemini Pro. What needs effort goes to Claude: analysis on Sonnet (medium);
+            // documents, commands and what is written in Notion on Opus. Everything about code on GPT Sol (medium).
+            Tier::Light => ("antigravity:gemini-3.8-flash", "low"),
             Tier::Normal => ("antigravity:gemini-3.8-flash", "low"),
-            Tier::Deep => ("claude:opus", "high"),
+            Tier::Deep => ("claude:sonnet", "medium"),
             Tier::Work => ("claude:opus", "high"),
-            Tier::Code => ("codex:gpt-6.1-sol", "high"),
+            Tier::Code => ("codex:gpt-6.1-sol", "medium"),
             Tier::Math => ("antigravity:gemini-3.1-pro", "high"),
         }
     }
@@ -225,13 +226,15 @@ pub fn route_agent(store: &Store, model_setting: Option<&str>, text: &str, files
     if setting != "auto" {
         return None;
     }
-    let mut route = route(store, text, files);
-    if route.tier == Tier::Light && route.reason != "lo pediste" {
-        let (id, effort) = tier_choice(store, Tier::Normal);
-        let (_, name, provider, cli) = model(&id).unwrap_or(MODELS[1]);
-        route = Route { tier: Tier::Normal, provider, model: cli.into(), effort, model_name: name.into(), reason: "encargo de Buddy".into() };
+    let route = route(store, text, files);
+    if route.reason == "lo pediste" || config(store).mode != "auto" {
+        return Some(route);
     }
-    Some(route)
+    // A specialist works on Sonnet: medium for an ordinary task, high when the task asks for depth or real work.
+    let tier = if route.tier == Tier::Light { Tier::Normal } else { route.tier };
+    let effort = if matches!(tier, Tier::Normal) { "medium" } else { "high" };
+    let (_, name, provider, cli) = MODELS[1];
+    Some(Route { tier, provider, model: cli.into(), effort: effort.into(), model_name: name.into(), reason: format!("agente · {}", route.reason) })
 }
 
 /// The tier and a short reason. Pure: same text, same answer.
@@ -337,7 +340,15 @@ fn work_reason(t: &str) -> Option<&'static str> {
         "diapositiva", "informe", "reporte", "carta formal", "curriculum", "organiza mis archivos", "renombra",
         "plantilla", "acta",
     ];
-    WORDS.iter().any(|w| t.contains(w)).then_some("es un trabajo de documentos")
+    if WORDS.iter().any(|w| t.contains(w)) {
+        return Some("es un trabajo de documentos");
+    }
+    // Running something on the machine, or writing in Notion: the same care as a document.
+    const ACTIONS: [&str; 10] = [
+        "ejecuta", "corre el comando", "en la terminal", "instala", "en notion", "a notion", "en mi notion", "a mi notion", "base de datos de notion",
+        "pasalo a notion",
+    ];
+    ACTIONS.iter().any(|w| t.contains(w)).then_some("ejecuta o escribe fuera del chat")
 }
 
 fn deep_reason(t: &str, files: &[PathBuf]) -> Option<&'static str> {
@@ -441,13 +452,15 @@ mod tests {
         let (s, _d) = store();
         let none: &[PathBuf] = &[];
         let r = route(&s, "hola", none);
-        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Claude, "haiku", "low"));
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Antigravity, "gemini-3.8-flash", "low"), "Gemini is the first filter");
         let r = route(&s, "analiza a fondo esta estrategia", none);
-        assert_eq!((r.model.as_str(), r.effort.as_str(), r.model_name.as_str()), ("opus", "high", "Opus 5.5"));
+        assert_eq!((r.model.as_str(), r.effort.as_str(), r.model_name.as_str()), ("sonnet", "medium", "Sonnet 5.5"));
         let r = route(&s, "arregla este bug de typescript", none);
-        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Codex, "gpt-6.1-sol", "high"));
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Codex, "gpt-6.1-sol", "medium"));
         let r = route(&s, "hazme una presentación sobre ventas", none);
         assert_eq!((r.tier, r.model.as_str()), (Tier::Work, "opus"));
+        let r = route(&s, "pasa este resumen a mi Notion", none);
+        assert_eq!((r.tier, r.model.as_str()), (Tier::Work, "opus"), "writing outside the chat is work");
         let r = route(&s, "resuelve la integral de x^2", none);
         assert_eq!((r.tier, r.model.as_str(), r.effort.as_str()), (Tier::Math, "gemini-3.1-pro", "high"));
         let r = route(&s, "explícame la fotosíntesis con opus", none);
@@ -470,7 +483,7 @@ mod tests {
         let r = route(&s, "¿qué tiempo hace en Lima?", none);
         assert_eq!((r.provider, r.effort.as_str()), (ProviderId::Antigravity, "low"));
         assert!(options().iter().any(|m| m.provider == "antigravity"));
-        assert_eq!(route(&s, "hola", none).provider, ProviderId::Claude, "small talk on Haiku: fast");
+        assert_eq!(route(&s, "hola", none).provider, ProviderId::Antigravity, "small talk on Gemini Flash too");
     }
 
     #[test]
@@ -478,9 +491,11 @@ mod tests {
         let (s, _d) = store();
         let none: &[PathBuf] = &[];
         let r = route_agent(&s, Some("auto"), "gracias", none).unwrap();
-        assert_eq!((r.tier, r.model.as_str()), (Tier::Normal, "gemini-3.8-flash"), "a hand-off is never small talk");
+        assert_eq!((r.tier, r.model.as_str(), r.effort.as_str()), (Tier::Normal, "sonnet", "medium"), "a hand-off is never small talk");
         let r = route_agent(&s, Some("auto"), "Analiza a fondo el Clásico de mañana", none).unwrap();
-        assert_eq!(r.model, "opus");
+        assert_eq!((r.model.as_str(), r.effort.as_str()), ("sonnet", "high"), "a specialist stays on Sonnet and thinks harder");
+        let r = route_agent(&s, Some("auto"), "Analiza el Clásico con opus", none).unwrap();
+        assert_eq!(r.model, "opus", "a model named in the message still wins");
         let r = route_agent(&s, Some("codex:gpt-6.1-sol"), "lo que sea", none).unwrap();
         assert_eq!((r.provider, r.model.as_str()), (ProviderId::Codex, "gpt-6.1-sol"));
         assert!(route_agent(&s, Some("sonnet"), "x", none).is_none(), "a plain agent.md model stays as it is");

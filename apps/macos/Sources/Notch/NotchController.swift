@@ -22,12 +22,21 @@ final class NotchController {
     private var calendarRead: Task<Void, Never>?
     private var calendarGeneration = 0
     private var shelfRefreshedAt = Date.distantPast
+    private let lockState = NotchLockState()
+    private let unlockMonitor = NotchUnlockMonitor()
+    private var lockWorkspaceObservers: [NSObjectProtocol] = []
+    private var lockPanel: NotchLockPanel?
+    private var lockHost: NSHostingView<NotchLockView>?
+    private var lockSpace: NotchLockSpace?
+    private var lockObservers: [NSObjectProtocol] = []
 
     /// Opens a chat by id next to Buddy.
     var onOpenChat: ((String) -> Void)?
     /// Files handed to Buddy from the drop zone (opens the chat with them).
     var onGiveFiles: (([URL]) -> Void)?
     var onGiveText: ((String) -> Void)?
+    /// A question for Buddy, sent as a chat message («No reconozco este movimiento…»).
+    var onAskBuddy: ((String) -> Void)?
 
     /// The most the island ever needs; the window keeps this size.
     static let canvas = CGSize(width: 640, height: 460)
@@ -70,6 +79,7 @@ final class NotchController {
         model.usage = core.usage()
         if let tools = try? core.notchTools() { model.acceptTools(tools) }
         observe()
+        watchScreenLock()
         let handler: (NSEvent) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.pointerMoved() } }
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged], handler: handler) as Any)
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
@@ -87,6 +97,11 @@ final class NotchController {
         #if DEBUG
         // Explicit debug fixtures only; normal launches always display actual system readings.
         switch ProcessInfo.processInfo.environment["BUDDY_DEBUG_NOTCH"] {
+        case "lock": DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.screenLocked() }
+        case "unlock": DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            self.screenLocked()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.screenUnlocked() }
+        }
         case "open": DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.debugPinned = true; self.model.setHovering(true) }
         case "drop": DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.model.dragging = true }
         case "volume": debugStatus(.init(kind: .volume, title: "Volumen", symbol: "speaker.wave.2.fill", level: 0.65))
@@ -117,6 +132,15 @@ final class NotchController {
     // MARK: Core events
 
     func stop() {
+        for observer in lockObservers { DistributedNotificationCenter.default().removeObserver(observer) }
+        lockObservers.removeAll()
+        unlockMonitor.stop()
+        unlockMonitor.onUnlock = nil
+        for observer in lockWorkspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        lockWorkspaceObservers.removeAll()
+        lockState.stop()
+        lockState.onFinish = nil
+        lockPanel?.close(); lockPanel = nil; lockHost = nil; lockSpace = nil
         system.stop()
         utilitiesTask?.cancel(); calendarRead?.cancel()
         media.stop()
@@ -145,9 +169,19 @@ final class NotchController {
             model.buddyActivity = (kind, label)
         case .chatDone, .chatFailed:
             model.buddyActivity = nil
-        case let .financeRecorded(monto, _, tipo, concepto, comercio):
-            model.show(.init(kind: .finished, agent: "niko", title: "Niko anotó: \(monto) · \(comercio.isEmpty ? concepto : comercio)",
-                             detail: concepto.isEmpty || comercio.isEmpty ? tipo.capitalized : "\(tipo.capitalized) · \(concepto)"))
+        case let .financeRecorded(monto, _, tipo, concepto, comercio, enlace):
+            let what = comercio.isEmpty ? concepto : comercio
+            if enlace.isEmpty {
+                model.show(.init(kind: .finished, agent: "niko", title: "Niko anotó: \(monto) · \(what)",
+                                 detail: concepto.isEmpty || comercio.isEmpty ? tipo.capitalized : "\(tipo.capitalized) · \(concepto)"))
+            } else {
+                // Found in the mail a moment ago: the card opens, asks, and links to that mail.
+                let incoming = tipo == "ingreso" || tipo == "transferencia recibida"
+                model.show(.init(kind: .finished, agent: "niko", title: "\(monto) · \(what)",
+                                 detail: incoming ? "\(tipo.capitalized). Niko lo anotó." : "\(tipo.capitalized)\(concepto.isEmpty || comercio.isEmpty ? "" : " · \(concepto)"). ¿Fuiste tú?",
+                                 link: enlace,
+                                 ask: "No reconozco este movimiento que llegó a mi correo: \(monto) · \(what) (\(tipo)). ¿Qué debo hacer?"))
+            }
         case let .budgetAlert(categoria, usadoPct):
             model.show(.init(kind: .waiting, agent: "niko",
                              title: usadoPct >= 100 ? "Te pasaste del presupuesto de \(categoria.capitalized)" : "Te queda \(100 - Int(usadoPct)) % en \(categoria.capitalized)",
@@ -219,7 +253,7 @@ final class NotchController {
         #if DEBUG
         if debugPinned { return }
         #endif
-        guard let panel, let geometry else { return }
+        guard lockState.phase == .hidden, let panel, let geometry else { return }
         let p = NSEvent.mouseLocation
         // While idle, the notch itself (a little wider) is what opens the island.
         // The pointer at the very top of the screen sits exactly on the rectangle's upper edge, which `contains` leaves
@@ -253,11 +287,95 @@ final class NotchController {
         }
     }
 
+    // MARK: Screen lock
+
+    private func watchScreenLock() {
+        let center = DistributedNotificationCenter.default()
+        for (name, locked) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false)] {
+            lockObservers.append(center.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if locked {
+                        self?.screenLocked()
+                        self?.unlockMonitor.start()
+                    } else { self?.screenUnlocked() }
+                }
+            })
+        }
+        unlockMonitor.onUnlock = { [weak self] in self?.screenUnlocked() }
+        let workspace = NSWorkspace.shared.notificationCenter
+        lockWorkspaceObservers.append(workspace.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.unlockMonitor.stop() }
+        })
+        lockWorkspaceObservers.append(workspace.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.lockState.phase == .locked else { return }
+                self.unlockMonitor.start()
+            }
+        })
+        lockState.onFinish = { [weak self] in
+            guard let self else { return }
+            self.lockPanel?.orderOut(nil)
+            self.panel?.orderFrontRegardless()
+            self.pointerMoved()
+        }
+    }
+
+    private func screenLocked() {
+        hoverWork?.cancel(); hoverWork = nil
+        leaveWork?.cancel(); leaveWork = nil
+        model.pinned = false
+        model.dragging = false
+        model.setHovering(false)
+        lockState.lock()
+        panel?.orderOut(nil)
+        guard let geometry else { return }
+        if lockPanel == nil {
+            let panel = NotchLockPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.canBecomeVisibleWithoutLogin = true
+            panel.isReleasedWhenClosed = false
+            panel.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
+            panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+            let host = NSHostingView(rootView: NotchLockView(state: lockState, notch: geometry.notch))
+            host.sizingOptions = []
+            panel.contentView = host
+            lockPanel = panel
+            lockHost = host
+            lockSpace = NotchLockSpace()
+            if let lockSpace {
+                lockSpace.attach(panel)
+            } else {
+                NSLog("Buddy: lock-screen space unavailable; unlock indicator remains available on desktop.")
+            }
+        }
+        relocateLockPanel()
+        lockPanel?.orderFrontRegardless()
+    }
+
+    private func screenUnlocked() {
+        guard lockState.phase == .locked else { return }
+        // Keep the existing loginwindow panel and geometry; start before any desktop work.
+        unlockMonitor.stop()
+        lockState.unlock()
+        lockHost?.displayIfNeeded()
+    }
+
+    private func relocateLockPanel() {
+        guard let geometry, let lockPanel else { return }
+        lockPanel.setFrame(geometry.frame(for: CGSize(width: geometry.notch.width + 96, height: geometry.notch.height + 12)), display: true)
+        lockHost?.rootView = NotchLockView(state: lockState, notch: geometry.notch)
+    }
+
     // MARK: Drawing
 
     private func view() -> NotchView {
         NotchView(model: model, notch: geometry?.notch ?? CGSize(width: 190, height: 32), hasNotch: geometry?.hasNotch ?? false, hooksConnected: hooksConnected,
                   actions: NotchActions(
+                      askBuddy: { [weak self] text in self?.onAskBuddy?(text) },
                       answer: { [weak self] id, allow in
                           self?.core.answerApproval(requestId: id, allow: allow)
                           self?.model.closeApproval(id)
@@ -563,6 +681,7 @@ final class NotchController {
         guard let geometry, let panel else { return }
         panel.setFrame(geometry.frame(for: CGSize(width: Self.canvas.width, height: geometry.notch.height + Self.canvas.height)), display: true)
         host?.rootView = view()
+        relocateLockPanel()
     }
 
     // MARK: Hooks

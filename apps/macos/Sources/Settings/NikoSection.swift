@@ -19,6 +19,11 @@ struct NikoSettings: View {
     @State private var parent = ""
     @State private var error: String?
     @State private var saved: String?
+    @State private var mail: MailWatchStatus?
+    @State private var mailAddress = ""
+    @State private var mailPassword = ""
+    @State private var mailError: String?
+    @State private var connectingMail = false
 
     private static let intervals: [UInt32] = [10, 20, 30, 60]
     private static let connectors = URL(string: "https://claude.ai/settings/connectors")!
@@ -76,6 +81,62 @@ struct NikoSettings: View {
                 Text("Claude y GPT · cambio automático")
             } footer: {
                 Text("Usa tus conexiones de Claude y ChatGPT. Si uno se queda sin cuota, Niko continúa con el otro y conserva las mismas bases de Notion. Buddy no guarda esas claves. El acceso al correo se confirma al revisarlo.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                if let mail, !mail.email.isEmpty {
+                    LabeledContent {
+                        Button("Desconectar") {
+                            core.nikoMailDisconnect()
+                            reload()
+                        }
+                    } label: {
+                        Label {
+                            Text(mail.email)
+                            Text(mail.connected ? "Vigilando la bandeja" : mail.error.isEmpty ? "Conectando…" : mail.error)
+                                .foregroundStyle(mail.connected || mail.error.isEmpty ? Color.secondary : Color.orange)
+                        } icon: {
+                            Image(systemName: mail.connected ? "bolt.circle.fill" : "exclamationmark.circle")
+                                .foregroundStyle(mail.connected ? .green : .orange)
+                        }
+                    }
+                } else {
+                    // The examples are grey: in the accent colour they read as an address already filled in.
+                    TextField("Tu Gmail", text: $mailAddress, prompt: Text("escribe tu dirección").foregroundStyle(.tertiary))
+                        .textContentType(.username)
+                        .foregroundStyle(.primary)
+                    SecureField("Contraseña de aplicación", text: $mailPassword, prompt: Text("16 letras que te da Google").foregroundStyle(.tertiary))
+                    if mailAddress.isEmpty && !mailPassword.isEmpty {
+                        Text("Falta escribir tu dirección de Gmail arriba.").font(.caption).foregroundStyle(.orange)
+                    }
+                    if let mailError { Text(mailError).font(.caption).foregroundStyle(.red) }
+                    HStack {
+                        Link("Crear una contraseña de aplicación", destination: URL(string: "https://myaccount.google.com/apppasswords")!)
+                        Spacer()
+                        if connectingMail { ProgressView().controlSize(.small) }
+                        Button("Conectar", action: connectMail)
+                            .disabled(connectingMail || mailAddress.isEmpty || mailPassword.isEmpty)
+                    }
+                }
+            } header: {
+                Text("Avisos al momento")
+            } footer: {
+                Text("Buddy se conecta a tu Gmail solo para leer (IMAP): ve el remitente, el asunto y el inicio del texto de cada correo nuevo, y avisa en segundos cuando es un cobro, un pago o una suscripción. No abre adjuntos ni enlaces, y no puede enviar, borrar ni marcar correos. La contraseña de aplicación se guarda en el Llavero y la puedes revocar cuando quieras en tu cuenta de Google.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Stepper(value: Binding(get: { Int(status?.cycleDay ?? 1) }, set: { day in
+                    try? core.nikoSetCycleDay(day: UInt32(day))
+                    reload()
+                }), in: 1...28) {
+                    Text("Tu mes empieza el día \(status?.cycleDay ?? 1)")
+                }
+            } header: {
+                Text("Ciclo del mes")
+            } footer: {
+                Text("Si tus tarjetas cierran el 25, pon 26: lo que compres desde ese día cuenta para el mes siguiente, y «este mes» va del 26 al 25.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -183,6 +244,34 @@ struct NikoSettings: View {
 
     private func reload() {
         status = core.nikoStatus()
+        mail = core.nikoMailStatus()
+    }
+
+    /// Gmail is asked off the main thread (it can take a few seconds); the password leaves the field either way.
+    private func connectMail() {
+        let (core, address, password) = (core, mailAddress, mailPassword)
+        mailPassword = ""
+        mailError = nil
+        connectingMail = true
+        Task.detached {
+            let failure: String?
+            do {
+                try core.nikoMailConnect(email: address, password: password)
+                failure = nil
+            } catch {
+                failure = Self.message(error)
+            }
+            await MainActor.run {
+                connectingMail = false
+                mailError = failure
+                reload()
+            }
+        }
+    }
+
+    private nonisolated static func message(_ error: Error) -> String {
+        if case let CoreError.Hooks(text) = error { return text }
+        return error.localizedDescription
     }
 
     private func checkAccounts() {
@@ -219,17 +308,18 @@ struct NikoSettings: View {
         }
     }
 
-    /// «S/ 45,90», «US$ 12,99» (the core formats the notices the same way).
+    /// «S/. 1,234.50», «US$ 12.99» (the core formats the notices the same way).
     static func money(_ amount: Double, _ currency: String) -> String {
         let formatter = NumberFormatter()
         formatter.locale = Locale(identifier: "es_PE")
         formatter.numberStyle = .decimal
         formatter.minimumFractionDigits = 2
         formatter.maximumFractionDigits = 2
-        formatter.decimalSeparator = ","
-        formatter.groupingSeparator = "\u{a0}"
+        formatter.decimalSeparator = "."
+        formatter.groupingSeparator = ","
+        formatter.usesGroupingSeparator = true
         let number = formatter.string(from: NSNumber(value: amount)) ?? String(format: "%.2f", amount)
-        return (currency == "USD" ? "US$ " : "S/ ") + number
+        return (currency == "USD" ? "US$ " : "S/. ") + number
     }
 
     private static func date(_ at: Int64) -> String {

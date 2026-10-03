@@ -578,10 +578,27 @@ private struct AgentSettings: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Agente", selection: $selectedAgent) {
-                ForEach(agents, id: \.id) { agent in Text(agent.name).tag(agent.id) }
+            // One tab per agent, drawn here: the system's segmented picker collapsed to a sliver in this window.
+            HStack(spacing: 6) {
+                ForEach(agents, id: \.id) { agent in
+                    Button { selectedAgent = agent.id } label: {
+                        HStack(spacing: 6) {
+                            AgentAvatarView(agentId: agent.id, size: 18)
+                            Text(agent.name).lineLimit(1)
+                        }
+                        .font(.system(size: 13, weight: selectedAgent == agent.id ? .semibold : .regular))
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
+                        .frame(maxWidth: .infinity)
+                        .background(selectedAgent == agent.id ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06),
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(agent.name)
+                    .accessibilityAddTraits(selectedAgent == agent.id ? .isSelected : [])
+                }
             }
-            .pickerStyle(.segmented)
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
             Form {
