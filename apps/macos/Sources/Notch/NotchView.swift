@@ -34,8 +34,8 @@ enum NotchLayout {
     }
 
     @MainActor
-    static func size(_ model: NotchModel, notch: CGSize) -> CGSize {
-        switch model.mode {
+    static func size(_ model: NotchModel, notch: CGSize, mode: NotchModel.Mode? = nil) -> CGSize {
+        switch mode ?? model.mode {
         case .idle:
             return model.ear == .none ? notch : CGSize(width: notch.width + 2 * earWidth, height: notch.height)
         case .notice:
@@ -104,26 +104,56 @@ struct NotchView: View {
     let actions: NotchActions
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var reveal: CGFloat = 0
+    @State private var presentationSize: CGSize = .zero
+    @State private var transitionID: UInt64 = 0
+    @State private var expandedVisible = false
+    @State private var retainedMode: NotchModel.Mode = .open
+    @State private var retainedNotice: NotchModel.Notice?
+    @State private var retainedSize: CGSize = .zero
+    @State private var retainedDropped: [URL] = []
+
+    private var motion: Animation? { reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88) }
 
     var body: some View {
-        let size = NotchLayout.size(model, notch: notch)
         let open = model.mode != .idle
-        ZStack(alignment: .top) {
-            NotchShape(earRadius: open ? 14 : 8, bottomRadius: open ? 24 : notch.height / 2.4)
-                .fill(.black)
-            content
-                .padding(.top, notch.height)
-                .padding(.horizontal, NotchLayout.side)
-                .opacity(open ? 1 : 0)
-            if model.mode == .idle {
-                ears.frame(height: notch.height)
-            }
-        }
-        .frame(width: size.width, height: size.height)
+        let idleSize = NotchLayout.size(model, notch: notch, mode: .idle)
+        let expandedSize = open ? NotchLayout.size(model, notch: notch) : retainedSize
+        NotchMorph(progress: reveal, size: presentationSize == .zero ? idleSize : presentationSize,
+                   idleSize: idleSize, expandedSize: expandedSize, notch: notch,
+                   expanded: expandedContent, ears: ears)
         .tooltipHost()
         .environment(\.colorScheme, .dark)
-        .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82), value: size)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: model.mode)
+        .onChange(of: model.mode, initial: true) { _, mode in
+            transitionID &+= 1
+            let transition = transitionID
+            if mode != .idle {
+                retainedMode = mode
+                retainedNotice = model.notice
+                retainedSize = NotchLayout.size(model, notch: notch)
+                expandedVisible = true
+            }
+            withAnimation(motion, completionCriteria: .removed) {
+                reveal = mode == .idle ? 0 : 1
+                presentationSize = NotchLayout.size(model, notch: notch)
+            } completion: {
+                // An interrupted close must not remove the content of a newly reopened island.
+                if transitionID == transition && model.mode == .idle {
+                    expandedVisible = false
+                    retainedNotice = nil
+                }
+            }
+        }
+        .onChange(of: NotchLayout.size(model, notch: notch)) { _, size in
+            if open { retainedSize = size }
+            withAnimation(motion) { presentationSize = size }
+        }
+        .onChange(of: model.notice) { _, notice in
+            if let notice { retainedNotice = notice }
+        }
+        .onChange(of: model.dropped) { _, files in
+            if !files.isEmpty { retainedDropped = files }
+        }
         .onDrop(of: [.fileURL], isTargeted: Binding(get: { model.dragging }, set: { model.dragging = $0 })) { providers in
             Task { @MainActor in actions.drop(await Self.urls(from: providers)) }
             return true
@@ -132,10 +162,15 @@ struct NotchView: View {
     }
 
     @ViewBuilder
+    private var expandedContent: some View {
+        if expandedVisible { content.transition(.identity) }
+    }
+
+    @ViewBuilder
     private var content: some View {
-        switch model.mode {
+        switch model.mode == .idle ? retainedMode : model.mode {
         case .notice:
-            if let notice = model.notice {
+            if let notice = model.notice ?? retainedNotice {
                 NoticeCard(notice: notice, onAnswer: actions.answer, onDismiss: { model.dismiss() },
                            onOpen: { place in actions.openPlace(place); model.dismiss() })
             }
@@ -162,7 +197,7 @@ struct NotchView: View {
             }
             .padding(.top, 16)
         case .drop:
-            DropPanel(files: model.dropped, dragging: model.dragging, actions: actions)
+            DropPanel(files: model.mode == .idle ? retainedDropped : model.dropped, dragging: model.dragging, actions: actions)
                 .padding(.top, 16)
         case .idle:
             EmptyView()
@@ -214,6 +249,51 @@ struct NotchView: View {
             }
         }
         return out
+    }
+}
+
+/// One spring interpolates the background size and content opacity together. The expanded layout stays fixed while
+/// the outline shrinks, avoiding text reflow and independent insertion/removal fades during the spring.
+private struct NotchMorph<Expanded: View, Ears: View>: View, Animatable {
+    var progress: CGFloat
+    var size: CGSize
+    let idleSize: CGSize
+    let expandedSize: CGSize
+    let notch: CGSize
+    let expanded: Expanded
+    let ears: Ears
+
+    nonisolated var animatableData: AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>> {
+        get { .init(progress, .init(size.width, size.height)) }
+        set { progress = newValue.first; size = CGSize(width: newValue.second.first, height: newValue.second.second) }
+    }
+
+    var body: some View {
+        let p = min(max(progress, 0), 1)
+        let width = max(size.width, 1)
+        let height = max(size.height, 1)
+        let shape = NotchShape(earRadius: 8 + 6 * p, bottomRadius: notch.height / 2.4 + (24 - notch.height / 2.4) * p)
+        ZStack(alignment: .top) {
+            expanded
+                .frame(width: max(expandedSize.width - 2 * NotchLayout.side, 1), alignment: .top)
+                .padding(.top, notch.height)
+                .opacity(p)
+                .scaleEffect(0.96 + 0.04 * p, anchor: .top)
+                .offset(y: -6 * (1 - p))
+                .allowsHitTesting(p == 1)
+                .accessibilityHidden(p < 1)
+            if p < 1 {
+                ears.frame(width: idleSize.width, height: notch.height)
+                    .opacity(1 - p)
+                    .allowsHitTesting(p == 0)
+            }
+        }
+        .frame(width: width, height: height, alignment: .top)
+        .background(shape.fill(.black))
+        .clipShape(shape)
+        // Geometry and opacity are already interpolated together; descendants must not start a second fade.
+        .animation(nil, value: progress)
+        .animation(nil, value: size)
     }
 }
 

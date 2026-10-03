@@ -45,4 +45,4 @@
 ## Estética
 
 - **Las dos plataformas comparten** los mismos tokens (`assets/design-tokens.json`): negro de la isla, radios, tipografía del sistema, tiempos de animación y los íconos de proveedor.
-- **Las animaciones de entrada y salida** son las de MIKA: resorte de entrada y desvanecido rápido de salida, con la barra de música sincronizada.
+- **Animación del notch en macOS.** Un único resorte de 0,38 s mueve el tamaño del fondo y la opacidad del contenido. El contenido conserva su ancho expandido mientras la forma negra lo recorta; se elimina al terminar el cierre. La reapertura interrumpe el cierre sin perder los controles. Los cambios de tamaño del reproductor siguen el mismo resorte. Con Reducir movimiento, el cambio es inmediato.
