@@ -16,6 +16,7 @@ pub mod log;
 pub mod look;
 pub mod mailwatch;
 pub mod media;
+pub mod memory;
 pub mod niko;
 pub mod notch;
 pub mod orchestrator;
@@ -160,11 +161,17 @@ impl BuddyCore {
         // Spotify's search for the agents (the relay's `spotify_search`): runs on the hub's connection thread.
         let (s, st) = (spotify.clone(), store.clone());
         sessions.set_tool_handler(Box::new(move |request, payload| {
-            (request == "spotify_search").then(|| {
-                let id = spotify::client_id(&st.lock().unwrap_or_else(|p| p.into_inner())).ok().flatten();
-                let text = |key: &str| payload[key].as_str().unwrap_or("").to_string();
-                s.search(id, &spotify::SystemSecrets, &text("query"), &text("kind"), payload["new"] == true)
-            })
+            let id = || spotify::client_id(&st.lock().unwrap_or_else(|p| p.into_inner())).ok().flatten();
+            let text = |key: &str| payload[key].as_str().unwrap_or("").to_string();
+            match request {
+                "spotify_search" => Some(s.search(id(), &spotify::SystemSecrets, &text("query"), &text("kind"), payload["new"] == true)),
+                // A playlist in the user's account (they allowed it in Settings).
+                "spotify_playlist" => {
+                    let tracks: Vec<String> = payload["tracks"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect();
+                    Some(s.create_playlist(id(), &text("name"), &text("description"), &tracks))
+                }
+                _ => None,
+            }
         }));
         // Telegram: each message of the paired chat is a restricted PARLEY turn in «Telegram · PARLEY»; money notes
         // («gasté 45 en almuerzo», «Niko, …») go to Niko in «Telegram · Niko».
@@ -233,6 +240,23 @@ impl BuddyCore {
     /// The same greeting on both platforms: proof that the app is talking to the core.
     pub fn hello(&self) -> String {
         hello()
+    }
+
+    /// What the team remembers about the user (Settings shows it and can delete a note).
+    pub fn memory_notes(&self) -> Vec<String> {
+        self.with_store(|s| Ok(memory::notes(s))).unwrap_or_default()
+    }
+
+    pub fn forget_memory(&self, note: String) {
+        let _ = self.with_store(|s| {
+            memory::forget(s, &note);
+            Ok(())
+        });
+    }
+
+    /// What the user asks often, to offer it in the composer (see `Store::frequent_questions`).
+    pub fn chat_suggestions(&self) -> Vec<String> {
+        self.with_store(|s| s.frequent_questions(3)).unwrap_or_default()
     }
 
     /// Dictated text as Spanish writes it (see `voice::tidy`).
@@ -492,6 +516,29 @@ impl BuddyCore {
     pub fn spotify_disconnect(&self) -> Result<(), CoreError> {
         self.spotify.forget(&spotify::SystemSecrets);
         self.with_store(|s| s.set_setting(spotify::CLIENT_ID_KEY, ""))
+    }
+
+    /// «Permitir crear playlists»: the page to open in the browser. When the user answers there, `SpotifyChanged`
+    /// … arrives as `NikoChanged`-style news: read `spotify_can_create_playlists` again.
+    pub fn spotify_authorize(&self) -> Result<String, CoreError> {
+        let id = self.spotify_client_id();
+        let bus = self.bus.clone();
+        self.spotify
+            .authorize(&id, Box::new(move |result| {
+                if let Err(e) = &result {
+                    log::line(format!("spotify: el permiso de playlists no se dio: {e}"));
+                }
+                bus.publish(Event::UsageChanged);
+            }))
+            .map_err(CoreError::Hooks)
+    }
+
+    pub fn spotify_can_create_playlists(&self) -> bool {
+        self.spotify.can_write()
+    }
+
+    pub fn spotify_forget_playlists(&self) {
+        self.spotify.forget_user();
     }
 
     /// The Client ID when Spotify is connected (empty otherwise). Never reads the secret back.

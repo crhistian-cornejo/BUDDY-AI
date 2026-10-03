@@ -26,7 +26,7 @@ pub fn of_tool(name: &str) -> (&'static str, &'static str) {
         "Bash" | "shell" | "commandExecution" | "exec_command" => ("command", "Ejecutando un comando"),
         "Edit" | "Write" | "MultiEdit" | "apply_patch" | "fileChange" => ("edit", "Editando archivos"),
         "look_at_screen" => ("screen", "Mirando tu pantalla"),
-        "media_control" | "media_play" | "media_search" | "now_playing" | "spotify_search" => ("music", "Con la música"),
+        "media_control" | "media_play" | "media_search" | "now_playing" | "spotify_search" | "spotify_playlist" => ("music", "Con la música"),
         "use_skill" => ("skill", "Usando una habilidad"),
         _ => ("tool", "Usando una herramienta"),
     }

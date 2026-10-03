@@ -302,13 +302,16 @@ mod tests {
     #[test]
     fn a_slot_runs_once_per_day_and_not_before_its_hour() {
         let (b, _rx) = briefing(&[]);
-        b.tick(6, "2026-10-02");
-        assert_eq!(b.lock().setting("briefing.done.2026-10-02.8").unwrap(), None, "too early");
-        b.tick(9, "2026-10-02");
-        assert!(b.lock().setting("briefing.done.2026-10-02.8").unwrap().is_some());
+        // The real date: the run a tick starts clears the slots of any other day (a fixed date raced with it).
+        let today = local_now().1;
+        let done = |slot: u32| b.lock().setting(&format!("briefing.done.{today}.{slot}")).unwrap();
+        b.tick(6, &today);
+        assert_eq!(done(8), None, "too early");
+        b.tick(9, &today);
+        assert!(done(8).is_some());
         b.lock().set_setting(ENABLED_KEY, "false").unwrap();
-        b.tick(17, "2026-10-02");
-        assert_eq!(b.lock().setting("briefing.done.2026-10-02.16").unwrap(), None, "off means off");
+        b.tick(17, &today);
+        assert_eq!(done(16), None, "off means off");
     }
 
     #[test]

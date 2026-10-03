@@ -77,6 +77,40 @@ private struct CoreToggle: View {
     }
 }
 
+/// What the team remembers about the user: each note can be deleted.
+private struct MemorySettings: View {
+    let core: BuddyCore
+    @State private var notes: [String] = []
+
+    var body: some View {
+        Section {
+            if notes.isEmpty {
+                Text("Todavía nada. Cuando le cuentes a Buddy o a Niko algo que se repite (un gasto fijo, cómo prefieres las cosas), lo anotan aquí.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(notes, id: \.self) { note in
+                HStack(alignment: .firstTextBaseline) {
+                    Text(note).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button {
+                        core.forgetMemory(note: note)
+                        notes = core.memoryNotes()
+                    } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                        .help("Olvidar esto")
+                        .accessibilityLabel("Olvidar: \(note)")
+                }
+            }
+        } header: {
+            Text("Memoria")
+        } footer: {
+            Text("Lo que Buddy y sus agentes recuerdan de ti entre conversaciones. Se guarda solo en este equipo.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onAppear { notes = core.memoryNotes() }
+    }
+}
+
 private struct GeneralSettings: View {
     let core: BuddyCore
     @State private var atLogin = SMAppService.mainApp.status == .enabled
@@ -94,6 +128,7 @@ private struct GeneralSettings: View {
                     }
                 }
             }
+            MemorySettings(core: core)
             ModelSettings(core: core)
             if let system = AppServices.notchSystem { NotchSystemSettings(system: system) }
             Section("Agentes") {
@@ -368,13 +403,15 @@ private struct SpotifySection: View {
     @State private var connected = ""
     @State private var busy = false
     @State private var error: String?
+    @State private var playlists = false
+    @State private var asking = false
 
     var body: some View {
         Section {
             if connected.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Para que Buddy busque y ponga música dentro de Spotify (sin buscar en la web):")
-                    Text(verbatim: "1. Abre el panel de desarrolladores y crea una app (cualquier nombre; en «Redirect URI» pon http://127.0.0.1:8888, no se usa).")
+                    Text(verbatim: "1. Abre el panel de desarrolladores y crea una app (cualquier nombre; en «Redirect URI» pon http://127.0.0.1:8888).")
                     Text("2. Marca «Web API», guarda y copia aquí su Client ID y su Client Secret.")
                 }
                 .font(.caption)
@@ -401,6 +438,23 @@ private struct SpotifySection: View {
                     Text("Conectado")
                     Text("App \(connected.prefix(6))… · el secreto está en tu Llavero")
                 }
+                LabeledContent {
+                    if playlists {
+                        Button("Quitar permiso") {
+                            core.spotifyForgetPlaylists()
+                            playlists = core.spotifyCanCreatePlaylists()
+                        }
+                    } else {
+                        if asking { ProgressView().controlSize(.small) }
+                        Button("Permitir crear playlists", action: allowPlaylists).disabled(asking)
+                    }
+                } label: {
+                    Text("Playlists")
+                    Text(playlists ? "Buddy puede crear playlists privadas en tu cuenta"
+                         : asking ? "Acepta en la página de Spotify que se abrió"
+                         : "Spotify te pedirá permiso en el navegador (solo crear y llenar playlists)")
+                }
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
             }
         } header: {
             Label("Spotify", systemImage: "music.note")
@@ -408,7 +462,31 @@ private struct SpotifySection: View {
             Text("Spotify exige Premium en la cuenta dueña de la app. Reproducir no lo necesita: Buddy usa la app de Spotify de tu Mac.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .onAppear { connected = core.spotifyClientId() }
+        .onAppear {
+            connected = core.spotifyClientId()
+            playlists = core.spotifyCanCreatePlaylists()
+        }
+        // The core says when the browser came back (it reuses the «something changed» notice).
+        .onReceive(NotificationCenter.default.publisher(for: .buddyUsageChanged).receive(on: DispatchQueue.main)) { _ in
+            let now = core.spotifyCanCreatePlaylists()
+            if asking && now { asking = false }
+            playlists = now
+        }
+    }
+
+    /// Opens Spotify's own page; the answer comes back to this Mac only (127.0.0.1).
+    private func allowPlaylists() {
+        error = nil
+        do {
+            let page = try core.spotifyAuthorize()
+            guard let url = URL(string: page) else { return }
+            asking = true
+            NSWorkspace.shared.open(url)
+            // If the page is closed without answering, the button comes back.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 300) { asking = false }
+        } catch {
+            if case let CoreError.Hooks(message) = error { self.error = message } else { self.error = String(describing: error) }
+        }
     }
 
     private func connect() {

@@ -12,6 +12,7 @@ pub const MEDIA_CONTROL: &str = "media_control";
 pub const MEDIA_PLAY: &str = "media_play";
 pub const MEDIA_SEARCH: &str = "media_search";
 pub const SPOTIFY_SEARCH: &str = "spotify_search";
+pub const SPOTIFY_PLAYLIST: &str = "spotify_playlist";
 pub const LOOK_AT_SCREEN: &str = "look_at_screen";
 pub const NOW_PLAYING: &str = "now_playing";
 pub const USE_SKILL: &str = "use_skill";
@@ -30,7 +31,7 @@ impl Extra {
     pub fn names(&self) -> Vec<&'static str> {
         let mut names = Vec::new();
         if self.token.is_some() {
-            names.extend([SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, LOOK_AT_SCREEN]);
+            names.extend([SPOTIFY_SEARCH, SPOTIFY_PLAYLIST, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, LOOK_AT_SCREEN]);
         }
         if self.skills.is_some() {
             names.push(USE_SKILL);
@@ -85,6 +86,18 @@ spotify:, listos para media_play. Con nuevo=true trae discos salidos en las últ
                     }, "required": ["query"], "additionalProperties": false },
                     "annotations": read,
                 }),
+                SPOTIFY_PLAYLIST => json!({
+                    "name": name,
+                    "title": "Crear una playlist en Spotify",
+                    "description": "Crea una playlist privada en la cuenta de Spotify del usuario con las canciones dadas y \
+devuelve su enlace spotify:playlist:, listo para media_play. Cada canción va como «Artista - Canción» (se busca en el \
+catálogo) o como enlace spotify:track:. Dice cuáles no encontró.",
+                    "inputSchema": { "type": "object", "properties": {
+                        "name": { "type": "string", "description": "Nombre de la playlist" },
+                        "description": { "type": "string", "description": "Una línea sobre la lista (opcional)" },
+                        "tracks": { "type": "array", "items": { "type": "string" }, "description": "Hasta 60 canciones, en orden" }
+                    }, "required": ["name", "tracks"], "additionalProperties": false },
+                }),
                 MEDIA_SEARCH => json!({
                     "name": name,
                     "title": "Buscar en Spotify",
@@ -130,6 +143,12 @@ reproducir. Úsala solo si no encontraste un enlace de open.spotify.com.",
                         "query": args["query"].as_str().unwrap_or(""),
                         "kind": args["kind"].as_str().unwrap_or("track"),
                         "new": args["nuevo"] == true,
+                    }),
+                    SPOTIFY_PLAYLIST => json!({
+                        "request": "spotify_playlist",
+                        "name": args["name"].as_str().unwrap_or(""),
+                        "description": args["description"].as_str().unwrap_or(""),
+                        "tracks": args["tracks"].as_array().cloned().unwrap_or_default(),
                     }),
                     _ => json!({ "request": "now_playing" }),
                 };
@@ -224,8 +243,8 @@ mod tests {
     fn music_tools_only_with_the_secret_and_skills_only_with_a_folder() {
         assert!(Extra::default().names().is_empty());
         let both = Extra { skills: Some("/s".into()), token: Some("t".into()), ..Extra::default() };
-        assert_eq!(both.names(), [SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, LOOK_AT_SCREEN, USE_SKILL]);
-        assert_eq!(both.specs().len(), 7);
+        assert_eq!(both.names(), [SPOTIFY_SEARCH, SPOTIFY_PLAYLIST, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, LOOK_AT_SCREEN, USE_SKILL]);
+        assert_eq!(both.specs().len(), 8);
     }
 
     #[test]

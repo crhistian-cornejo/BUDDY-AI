@@ -306,6 +306,33 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// What the user asked at least twice in the last 7 days, most repeated today first, then over the week (short
+    /// messages only: a question, not a pasted text). Each as it was last written.
+    pub fn frequent_questions(&self, limit: u32) -> Result<Vec<String>, CoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT text, created_at FROM messages WHERE role = 'user' AND created_at >= unixepoch() - 7 * 86400
+             AND length(text) BETWEEN 8 AND 140 ORDER BY id DESC LIMIT 600",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let day_ago = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) - 86_400;
+        // Folded text → (times, last time, last wording, times in the last day).
+        let mut seen: Vec<(String, u32, i64, String, u32)> = Vec::new();
+        for row in rows.flatten() {
+            let key: String = fold(&row.0).chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+            let today = u32::from(row.1 >= day_ago);
+            match seen.iter_mut().find(|s| s.0 == key) {
+                Some(entry) => {
+                    entry.1 += 1;
+                    entry.4 += today;
+                }
+                None => seen.push((key, 1, row.1, row.0.trim().to_string(), today)),
+            }
+        }
+        seen.retain(|s| s.1 >= 2);
+        seen.sort_by(|a, b| b.4.cmp(&a.4).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
+        Ok(seen.into_iter().take(limit as usize).map(|s| s.3).collect())
+    }
+
     pub fn messages(&self, chat_id: &str) -> Result<Vec<ChatMessage>, CoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, role, agent, provider, text, sources, failed, created_at, attachments, model FROM messages WHERE chat_id = ?1 ORDER BY id",

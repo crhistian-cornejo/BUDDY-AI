@@ -26,7 +26,7 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: -10) {
-            if !chat.queued.isEmpty { queue }
+            if !chat.queued.isEmpty { queue } else if showsSuggestions { suggestions }
             VStack(alignment: .leading, spacing: 8) {
                 if let error = chat.queueError ?? dictation.problem {
                     Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 8)
@@ -125,6 +125,41 @@ struct ComposerView: View {
         .background(Color.dynamic(light: "#F1F1F3", dark: "#303034"), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.16), lineWidth: 1))
         .accessibilityLabel("Mensajes en cola")
+    }
+
+    /// Offered only over an empty field, with nothing being written or waiting.
+    private var showsSuggestions: Bool {
+        empty && !chat.streaming && !chat.suggestions.isEmpty && !dictation.recording && !dictation.preparing
+    }
+
+    /// What the user asks often: one click sends it.
+    private var suggestions: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(chat.suggestions, id: \.self) { text in
+                Button {
+                    chat.draft = text
+                    send()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.left").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                        Text(text).font(.callout).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .tip("Enviar: \(text)")
+            }
+        }
+        .padding(.top, 8)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 16)
+        .frame(width: ChatMetrics.composerWidth - 24)
+        .background(Color.dynamic(light: "#F1F1F3", dark: "#303034"), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.16), lineWidth: 1))
+        .accessibilityLabel("Lo que sueles pedir")
     }
 
     private var field: some View {

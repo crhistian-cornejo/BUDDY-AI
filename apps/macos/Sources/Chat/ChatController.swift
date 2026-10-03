@@ -13,6 +13,8 @@ final class ChatController {
     private(set) var queued: [QueuedMessage] = []
     private(set) var queueError: String?
     var draft = ""
+    /// What the user asks often (from the core), offered above an empty field.
+    private(set) var suggestions: [String] = []
     /// Files waiting to go with the next message.
     var attachments: [URL] = []
 
@@ -34,6 +36,8 @@ final class ChatController {
     /// The composer opened: Buddy gets ready so the first words come sooner.
     func prewarm() {
         core.prewarm()
+        // Offered once, over a chat that has not started: sending anything takes them away.
+        suggestions = messages.isEmpty ? core.chatSuggestions() : []
     }
 
     func attach(_ urls: [URL]) {
@@ -74,6 +78,7 @@ final class ChatController {
         guard !text.isEmpty || !attachments.isEmpty else { return }
         if text.isEmpty { text = attachments.count == 1 ? "Revisa este archivo." : "Revisa estos archivos." }
         let files = attachments
+        suggestions = []
         draft = ""
         attachments = []
         queueError = nil
@@ -158,6 +163,7 @@ final class ChatController {
         queued = []
         queueError = nil
         streaming = false
+        suggestions = core.chatSuggestions()
     }
 
     func refreshRecent() {
@@ -166,6 +172,7 @@ final class ChatController {
 
     func open(_ id: String) {
         stop()
+        suggestions = []
         chatID = id
         refreshQueue()
         queueError = nil

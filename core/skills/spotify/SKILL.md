@@ -1,6 +1,6 @@
 ---
 name: spotify
-description: Poner, pausar, saltar o decir qué suena en Spotify o Música («pon Radiohead», «pon algo nuevo de hoy», «siguiente», «¿qué suena?»).
+description: Poner, pausar, saltar o decir qué suena en Spotify o Música, y crear playlists («pon Radiohead», «pon algo nuevo de hoy», «siguiente», «¿qué suena?», «hazme una playlist de…»).
 ---
 # Música
 
@@ -18,6 +18,14 @@ Busca siempre **dentro de Spotify**, nunca en la web: es más rápido y gasta mu
 
 ## «Pon algo nuevo», «lo que salió hoy»
 `spotify_search` con `nuevo: true` (y el género o artista si lo dijo). Elige un disco y ponlo con `media_play`.
+
+## «Hazme una playlist de…», «arma una lista con…»
+1. Elige las canciones tú (15 a 30 salvo que pida otra cantidad), que encajen de verdad con lo pedido.
+2. `spotify_playlist` con un nombre corto, una descripción de una línea y `tracks` como «Artista - Canción», en orden.
+   No hace falta buscar cada una antes: la herramienta las busca. Nunca digas que no puedes crear playlists.
+3. Si el usuario quiere oírla, `media_play` con el enlace `spotify:playlist:` que devolvió.
+4. Responde con el nombre, cuántas canciones quedaron y cuáles no se encontraron (si hubo).
+Si la herramienta dice que falta el permiso, díselo tal cual: Ajustes › Conexiones › Spotify › «Permitir crear playlists».
 
 ## Si Spotify no está conectado
 Si `spotify_search` dice que no está conectado, llama a `media_search` con lo pedido: se abre la búsqueda en Spotify
