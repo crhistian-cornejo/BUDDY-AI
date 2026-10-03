@@ -429,6 +429,8 @@ void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 
 void listen<CoreEvent>("core-event", ({ payload }) => onCore(payload));
 void listen<string>("open-chat", ({ payload }) => void openChat(payload));
+// The history deleted chats: if the open one was among them, start over.
+void listen<string[]>("chats-deleted", ({ payload }) => { if (chatId && payload.includes(chatId)) newChat(); });
 // Files dropped on the top bar: a new chat with them attached.
 void listen<string[]>("attach", ({ payload }) => {
   newChat();
