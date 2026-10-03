@@ -9,11 +9,27 @@
   </head>
   <body class="chat">
     <main id="search" class="card">
-      <label class="field">
+      <div class="field">
         <span id="glass" aria-hidden="true"></span>
-        <input id="query" type="search" placeholder="Buscar en tus chats" aria-label="Buscar en tus chats" autocomplete="off" />
-      </label>
-      <div id="results" role="listbox" aria-label="Chats"></div>
+        <input id="query" type="search" placeholder="Buscar en tus chats" aria-label="Buscar en tus chats" aria-controls="results" autocomplete="off" />
+        <button id="select" class="text-button" type="button" aria-pressed="false" title="Elegir varios chats para borrarlos">Seleccionar</button>
+      </div>
+      <div id="results" role="listbox" aria-label="Chats" aria-keyshortcuts="Delete"></div>
+      <footer id="bar" hidden>
+        <span id="count" aria-live="polite"></span>
+        <button id="cancel" class="btn" type="button" title="Quitar la selección (Esc)">Cancelar</button>
+        <button id="delete" class="btn danger" type="button" title="Borrar los chats seleccionados (Supr)">Borrar</button>
+      </footer>
+      <dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+        <form method="dialog">
+          <h2 id="confirm-title"></h2>
+          <p id="confirm-text"></p>
+          <div class="actions">
+            <button class="btn" value="cancel" autofocus>Cancelar</button>
+            <button class="btn danger" value="delete">Borrar</button>
+          </div>
+        </form>
+      </dialog>
     </main>
     <script type="module" src="/src/history/main.ts"></script>
   </body>

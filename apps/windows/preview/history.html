@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- Development only (not built): the Windows history search with a fake Tauri bridge and fake chats, to check its look
+     in a browser. Deleting here only removes them from this page's memory. -->
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/chat/chat.css" />
+    <link rel="stylesheet" href="/src/history/history.css" />
+    <style>html, body { background: #888 !important; } #search { width: 560px; height: 420px !important; margin: 40px; }</style>
+    <script>
+      const handlers = {};
+      let next = 1;
+      const now = Date.now() / 1000;
+      let chats = [
+        { id: "a", title: "¿Cómo llega el Madrid al derbi?", updatedAt: now - 600, preview: "Llega en buena forma: tres victorias seguidas y Mbappé en racha." },
+        { id: "b", title: "Resumen de la reunión del lunes", updatedAt: now - 3600, preview: "Puntos clave: presupuesto, fechas de entrega y responsables." },
+        { id: "c", title: "En una línea: ¿qué es un trait en Rust?", updatedAt: now - 7200, preview: "Un trait define comportamiento compartido que los tipos pueden implementar." },
+        { id: "d", title: "Receta de lentejas para cuatro", updatedAt: now - 90000, preview: "Lentejas, chorizo, zanahoria, pimiento y un poco de pimentón." },
+        { id: "e", title: "Plan de viaje a Lisboa", updatedAt: now - 3 * 86400, preview: "Día 1: Alfama y miradores. Día 2: Belém." },
+        { id: "f", title: "Ideas para el nombre del podcast", updatedAt: now - 12 * 86400, preview: "" },
+        { id: "g", title: "Traducir el correo al inglés", updatedAt: now - 40 * 86400, preview: "Dear team, thanks for the update…" },
+      ];
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "history" }, currentWebview: { windowLabel: "history", label: "history" } },
+        transformCallback: (cb) => { const id = next++; handlers[id] = cb; return id; },
+        unregisterCallback: () => {},
+        invoke: async (cmd, args) => {
+          if (cmd === "search_chats") {
+            const q = (args.query || "").toLowerCase().trim();
+            return chats.filter((c) => !q || (c.title + " " + c.preview).toLowerCase().includes(q));
+          }
+          if (cmd === "delete_chat") { chats = chats.filter((c) => c.id !== args.chatId); console.log("delete_chat", args.chatId); return null; }
+          if (cmd === "plugin:event|emit_to") { console.log("emit_to", JSON.stringify(args)); return null; }
+          return null;
+        },
+      };
+    </script>
+  </head>
+  <body class="chat">
+    <main id="search" class="card">
+      <div class="field">
+        <span id="glass" aria-hidden="true"></span>
+        <input id="query" type="search" placeholder="Buscar en tus chats" aria-label="Buscar en tus chats" aria-controls="results" autocomplete="off" />
+        <button id="select" class="text-button" type="button" aria-pressed="false" title="Elegir varios chats para borrarlos">Seleccionar</button>
+      </div>
+      <div id="results" role="listbox" aria-label="Chats" aria-keyshortcuts="Delete"></div>
+      <footer id="bar" hidden>
+        <span id="count" aria-live="polite"></span>
+        <button id="cancel" class="btn" type="button" title="Quitar la selección (Esc)">Cancelar</button>
+        <button id="delete" class="btn danger" type="button" title="Borrar los chats seleccionados (Supr)">Borrar</button>
+      </footer>
+      <dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+        <form method="dialog">
+          <h2 id="confirm-title"></h2>
+          <p id="confirm-text"></p>
+          <div class="actions">
+            <button class="btn" value="cancel" autofocus>Cancelar</button>
+            <button class="btn danger" value="delete">Borrar</button>
+          </div>
+        </form>
+      </dialog>
+    </main>
+    <script type="module" src="/src/history/main.ts"></script>
+  </body>
+</html>
