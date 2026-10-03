@@ -81,12 +81,12 @@ final class NotchController {
 
     func handle(_ event: Event) {
         switch event {
-        case let .approvalRequest(requestId, sessionId, agent, project, title, summary, detail, canAllow):
+        case let .approvalRequest(requestId, sessionId, agent, project, title, summary, detail, canAllow, always):
             approvalSessions[requestId] = sessionId
             let name = AgentNames.name(agent)
             model.show(.init(kind: .approval(requestID: requestId, canAllow: canAllow), agent: agent,
                              title: agent == "buddy" ? "Buddy quiere \(title.prefix(1).lowercased() + title.dropFirst())" : "\(name) pide permiso en \(project)",
-                             detail: "\(title): \(summary)", command: detail))
+                             detail: "\(title): \(summary)", command: detail, always: always))
             NSSound(named: "Tink")?.play()
         case let .approvalClosed(requestId):
             approvalSessions[requestId] = nil
@@ -206,6 +206,10 @@ final class NotchController {
                   actions: NotchActions(
                       answer: { [weak self] id, allow in
                           self?.core.answerApproval(requestId: id, allow: allow)
+                          self?.model.closeApproval(id)
+                      },
+                      answerAlways: { [weak self] id in
+                          self?.core.answerApprovalAlways(requestId: id)
                           self?.model.closeApproval(id)
                       },
                       openPlace: { [weak self] place in self?.open(place) },

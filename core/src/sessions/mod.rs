@@ -6,6 +6,7 @@
 //! (`answer_approval`) goes back to the waiting agent. The hooks are written into the agents' config files only
 //! after the user saw the diff and clicked (`hooks_preview` → `hooks_write`; see `hook_file`).
 
+pub mod always;
 pub mod antigravity_hooks;
 pub mod claude_hooks;
 pub mod codex_hooks;
@@ -135,6 +136,8 @@ fn unix_now() -> i64 {
 struct Pending {
     answer: Sender<bool>,
     can_allow: bool,
+    /// Who asked and the rule «Permitir siempre» would save (None: not offered).
+    always: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -374,6 +377,34 @@ impl SessionHub {
         let _ = pending.answer.send(allow);
     }
 
+    /// «Permitir siempre»: allows this request and saves its rule, so the next ones like it need no card.
+    pub fn answer_approval_always(&self, request_id: &str) {
+        let rule = self.lock().pending.get(request_id).and_then(|p| p.always.clone());
+        if let Some((agent, prefix)) = rule {
+            let mut rules = always::load(&self.data_dir);
+            if !rules.iter().any(|r| r.agent == agent && r.prefix == prefix) {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                log::line(format!("permitir siempre ({agent}): {prefix}"));
+                rules.push(always::AlwaysRule { agent, prefix, added_at: now });
+                always::save(&self.data_dir, &rules);
+            }
+        }
+        self.answer_approval(request_id, true);
+    }
+
+    /// The commands allowed for good, newest first.
+    pub fn always_rules(&self) -> Vec<always::AlwaysRule> {
+        let mut rules = always::load(&self.data_dir);
+        rules.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+        rules
+    }
+
+    pub fn remove_always_rule(&self, agent: &str, prefix: &str) {
+        let mut rules = always::load(&self.data_dir);
+        rules.retain(|r| !(r.agent == agent && r.prefix == prefix));
+        always::save(&self.data_dir, &rules);
+    }
+
     /// Live sessions, most recent first.
     pub fn sessions(&self) -> Vec<SessionInfo> {
         let mut list: Vec<SessionInfo> = self.lock().sessions.values().cloned().collect();
@@ -535,9 +566,21 @@ impl SessionHub {
     /// Puts an approval card in front of the user and waits for the click (or the timeout, or the asker hanging up).
     fn ask(&self, payload: &Value, agent: &str, session_id: String, project: String, closed: &dyn Fn() -> bool) -> Option<&'static str> {
         let shown = format::approval_text(payload);
+        // A command the user allowed for good: no card.
+        let command = payload.get("tool_input").and_then(Value::as_object).and_then(format::command_of);
+        if let Some(command) = command.as_deref().filter(|_| shown.can_allow) {
+            if always::load(&self.data_dir).iter().any(|r| r.agent == agent && always::covers(&r.prefix, command)) {
+                log::line(format!("permiso ({agent}): permitido siempre"));
+                return Some("allow");
+            }
+        }
+        let always = command.as_deref().filter(|_| shown.can_allow).and_then(always::prefix_for);
         let request_id = format!("{}-{}", std::process::id(), self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = channel();
-        self.lock().pending.insert(request_id.clone(), Pending { answer: tx, can_allow: shown.can_allow });
+        self.lock().pending.insert(
+            request_id.clone(),
+            Pending { answer: tx, can_allow: shown.can_allow, always: always.clone().map(|p| (agent.to_string(), p)) },
+        );
         log::line(format!("permiso {request_id} ({agent}): {}", shown.title));
         self.bus.publish(Event::ApprovalRequest {
             request_id: request_id.clone(),
@@ -548,6 +591,7 @@ impl SessionHub {
             summary: shown.summary,
             detail: shown.detail,
             can_allow: shown.can_allow,
+            always: always.unwrap_or_default(),
         });
         self.bus.publish(Event::MascotState { state: "ask".into() });
 
@@ -675,6 +719,30 @@ mod tests {
         assert!(!std::path::Path::new(&path).exists(), "only the small copy stays");
         let small = image::open(&image).unwrap();
         assert!(small.width().max(small.height()) < 3000, "shrunk like any attached image");
+    }
+
+    #[test]
+    fn allow_always_saves_the_rule_and_skips_the_next_card() {
+        let (hub, rx, _dir) = hub(Duration::from_secs(5));
+        let asker = hub.clone();
+        let first = std::thread::spawn(move || asker.approve_command("git status", "/u"));
+        let Ok(Event::ApprovalRequest { request_id, always, .. }) = rx.recv_timeout(Duration::from_secs(2)) else { panic!("no card") };
+        assert_eq!(always, "git status");
+        hub.answer_approval_always(&request_id);
+        assert!(first.join().unwrap());
+        while rx.try_recv().is_ok() {}
+        assert!(hub.approve_command("git status --short", "/u"), "covered: allowed with no card");
+        assert!(!matches!(rx.try_recv(), Ok(Event::ApprovalRequest { .. })));
+        assert_eq!(hub.always_rules()[0].prefix, "git status");
+        // Another command still asks; a risky one is never offered «always».
+        let asker = hub.clone();
+        let other = std::thread::spawn(move || asker.approve_command("rm -rf build", "/u"));
+        let Ok(Event::ApprovalRequest { request_id, always, .. }) = rx.recv_timeout(Duration::from_secs(2)) else { panic!("no card") };
+        assert_eq!(always, "");
+        hub.answer_approval(&request_id, false);
+        assert!(!other.join().unwrap());
+        hub.remove_always_rule("buddy", "git status");
+        assert!(hub.always_rules().is_empty());
     }
 
     #[test]
@@ -1003,7 +1071,7 @@ mod tests {
                 answer
             });
 
-            let Event::ApprovalRequest { request_id, session_id, agent, project, title, summary, detail, can_allow } =
+            let Event::ApprovalRequest { request_id, session_id, agent, project, title, summary, detail, can_allow, .. } =
                 next_where(&rx, |e| matches!(e, Event::ApprovalRequest { .. }))
             else {
                 unreachable!()

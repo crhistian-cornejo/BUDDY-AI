@@ -206,6 +206,9 @@ pub fn run() {
             media_now_playing,
             media_control,
             answer_approval,
+            answer_approval_always,
+            always_rules,
+            remove_always_rule,
             sessions,
             hooks_status,
             connect_hooks,
@@ -558,6 +561,21 @@ fn start_sessions(app: &AppHandle) {
 #[tauri::command]
 fn answer_approval(state: State<'_, AppCore>, request_id: String, allow: bool) {
     state.core.answer_approval(request_id, allow);
+}
+
+#[tauri::command]
+fn answer_approval_always(state: State<'_, AppCore>, request_id: String) {
+    state.core.answer_approval_always(request_id);
+}
+
+#[tauri::command]
+fn always_rules(state: State<'_, AppCore>) -> Vec<buddy_core::sessions::always::AlwaysRule> {
+    state.core.always_rules()
+}
+
+#[tauri::command]
+fn remove_always_rule(state: State<'_, AppCore>, agent: String, prefix: String) {
+    state.core.remove_always_rule(agent, prefix);
 }
 
 #[tauri::command]

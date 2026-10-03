@@ -366,6 +366,20 @@ impl BuddyCore {
     }
 
     /// The user's click on an approval card (`ApprovalRequest`).
+    /// «Permitir siempre»: allows this one and every later one with the same program and subcommand.
+    pub fn answer_approval_always(&self, request_id: String) {
+        self.sessions.answer_approval_always(&request_id);
+    }
+
+    /// The commands allowed for good (Settings lists them).
+    pub fn always_rules(&self) -> Vec<sessions::always::AlwaysRule> {
+        self.sessions.always_rules()
+    }
+
+    pub fn remove_always_rule(&self, agent: String, prefix: String) {
+        self.sessions.remove_always_rule(&agent, &prefix);
+    }
+
     pub fn answer_approval(&self, request_id: String, allow: bool) {
         self.sessions.answer_approval(&request_id, allow);
     }

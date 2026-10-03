@@ -10,7 +10,7 @@ import { TABLER } from "../chat/tabler";
 import { PROVIDER_MARKS } from "../chat/provider-marks";
 
 type Kind = "approval" | "finished" | "waiting" | "failed";
-interface Notice { kind: Kind; agent: string; title: string; detail: string; command?: string; requestId?: string; canAllow?: boolean }
+interface Notice { kind: Kind; agent: string; title: string; detail: string; command?: string; requestId?: string; canAllow?: boolean; always?: string }
 interface Session { id: string; agent: string; project: string; state: string }
 interface NowPlaying { app: string; title: string; artist: string; status: string; positionMs: number | null; durationMs: number | null; thumbnail: string | null }
 interface FocusStatus { running: boolean; startedAt: number; endsAt: number; minutes: number }
@@ -19,7 +19,7 @@ interface UsageWindow { label: string; usedPct: number; resetsAt: number | null 
 interface BriefingItem { topic: string; text: string; url: string | null; at: number }
 interface ProviderUsage { provider: string; name: string; windows: UsageWindow[] }
 type CoreEvent =
-  | { type: "approvalRequest"; requestId: string; sessionId: string; agent: string; project: string; title: string; summary: string; detail: string; canAllow: boolean }
+  | { type: "approvalRequest"; requestId: string; sessionId: string; agent: string; project: string; title: string; summary: string; detail: string; canAllow: boolean; always: string }
   | { type: "approvalClosed"; requestId: string }
   | { type: "sessionUpdate"; sessionId: string; agent: string; project: string; state: string; cwd: string; terminal: string; summary: string }
   | { type: "focusChanged"; running: boolean; endsAt: number }
@@ -176,6 +176,9 @@ function drawNotice() {
     const row = h("div", { class: "actions" });
     if (!n.canAllow) row.append(h("span", { class: "muted", text: "Es demasiado largo para revisarlo aquí: respóndelo en la terminal." }));
     row.append(h("button", { class: "btn", type: "button", title: `No permitirlo; ${agentName(n.agent)} seguirá sin hacerlo`, onclick: () => answer(id, false) }, "Rechazar"));
+    if (n.canAllow && n.always) {
+      row.append(h("button", { class: "btn", type: "button", title: `Permitir siempre «${n.always} …» a ${agentName(n.agent)}; se quita en Ajustes › General`, onclick: () => answerAlways(id) }, "Permitir siempre"));
+    }
     if (n.canAllow) row.append(h("button", { class: "btn primary", type: "button", title: "Permitir esta vez", onclick: () => answer(id, true) }, "Permitir"));
     parts.push(row);
   }
@@ -355,6 +358,12 @@ function dismiss() {
   else render();
 }
 
+/** «Permitir siempre»: this one and the next ones with the same program and subcommand. */
+function answerAlways(requestId: string) {
+  void invoke("answer_approval_always", { requestId });
+  closeApproval(requestId);
+}
+
 function answer(requestId: string, allow: boolean) {
   void invoke("answer_approval", { requestId, allow });
   closeApproval(requestId);
@@ -370,7 +379,7 @@ function onCore(e: CoreEvent) {
     case "approvalRequest": {
       const a = e as Extract<CoreEvent, { type: "approvalRequest" }>;
       pendingApproval.set(a.requestId, a.sessionId);
-      show({ kind: "approval", agent: a.agent, requestId: a.requestId, canAllow: a.canAllow,
+      show({ kind: "approval", agent: a.agent, requestId: a.requestId, canAllow: a.canAllow, always: a.always,
         title: a.agent === "buddy" ? `Buddy quiere ${a.title.charAt(0).toLowerCase()}${a.title.slice(1)}` : `${agentName(a.agent)} pide permiso en ${a.project}`,
         detail: `${a.title}: ${a.summary}`, command: a.detail });
       break;

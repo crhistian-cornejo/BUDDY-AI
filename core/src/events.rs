@@ -68,6 +68,8 @@ pub enum Event {
         summary: String,
         detail: String,
         can_allow: bool,
+        /// The rule «Permitir siempre» would save («git status»); empty when the request may not be allowed for good.
+        always: String,
     },
     /// The approval card must go: answered, timed out, or the agent stopped waiting.
     ApprovalClosed { request_id: String },

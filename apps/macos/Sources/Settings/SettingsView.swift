@@ -100,6 +100,7 @@ private struct GeneralSettings: View {
                 CoreToggle(core: core, key: "commands.enabled", title: "Permitir que ejecuten comandos",
                            detail: "Siempre con tu clic: cada comando sale en el notch con Permitir o Rechazar.")
             }
+            AlwaysRulesSection(core: core)
         }
         .formStyle(.grouped)
     }
@@ -185,6 +186,42 @@ private struct ModelSettings: View {
     private func save(_ choice: TierChoice, model: String? = nil, effort: String? = nil) {
         try? core.setRouterTier(tier: choice.tier, model: model ?? choice.model, effort: effort ?? choice.effort)
         reload()
+    }
+}
+
+/// The commands allowed for good from a card («Permitir siempre»), with who may run them; each can be removed.
+private struct AlwaysRulesSection: View {
+    let core: BuddyCore
+    @State private var rules: [AlwaysRule] = []
+
+    var body: some View {
+        Section {
+            if rules.isEmpty {
+                Text("Ninguno. En la tarjeta de un comando, «Permitir siempre» lo añade aquí.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(rules, id: \.self) { rule in
+                LabeledContent {
+                    Button {
+                        core.removeAlwaysRule(agent: rule.agent, prefix: rule.prefix)
+                        rules = core.alwaysRules()
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Volver a preguntar por este comando")
+                } label: {
+                    Text(rule.prefix + " …").font(.body.monospaced())
+                    Text(AgentNames.name(rule.agent))
+                }
+            }
+        } header: {
+            Text("Comandos permitidos siempre")
+        } footer: {
+            Text("Solo comandos simples (sin «|», «;», «&&» ni redirecciones) y nunca rm, sudo, curl o parecidos.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onAppear { rules = core.alwaysRules() }
     }
 }
 

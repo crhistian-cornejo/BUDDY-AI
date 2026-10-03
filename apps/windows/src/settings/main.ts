@@ -87,7 +87,25 @@ function renderGeneral(view: HTMLElement) {
     renderModels(),
     section("Agentes",
       settingRow("commands.enabled", "Permitir que ejecuten comandos", "Siempre con tu clic: cada comando sale en la barra con Permitir o Rechazar.")).el,
+    renderAlwaysRules(),
   );
+}
+
+interface AlwaysRule { agent: string; prefix: string; addedAt: number }
+const AGENT_NAMES: Record<string, string> = { buddy: "Buddy", claude: "Claude Code", codex: "Codex", antigravity: "Gemini (Antigravity)" };
+
+/** The commands allowed for good from a card («Permitir siempre»); each can be removed. */
+function renderAlwaysRules(): HTMLElement {
+  const { el, card } = section("Comandos permitidos siempre");
+  el.append(h("p", { class: "muted small", text: "Solo comandos simples (sin «|», «;», «&&» ni redirecciones) y nunca rm, sudo, curl o parecidos." }));
+  async function draw() {
+    const rules = await invoke<AlwaysRule[]>("always_rules").catch(() => [] as AlwaysRule[]);
+    if (!rules.length) { card.replaceChildren(emptyRow("Ninguno", "En la tarjeta de un comando, «Permitir siempre» lo añade aquí.")); return; }
+    card.replaceChildren(...rules.map((r) => row(h("code", { class: "row-title", text: `${r.prefix} …` }), AGENT_NAMES[r.agent] ?? r.agent,
+      button("Quitar", () => void invoke("remove_always_rule", { agent: r.agent, prefix: r.prefix }).then(draw), "secondary", "Volver a preguntar por este comando"))));
+  }
+  void draw();
+  return el;
 }
 
 // MARK: Carpetas

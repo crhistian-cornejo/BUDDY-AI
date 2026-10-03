@@ -102,7 +102,7 @@ pub fn approval_text(payload: &Value) -> ApprovalText {
 
 /// The shell command, whatever the agent calls it: a string (`command`, Claude Code's Bash and Codex's shell tool),
 /// or an argv array (`command: ["bash", "-lc", "…"]`, some Codex tools).
-fn command_of(input: &serde_json::Map<String, Value>) -> Option<String> {
+pub(crate) fn command_of(input: &serde_json::Map<String, Value>) -> Option<String> {
     match input.get("command")? {
         Value::String(s) => Some(s.clone()),
         Value::Array(parts) => {

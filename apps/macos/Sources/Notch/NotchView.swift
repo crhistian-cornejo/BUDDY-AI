@@ -79,6 +79,7 @@ extension NotchModel {
 /// What the island can ask the controller to do.
 struct NotchActions {
     var answer: (String, Bool) -> Void
+    var answerAlways: (String) -> Void
     var openPlace: (NotchModel.Place) -> Void
     var connect: () -> Void
     var media: (MediaAction) -> Void
@@ -171,7 +172,7 @@ struct NotchView: View {
         switch model.mode == .idle ? retainedMode : model.mode {
         case .notice:
             if let notice = model.notice ?? retainedNotice {
-                NoticeCard(notice: notice, onAnswer: actions.answer, onDismiss: { model.dismiss() },
+                NoticeCard(notice: notice, onAnswer: actions.answer, onAlways: actions.answerAlways, onDismiss: { model.dismiss() },
                            onOpen: { place in actions.openPlace(place); model.dismiss() })
             }
         case .open:
@@ -398,6 +399,7 @@ struct StateDot: View {
 private struct NoticeCard: View {
     let notice: NotchModel.Notice
     var onAnswer: (String, Bool) -> Void
+    var onAlways: (String) -> Void = { _ in }
     var onDismiss: () -> Void
     var onOpen: (NotchModel.Place) -> Void
 
@@ -445,6 +447,11 @@ private struct NoticeCard: View {
                     Button("Rechazar") { onAnswer(requestID, false) }
                         .buttonStyle(IslandButtonStyle(prominent: false))
                         .tip("No permitirlo; \(notice.agentName) seguirá sin hacerlo")
+                    if canAllow && !notice.always.isEmpty {
+                        Button("Permitir siempre") { onAlways(requestID) }
+                            .buttonStyle(IslandButtonStyle(prominent: false))
+                            .tip("Permitir siempre «\(notice.always) …» a \(notice.agentName); se quita en Ajustes › General")
+                    }
                     if canAllow {
                         Button("Permitir") { onAnswer(requestID, true) }
                             .buttonStyle(IslandButtonStyle(prominent: true))

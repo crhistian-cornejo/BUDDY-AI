@@ -22,6 +22,8 @@ final class NotchModel {
         var title: String
         var detail: String
         var command: String = ""
+        /// The rule «Permitir siempre» would save («git status»); empty: not offered.
+        var always: String = ""
         /// A click on the card goes here (a session's terminal) instead of only closing it.
         var place: Place?
     }
