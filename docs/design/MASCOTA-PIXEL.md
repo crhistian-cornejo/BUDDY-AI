@@ -57,7 +57,9 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 
 ### Estados dibujados (2026-10-02)
 
-`idle`, `blink`, `look`, `wave`, `walk-right`, `walk-left`, `drag`, `think`, `work`, `ask`, `error`, `done` y `sleep`. Las hojas de cada estado salen con `scripts/characters/buddy_base.py --preview DIR`.
+`idle`, `blink`, `look`, `wave`, `walk-right`, `walk-left`, `drag`, `think`, `work`, `ask`, `error`, `done` y `sleep`.
+Sentado y aburrido: `sit-down` (3), `sit` (1, fijo), `sit-blink` (2), `sit-look` (4), `sit-yawn` (5), `sit-swing` (7) y
+`stand-up` (2). `sleep` ahora también es sentado. Las hojas de cada estado salen con `scripts/characters/buddy_base.py --preview DIR`.
 
 ### Vida en reposo (núcleo: `core/src/pet.rs`)
 
@@ -68,6 +70,15 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 - **«Reducir movimiento»:** solo parpadea.
 - **«Pasear por la pantalla»** se desactiva desde el clic derecho.
 - **Al soltarla** después de arrastrarla, `clamp_to_area` la devuelve entera dentro del área útil (bordes y esquinas, bajo la barra de menús y sobre el Dock o la barra de tareas).
+- **Se sienta, aburrido,** tras 10 s sin usarlo (`SIT_AFTER_SECONDS`): sin pasar el ratón, clic ni arrastre, con el
+  chat cerrado y sin trabajar, hablar ni pasear.
+  - Se sienta en 3 fotogramas (375 ms) y queda en el fotograma fijo `sit` (párpados caídos).
+  - Cada 5–10 s, un gesto corto que vuelve a `sit`: parpadeo lento, mirar de lado, balancear un pie o bostezar
+    (un bostezo cada ~30 s). Sentado también puede levantarse a pasear.
+  - Cualquier uso (pasar el ratón, clic, abrir o cerrar el chat, un estado de trabajo, el globo) lo levanta en
+    2 fotogramas. Sentado nunca bloquea clics ni arrastre.
+  - Con «reducir movimiento»: solo el fotograma fijo sentado, sin transiciones ni gestos.
+  - El plan del núcleo trae `intro` (transición previa) y `rest` (`idle` o `sit`, el fotograma en el que queda).
 - **Entre planes no corre nada.**
 
 Actualización 2026-10-02: `idle` dura 2 s a 4 fps y alterna ojos y manos sin desplazar la ventana. Mac y Windows

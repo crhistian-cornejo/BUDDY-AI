@@ -211,6 +211,34 @@ mod tests {
     }
 
     #[test]
+    fn buddy_base_sits_lower_and_its_bored_moves_keep_the_seat() {
+        let c = builtin("buddy-base").unwrap();
+        // The top of the face window (skin), since the sprout's tip may be clipped while standing.
+        let top = |frame: &Vec<String>| frame.iter().position(|row| row.contains('s')).unwrap();
+        let frames = |name: &str| &c.states.get(name).unwrap_or_else(|| panic!("missing {name}")).frames;
+        for (name, count) in [("sit-down", 3), ("stand-up", 2), ("sit", 1), ("sit-blink", 2), ("sit-look", 4),
+                              ("sit-yawn", 5), ("sit-swing", 7), ("sleep", 2)] {
+            assert_eq!(frames(name).len(), count, "{name}");
+            for frame in frames(name) {
+                assert_eq!(frame.len(), 48, "{name}");
+                assert!(frame.iter().all(|row| row.chars().count() == 48), "{name}");
+            }
+        }
+        let sit = &frames("sit")[0];
+        assert!(top(sit) >= top(&frames("idle")[0]) + 3, "seated, the face is lower");
+        assert_eq!(frames("sit-down").last(), Some(sit), "sitting down ends on the still seated frame");
+        assert_eq!(frames("stand-up").last(), Some(&frames("idle")[0]), "standing up ends on idle");
+        // Blinks, looks and yawns only touch the face: the seated body and feet stay put.
+        let body = |frame: &Vec<String>| frame[38..48].to_vec();
+        for name in ["sit-blink", "sit-look"] {
+            assert!(frames(name).iter().all(|f| body(f) == body(sit)), "{name} moves the body");
+            assert!(frames(name).iter().all(|f| f != sit), "{name} changes the face");
+        }
+        assert!(frames("sit-yawn").iter().any(|f| f[22..32] != sit[22..32]), "the yawn opens the mouth");
+        assert!(frames("sit-swing").iter().any(|f| body(f) != body(sit)), "the foot swings");
+    }
+
+    #[test]
     fn rasterizes_to_argb_with_idle_first() {
         let c = Character::parse(&tiny(r#"[["kr",".k"]]"#)).unwrap();
         let sprite = c.rasterize();

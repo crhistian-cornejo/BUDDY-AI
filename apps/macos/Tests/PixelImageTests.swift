@@ -35,7 +35,8 @@ final class PixelImageTests: XCTestCase {
             XCTAssertNotNil(PixelImage.make(pixels: frame, size: Int(sprite.size)))
         }
         let names = Set(sprite.states.map(\.name))
-        for state in ["blink", "look", "wave", "walk-left", "walk-right", "drag", "think", "work", "ask", "error", "done", "sleep"] {
+        for state in ["blink", "look", "wave", "walk-left", "walk-right", "drag", "think", "work", "ask", "error", "done", "sleep",
+                      "sit-down", "sit", "sit-blink", "sit-look", "sit-yawn", "sit-swing", "stand-up"] {
             XCTAssertTrue(names.contains(state), "missing \(state)")
         }
     }

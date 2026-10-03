@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 /// The floating mascot window: borderless, transparent, above other windows, on every Space, never activating the
-/// app. The core's PetBrain decides what Buddy does while idle; this class plays it, walks the window inside the
-/// screen, handles drag and click, and saves the place per screen.
+/// app. The core's PetBrain decides what Buddy does while idle (including sitting down bored after a while without
+/// being used); this class plays it, walks the window inside the screen, handles hover, drag and click, and saves the
+/// place per screen.
 @MainActor
 final class PetWindowController: NSObject, NSWindowDelegate {
     private let core: BuddyCore
@@ -18,13 +19,22 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     private var activityTask: Task<Void, Never>?
     /// An agent state shown until cleared (think, work, ask, error…); idle behavior pauses meanwhile.
     private(set) var activity: String?
+    /// Last time Buddy was used (hover, click, drag, chat, work, talk, walk): PetBrain sits it down 10 s later.
+    private var lastUse = Date()
+    /// Holding the seated frame (the last plan rested on `sit`).
+    private var seated = false
+    private var hovering = false
+    /// The life loop is waiting before its next plan (so a use can re-plan at once).
+    private var waiting = false
 
     /// A click on Buddy (not a drag).
     var onClick: (() -> Void)?
     /// «Historial de chats» from the right-click menu.
     var onHistory: (() -> Void)?
-    /// While the chat is open Buddy stays put (no walks): the chat hangs from it.
-    var holdStill = false
+    /// While the chat is open Buddy stays put (no walks): the chat hangs from it. It also keeps Buddy standing.
+    var holdStill = false {
+        didSet { if holdStill != oldValue { used() } }
+    }
 
     private var scale: Double { tokens.pet.scaleNormal }
     private var side: CGFloat { CGFloat(Double(model.size) * scale) }
@@ -40,7 +50,15 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         let host = PetHostingView(rootView: PetView(model: model, scale: scale))
         host.onDragStart = { [weak self] in self?.dragStarted() }
         host.onDragEnd = { [weak self] in self?.dragEnded() }
-        host.onClick = { [weak self] in self?.onClick?() }
+        host.onClick = { [weak self] in
+            self?.used()
+            self?.onClick?()
+        }
+        host.onHover = { [weak self] inside in
+            guard let self else { return }
+            self.hovering = inside
+            if inside { self.used() } else { self.lastUse = Date() }
+        }
         host.menuProvider = { [weak self] in self?.menu() }
         panel.contentView = host
         panel.delegate = self
@@ -59,26 +77,55 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         ((try? core.setting(key: "pet.wander")) ?? nil) != "false"
     }
 
-    private func startLife() {
+    /// Asks the core's PetBrain for the next plan, waits, plays it, and again. `standUp` first gets a seated Buddy up.
+    private func startLife(standUp: Bool = false) {
         life?.cancel()
+        waiting = false
         life = Task { [weak self] in
+            if standUp, let self {
+                if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                    self.model.show("idle")
+                } else {
+                    await self.model.play("stand-up", duration: 0)
+                }
+            }
             while !Task.isCancelled {
                 guard let self else { return }
                 let plan = self.brain.next(ctx: self.context())
                 #if DEBUG
-                NSLog("Buddy pet plan: %@ wait %d ms, %d ms, dx %.0f", plan.state, plan.waitMs, plan.durationMs, plan.dx)
+                NSLog("Buddy pet plan: %@%@ wait %d ms, %d ms, dx %.0f, rest %@", plan.intro.isEmpty ? "" : plan.intro + " → ",
+                      plan.state, plan.waitMs, plan.durationMs, plan.dx, plan.rest)
                 #endif
+                self.waiting = true
                 try? await Task.sleep(for: .milliseconds(Int(plan.waitMs)))
                 if Task.isCancelled { return }
+                self.waiting = false
                 if self.activity != nil { continue }
                 if plan.dx != 0 {
                     // The chat or the menu may have disabled walks while this plan was waiting.
                     if self.holdStill || !self.wander || self.context().reduceMotion { continue }
+                    if !plan.intro.isEmpty, !(await self.model.play(plan.intro, duration: 0)) { continue }
+                    self.seated = false
                     await self.walk(plan)
+                    if Task.isCancelled { return }
+                    self.lastUse = Date()
                 } else {
-                    await self.model.play(plan.state, duration: Double(plan.durationMs) / 1000)
+                    if !plan.intro.isEmpty, !(await self.model.play(plan.intro, duration: 0, rest: plan.rest)) { continue }
+                    let done = await self.model.play(plan.state, duration: Double(plan.durationMs) / 1000, rest: plan.rest)
+                    if done && !Task.isCancelled { self.seated = plan.rest == "sit" }
                 }
             }
+        }
+    }
+
+    /// Buddy was used: the count to sitting restarts, a seated Buddy stands up and a waiting plan is made again.
+    private func used(standUp: Bool = true) {
+        lastUse = Date()
+        if seated {
+            seated = false
+            startLife(standUp: standUp && activity == nil)
+        } else if waiting {
+            startLife()
         }
     }
 
@@ -87,7 +134,9 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
         return PetContext(x: panel.frame.minX, minX: visible.minX, maxX: visible.maxX - panel.frame.width,
                           reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-                          wander: wander && !holdStill, idleSeconds: idle)
+                          wander: wander && !holdStill, idleSeconds: idle,
+                          untouchedSeconds: activity != nil ? 0 : Date().timeIntervalSince(lastUse),
+                          engaged: hovering || holdStill, sitting: seated)
     }
 
     /// Steps the window sideways once per frame (pixel-art stepping), never past the screen's edges.
@@ -106,9 +155,21 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     /// Shows an agent state until `nil` (phase 1: thinking, working, asking, error, done).
     func setActivity(_ state: String?) {
         activityTask?.cancel()
+        let wasBusy = activity != nil
+        let wasSeated = seated
         activity = state
-        guard let state, model.has(state) else { model.show("idle"); return }
-        activityTask = Task { [weak self] in await self?.model.loop(state) }
+        if state != nil || wasBusy { used(standUp: false) }
+        guard let state, model.has(state) else {
+            if !seated { model.show("idle") }
+            return
+        }
+        activityTask = Task { [weak self] in
+            guard let self else { return }
+            if wasSeated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                guard await self.model.play("stand-up", duration: 0) else { return }
+            }
+            await self.model.loop(state)
+        }
     }
 
     /// A mascot state from the core: agent states loop until the next one; done and error play once.
@@ -126,6 +187,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     /// Plays a one-off reaction (done, wave…) and returns to whatever was showing.
     func react(_ state: String) {
+        used(standUp: false)
         Task { [weak self] in
             guard let self else { return }
             await self.model.play(state, duration: 1)
@@ -137,6 +199,8 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     private func dragStarted() {
         life?.cancel()
+        seated = false
+        lastUse = Date()
         activityTask?.cancel()
         activityTask = Task { [weak self] in await self?.model.loop("drag") }
     }
@@ -151,6 +215,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
             }
         }
         model.show("idle")
+        lastUse = Date()
         if let activity { setActivity(activity) }
         saveOrigin()
         startLife()
@@ -249,6 +314,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     /// Shows `text` in a bubble next to Buddy for a few seconds. The bubble never takes clicks.
     func say(_ text: String, seconds: TimeInterval? = nil) {
+        used()
         bubbleWork?.cancel()
         bubble?.orderOut(nil)
         let host = NSHostingView(rootView: BubbleView(text: text).buddySurface(cornerRadius: 18))
@@ -347,9 +413,31 @@ private final class PetHostingView: NSHostingView<PetView> {
     var onDragStart: (() -> Void)?
     var onDragEnd: (() -> Void)?
     var onClick: (() -> Void)?
+    var onHover: ((Bool) -> Void)?
     var menuProvider: (() -> NSMenu?)?
 
     private var downAt: CGPoint?
+    private var hoverArea: NSTrackingArea?
+
+    /// Enter and exit only (no mouse-moved events): hovering stands Buddy up and keeps it standing.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHover?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHover?(false)
+    }
     private var startOrigin: CGPoint = .zero
     private var dragging = false
 

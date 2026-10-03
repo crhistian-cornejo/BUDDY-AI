@@ -83,18 +83,35 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
-/// The next idle move, from the core's PetBrain (the same rules as on the Mac).
+/// The next idle move, from the core's PetBrain (the same rules as on the Mac). The page tracks when Buddy was last
+/// used, the pointer over it and whether it sits; the open chat also counts as in use.
 #[tauri::command]
-fn pet_next(window: WebviewWindow, state: State<'_, AppCore>, reduce_motion: bool) -> Result<PetPlan, String> {
+fn pet_next(
+    window: WebviewWindow,
+    state: State<'_, AppCore>,
+    reduce_motion: bool,
+    untouched_seconds: f64,
+    hovering: bool,
+    sitting: bool,
+) -> Result<PetPlan, String> {
     let (window_rect, area) = pet_rects(&window).map_err(|e| e.to_string())?;
+    let chat_open = state.chat_open.load(Ordering::SeqCst);
     Ok(state.brain.next(PetContext {
         x: window_rect.x,
         min_x: area.x,
         max_x: area.x + area.width - window_rect.width,
         reduce_motion,
-        wander: wander(&state.core) && !state.chat_open.load(Ordering::SeqCst),
+        wander: wander(&state.core) && !chat_open,
         idle_seconds: idle_seconds(),
+        untouched_seconds,
+        engaged: hovering || chat_open,
+        sitting,
     }))
+}
+
+/// Tells the pet page Buddy was just used (the chat opened or closed, Buddy talks): a seated Buddy stands up.
+fn pet_used(app: &AppHandle) {
+    let _ = app.emit_to(PET, "pet-used", ());
 }
 
 /// Moves Buddy `dx` logical pixels sideways, never past the work area.
@@ -369,6 +386,7 @@ fn open_bubble(app: &AppHandle) -> tauri::Result<()> {
         .build()?;
     bubble.set_ignore_cursor_events(true)?;
     place_bubble(app, &bubble)?;
+    pet_used(app);
     bubble.show()
 }
 
@@ -775,6 +793,7 @@ fn toggle_chat(app: AppHandle) -> Result<(), String> {
             .map_err(|e| e.to_string())?,
     };
     state.chat_open.store(true, Ordering::SeqCst);
+    pet_used(&app);
     // Buddy gets ready while the user types, so the first words come sooner.
     state.core.prewarm();
     place_chat(&app).map_err(|e| e.to_string())?;
@@ -784,6 +803,7 @@ fn toggle_chat(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn close_chat(app: AppHandle) -> Result<(), String> {
     app.state::<AppCore>().chat_open.store(false, Ordering::SeqCst);
+    pet_used(&app);
     if let Some(window) = app.get_webview_window(CHAT) {
         window.hide().map_err(|e| e.to_string())?;
     }

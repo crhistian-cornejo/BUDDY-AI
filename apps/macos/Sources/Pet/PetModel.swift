@@ -33,26 +33,32 @@ final class PetModel {
         image = s.frames[frame % s.frames.count]
     }
 
-    /// Loops `name` for `duration` seconds (at least one pass), calling `step` once per frame. Ends on idle.
-    func play(_ name: String, duration: TimeInterval, step: ((TimeInterval) -> Void)? = nil) async {
-        guard let s = states[name] else { return }
+    /// Loops `name` for `duration` seconds (at least one pass), calling `step` once per frame, then holds the still
+    /// frame of `rest` (idle, or sit while Buddy is seated). Returns false when something else interrupted it.
+    @discardableResult
+    func play(_ name: String, duration: TimeInterval, rest: String = "idle",
+              step: ((TimeInterval) -> Void)? = nil) async -> Bool {
+        guard let s = states[name] else { return true }
         playback += 1
         let token = playback
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             show(name)
             try? await Task.sleep(for: .seconds(duration))
-            if token == playback && !Task.isCancelled { show("idle") }
-            return
+            guard token == playback && !Task.isCancelled else { return false }
+            show(rest)
+            return true
         }
         let interval = 1 / s.fps
         let count = max(s.frames.count, Int((duration / interval).rounded()))
         for i in 0..<count {
-            if Task.isCancelled || token != playback { return }
+            if Task.isCancelled || token != playback { return false }
             show(name, frame: i)
             step?(interval)
             try? await Task.sleep(for: .seconds(interval))
         }
-        if !Task.isCancelled && token == playback { show("idle") }
+        guard !Task.isCancelled && token == playback else { return false }
+        show(rest)
+        return true
     }
 
     /// Loops `name` until the task is cancelled (agent states, being dragged).

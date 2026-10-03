@@ -35,8 +35,8 @@ PAL = {
 
 @dataclass(frozen=True)
 class Pose:
-    eyes: str = "open"  # open closed left right up down happy wide x
-    mouth: str = "smile"  # smile o flat
+    eyes: str = "open"  # open closed left right up down happy wide x half half-left half-right
+    mouth: str = "smile"  # smile o flat yawn
     head: int = 0  # head bob (rows down)
     lift: int = 0  # whole figure up (rows), for jumps
     shake: int = 0  # whole figure sideways (columns)
@@ -48,6 +48,7 @@ class Pose:
     left_step: int = 0  # columns the foot moves (walking stride)
     right_step: int = 0
     dangle: bool = False  # legs hang (being dragged)
+    sit: int = 0  # 0 standing, 1 crouching (sitting down / getting up), 2 sitting with the feet forward
     symbol: str = ""  # dots1 dots2 dots3 question question2 exclaim star
 
 
@@ -88,15 +89,21 @@ def outline_points(g, pts):
 
 def draw(p: Pose):
     g = [["."] * N for _ in range(N)]
-    dy = p.head
+    bd = (0, 2, 3)[p.sit]  # sitting lowers everything above the feet
+    dy = p.head + bd
 
-    # legs (lifted ones are shorter; dangling ones hang lower and apart)
-    for i, lx in enumerate((18, 26)):
+    # legs (lifted ones are shorter; dangling ones hang lower and apart); sitting draws the feet after the body
+    for i, lx in enumerate((18, 26) if p.sit != 2 else ()):
         lift = p.left_leg if i == 0 else p.right_leg
         lx += p.left_step if i == 0 else p.right_step
         if p.dangle:
             lx += -1 if i == 0 else 1
         y1 = 43 - lift + (1 if p.dangle else 0)
+        if p.sit == 1:  # crouching: short bent legs, feet a little apart
+            lx += -1 if i == 0 else 1
+            shape(g, lambda x, y, lx=lx: rr(x, y, lx, 39, lx + 4, 43, 2),
+                  lambda x, y, lx=lx: "d" if y >= 42 else ("B" if x == lx + 3 else "b"))
+            continue
         if lift:  # a lifted foot rises whole, so it still shows under the body
             shape(g, lambda x, y, lx=lx, y1=y1: rr(x, y, lx, 38 - lift, lx + 4, y1, 2),
                   lambda x, y, lx=lx, y1=y1: "d" if y >= y1 - 2 else ("B" if x == lx + 3 else "b"))
@@ -106,7 +113,7 @@ def draw(p: Pose):
 
     # arms resting at the sides (mint sleeve, cream hand); typing lifts a hand
     def side_arm(ax, lifted):
-        y0, y1 = 31 - lifted, 37 - lifted
+        y0, y1 = 31 + bd - lifted, 37 + bd - lifted
         shape(g, lambda x, y: rr(x, y, ax, y0, ax + 4, y1, 2),
               lambda x, y: ("S" if y >= y1 - 1 else "s") if y >= y1 - 2
               else ("B" if (x == ax + 3 if ax > 20 else x == ax + 1) else "b"))
@@ -117,12 +124,15 @@ def draw(p: Pose):
         side_arm(32, 1 if p.hands == 2 else 0)
 
     # body (mint onesie) with a cream belly
-    shape(g, lambda x, y: rr(x, y, 15, 29, 32, 41, 4),
-          lambda x, y: "d" if y >= 40 else ("B" if x >= 30 or y >= 38 else ("l" if x <= 16 else "b")))
-    for y in range(33, 39):
+    low = 41 + bd - (1 if p.sit == 2 else 0)
+    shape(g, lambda x, y: rr(x, y, 15, 29 + bd, 32, low, 4),
+          lambda x, y: "d" if y >= low - 1 else ("B" if x >= 30 or y >= 38 + bd else ("l" if x <= 16 else "b")))
+    for y in range(33 + bd, 39 + bd):
         for x in range(19, 29):
-            if rr(x, y, 19, 33, 28, 38, 3):
-                g[y][x] = "S" if (y >= 37 or x >= 27) else "s"
+            if rr(x, y, 19, 33 + bd, 28, 38 + bd, 3):
+                g[y][x] = "S" if (y >= 37 + bd or x >= 27) else "s"
+    if p.sit == 2:
+        seated_feet(g, p.left_leg, p.right_leg)
 
     # hood (head), over the body; `head` bobs it down
     def hood(x, y):
@@ -162,6 +172,12 @@ def draw(p: Pose):
     elif p.mouth == "o":
         for x, y in ((23, ey + 5), (24, ey + 5), (23, ey + 6), (24, ey + 6)):
             g[y][x] = "m"
+    elif p.mouth == "yawn":  # a small yawn: 4 wide, 3 open rows, dark inside
+        for x in (23, 24):
+            g[ey + 5][x] = g[ey + 8][x] = "m"
+        for y in (ey + 6, ey + 7):
+            g[y][22] = g[y][25] = "m"
+            g[y][23] = g[y][24] = "k"
     else:  # flat
         g[ey + 5][22] = g[ey + 5][23] = g[ey + 5][24] = g[ey + 5][25] = "m"
 
@@ -185,6 +201,17 @@ def draw(p: Pose):
     return ["".join(r) for r in g]
 
 
+def seated_feet(g, left_lift=0, right_lift=0):
+    """Sitting, feet forward and splayed: two soft mint feet beside the belly, cream soles toward the viewer."""
+    for fx, lift in ((11, left_lift), (30, right_lift)):
+        y0, y1 = 39 - lift, 44 - lift
+        shape(g, lambda x, y, fx=fx, y0=y0, y1=y1: rr(x, y, fx, y0, fx + 6, y1, 2),
+              lambda x, y, fx=fx, y1=y1: "B" if (y == y1 - 1 or x == fx + 5) else "b")
+        for y in (y0 + 2, y0 + 3):  # sole pad
+            for x in range(fx + 2, fx + 5):
+                g[y][x] = "S" if y == y0 + 3 else "s"
+
+
 def raised_arm(g, ax, ay, mirror=False):
     """An arm up beside the head: sleeve below, cream hand on top."""
     shape(g, lambda x, y: rr(x, y, ax, ay, ax + 4, ay + 8, 2),
@@ -200,6 +227,13 @@ def draw_eyes(g, eyes, ey):
             for y in range(ey + oy - (1 if eyes == "wide" else 0), ey + oy + height - (1 if eyes == "wide" else 0)):
                 g[y][ex + ox] = g[y][ex + ox + 1] = "k"
             g[ey + oy - (1 if eyes == "wide" else 0)][ex + ox + (1 if eyes == "right" else 0)] = "w"
+        elif eyes.startswith("half"):  # heavy lids (bored): a flat lid reaching outwards over the lower half of the eye
+            ox = {"half-left": -1, "half-right": 1}.get(eyes, 0)
+            outer = ex - 1 if ex < 24 else ex + 2
+            for x in (outer, ex, ex + 1):
+                g[ey + 1][x] = "k"
+            for y in (ey + 2, ey + 3):
+                g[y][ex + ox] = g[y][ex + ox + 1] = "k"
         elif eyes == "closed":
             for x in range(ex - 1, ex + 3):
                 g[ey + 3][x] = "k"
@@ -269,6 +303,7 @@ def draw_symbol(g, symbol):
 
 
 I = Pose()
+SIT = Pose(sit=2, eyes="half", mouth="flat")
 STATES = {
     # name: (fps, poses). Every state but idle is played by the app and then returns to idle.
     "idle": (4, [I, replace(I, hands=1), replace(I, eyes="left", hands=1),
@@ -330,9 +365,22 @@ STATES = {
         replace(I, eyes="happy", mouth="o", lift=2, left_arm="up", right_arm="up", symbol="star"),
         replace(I, eyes="happy", symbol="star"),
     ]),
+    # Seated and bored (after a while without being used; PetBrain decides). `sit` is the still frame held in
+    # between; the others are short, sparse moves that end back on it. Buddy dozes off seated too.
+    "sit-down": (8, [replace(I, sit=1, mouth="flat"), replace(SIT, eyes="open", head=1), SIT]),
+    "stand-up": (8, [replace(I, sit=1), I]),
+    "sit": (1, [SIT]),
+    "sit-blink": (4, [replace(SIT, eyes="closed"), replace(SIT, eyes="closed")]),
+    "sit-look": (2, [replace(SIT, eyes="half-left"), replace(SIT, eyes="half-left"),
+                     replace(SIT, eyes="half-right"), replace(SIT, eyes="half-right")]),
+    "sit-yawn": (4, [replace(SIT, mouth="o"), replace(SIT, eyes="closed", mouth="yawn", head=-1),
+                     replace(SIT, eyes="closed", mouth="yawn", head=-1), replace(SIT, eyes="closed", mouth="yawn"),
+                     replace(SIT, eyes="closed", mouth="o")]),
+    "sit-swing": (6, [replace(SIT, right_leg=1), replace(SIT, right_leg=2), replace(SIT, right_leg=1), SIT,
+                      replace(SIT, right_leg=1), replace(SIT, right_leg=2), replace(SIT, right_leg=1)]),
     "sleep": (1, [
-        replace(I, eyes="closed", mouth="flat"),
-        replace(I, eyes="closed", mouth="flat", head=1),
+        replace(SIT, eyes="closed"),
+        replace(SIT, eyes="closed", head=1),
     ]),
 }
 

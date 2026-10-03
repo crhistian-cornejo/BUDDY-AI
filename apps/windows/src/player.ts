@@ -36,8 +36,16 @@ export class Player {
     this.token++;
   }
 
-  /** Plays `name` for `seconds` (at least one pass), calling `step` each frame; ends on idle unless stopped. */
-  async play(name: string, seconds: number, step?: (interval: number) => void | Promise<void>): Promise<boolean> {
+  /**
+   * Plays `name` for `seconds` (at least one pass), calling `step` each frame, then holds the still frame of `rest`
+   * (idle, or sit while Buddy is seated). Resolves false when something else interrupted it.
+   */
+  async play(
+    name: string,
+    seconds: number,
+    step?: (interval: number) => void | Promise<void>,
+    rest = "idle",
+  ): Promise<boolean> {
     const s = this.states.get(name);
     if (!s) return true;
     const token = ++this.token;
@@ -45,7 +53,7 @@ export class Player {
       this.show(name);
       await sleep(seconds * 1000);
       if (token !== this.token) return false;
-      this.show("idle");
+      this.show(rest);
       return true;
     }
     const interval = 1 / s.fps;
@@ -57,7 +65,7 @@ export class Player {
       await sleep(interval * 1000);
     }
     if (token !== this.token) return false;
-    this.show("idle");
+    this.show(rest);
     return true;
   }
 
