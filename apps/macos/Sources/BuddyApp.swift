@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let chat = ChatController(core: core)
             let windows = ChatWindows(chat: chat, pet: { [weak pet] in pet?.frame ?? .zero })
             pet.onClick = { [weak windows] in windows?.toggle() }
+            pet.onHistory = { [weak windows] in windows?.showHistory() }
             windows.onOpenChange = { [weak pet] open in pet?.holdStill = open }
             let notch = NotchController(core: core)
             notch.onOpenChat = { [weak chat, weak windows] id in

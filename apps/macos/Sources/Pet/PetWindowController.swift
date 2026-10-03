@@ -21,6 +21,8 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     /// A click on Buddy (not a drag).
     var onClick: (() -> Void)?
+    /// «Historial de chats» from the right-click menu.
+    var onHistory: (() -> Void)?
     /// While the chat is open Buddy stays put (no walks): the chat hangs from it.
     var holdStill = false
 
@@ -166,24 +168,16 @@ final class PetWindowController: NSObject, NSWindowDelegate {
 
     private func menu() -> NSMenu {
         let menu = NSMenu()
+        let history = NSMenuItem(title: "Historial de chats", action: #selector(openHistory), keyEquivalent: "")
+        history.target = self
+        history.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
+        menu.addItem(history)
+        if let news = newsMenu() { menu.addItem(news) }
+        menu.addItem(.separator())
         let walk = NSMenuItem(title: "Pasear por la pantalla", action: #selector(toggleWander), keyEquivalent: "")
         walk.target = self
         walk.state = wander ? .on : .off
         menu.addItem(walk)
-        let news = core.briefing()
-        if !news.isEmpty {
-            let item = NSMenuItem(title: "Novedades de hoy", action: nil, keyEquivalent: "")
-            let sub = NSMenu()
-            for line in news.prefix(8) {
-                let entry = NSMenuItem(title: line.text, action: line.url == nil ? nil : #selector(openNews(_:)), keyEquivalent: "")
-                entry.target = self
-                entry.representedObject = line.url
-                entry.toolTip = line.topic
-                sub.addItem(entry)
-            }
-            item.submenu = sub
-            menu.addItem(item)
-        }
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -193,6 +187,39 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         menu.addItem(quit)
         return menu
     }
+
+    /// Today's «mensajitos», compact: a header per topic, one short line each (the whole sentence in its tooltip).
+    private func newsMenu() -> NSMenuItem? {
+        let latest = Array(core.briefing().prefix(5))
+        guard !latest.isEmpty else { return nil }
+        // Grouped by topic, in the order the topics first appear.
+        let topics = latest.map(\.topic).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        let news = topics.flatMap { t in latest.filter { $0.topic == t } }
+        let item = NSMenuItem(title: "Novedades de hoy", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "newspaper", accessibilityDescription: nil)
+        let sub = NSMenu()
+        var topic: String?
+        for line in news {
+            let name = line.topic.isEmpty ? "Novedades" : line.topic.prefix(1).uppercased() + line.topic.dropFirst()
+            if name != topic {
+                sub.addItem(.sectionHeader(title: name))
+                topic = name
+            }
+            let entry = NSMenuItem(title: Self.short(line.text, 46), action: line.url == nil ? nil : #selector(openNews(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = line.url
+            entry.toolTip = line.text
+            sub.addItem(entry)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    private static func short(_ text: String, _ limit: Int) -> String {
+        text.count <= limit ? text : String(text.prefix(limit - 1)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    @objc private func openHistory() { onHistory?() }
 
     @objc private func toggleWander() {
         try? core.setSetting(key: "pet.wander", value: wander ? "false" : "true")
