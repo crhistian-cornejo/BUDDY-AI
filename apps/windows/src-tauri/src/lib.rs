@@ -222,6 +222,9 @@ pub fn run() {
             briefing_topics,
             spotify_connect,
             router_config,
+            agent_permission_catalog,
+            set_agent_permissions,
+            set_agent_model,
             set_router_mode,
             set_router_tier,
             router_preview,
@@ -903,6 +906,21 @@ fn messages(state: State<'_, AppCore>, chat_id: String) -> Result<Vec<ChatMessag
 #[tauri::command]
 fn agents(state: State<'_, AppCore>) -> Vec<Agent> {
     state.core.agents()
+}
+
+#[tauri::command]
+fn agent_permission_catalog(state: State<'_, AppCore>) -> Vec<buddy_core::PermissionInfo> {
+    state.core.agent_permission_catalog()
+}
+
+#[tauri::command]
+fn set_agent_permissions(state: State<'_, AppCore>, agent_id: String, permissions: Vec<String>) -> Result<(), String> {
+    state.core.set_agent_permissions(agent_id, permissions).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_agent_model(state: State<'_, AppCore>, agent_id: String, model: String) -> Result<(), String> {
+    state.core.set_agent_model(agent_id, model).map_err(|e| e.to_string())
 }
 
 /// Opens a web page in the browser: http and https only, nothing else ever leaves through here.

@@ -50,10 +50,14 @@
           { feature: "código", provider: "codex", turns: 5, input: 950, output: 310, cached: 0, costUsd: 0 },
         ],
         agents: () => [
-          { id: "buddy", name: "Buddy", specialty: "Habla contigo y reparte el trabajo.", provider: "claude", model: null },
-          { id: "investigador", name: "Investigador", specialty: "Busca en la web y resume con fuentes.", provider: "claude", model: null },
-          { id: "programador", name: "Programador", specialty: "Escribe y revisa código en tus carpetas.", provider: "codex", model: null },
+          { id: "buddy", name: "Buddy", specialty: "Habla contigo y reparte el trabajo.", provider: "claude", model: "sonnet", permissions: ["web", "leer", "editar", "comandos", "documentos", "musica"] },
+          { id: "investigador", name: "Investigador", specialty: "Busca en la web y resume con fuentes.", provider: "claude", model: "auto", permissions: ["web", "documentos"] },
+          { id: "programador", name: "Programador", specialty: "Escribe y revisa código en tus carpetas.", provider: "codex", model: "codex:gpt-6.1-sol", permissions: ["leer", "editar", "comandos"] },
         ],
+        agent_permission_catalog: () => [
+          { id: "web", name: "Web", detail: "Buscar y leer páginas" }, { id: "leer", name: "Leer carpetas", detail: "" },
+          { id: "editar", name: "Editar carpetas", detail: "" }, { id: "comandos", name: "Comandos", detail: "" },
+          { id: "documentos", name: "Documentos", detail: "" }, { id: "musica", name: "Música", detail: "" }],
         router_config: () => ({ mode: "auto", models: [
             { id: "claude:haiku", name: "Haiku 4.5", provider: "claude" }, { id: "claude:sonnet", name: "Sonnet 5.5", provider: "claude" },
             { id: "claude:opus", name: "Opus 5.5", provider: "claude" }, { id: "codex:gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "codex" },

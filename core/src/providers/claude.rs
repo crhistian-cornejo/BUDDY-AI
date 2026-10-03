@@ -74,19 +74,22 @@ impl Claude {
         reads.sort();
         reads.dedup();
         let edits: Vec<&str> = request.folders.iter().filter(|f| f.can_edit).map(|f| f.path.as_str()).collect();
-        let mut tools = TOOLS.to_string();
+        let web = if request.no_web { "" } else { TOOLS };
+        let mut tools: Vec<&str> = web.split(',').filter(|t| !t.is_empty()).collect();
         if !reads.is_empty() {
-            tools.push_str(",Read,Glob,Grep");
+            tools.extend(["Read", "Glob", "Grep"]);
         }
         if !edits.is_empty() {
-            tools.push_str(",Edit,Write");
+            tools.extend(["Edit", "Write"]);
         }
         // Bash is available only behind the gate, and never pre-allowed: the PreToolUse hook asks the user each time.
         if request.gate.is_some() {
-            tools.push_str(",Bash");
+            tools.push("Bash");
         }
+        let tools = tools.join(",");
         let rule = |verb: &str, dir: &str| format!("{verb}(//{}/**)", dir.trim_start_matches('/'));
-        let allowed = std::iter::once(TOOLS.to_string())
+        let allowed = std::iter::once(web.to_string())
+            .filter(|w| !w.is_empty())
             .chain(reads.iter().map(|d| rule("Read", d)))
             .chain(edits.iter().flat_map(|d| [rule("Edit", d), rule("Write", d)]))
             .collect::<Vec<_>>()
@@ -115,7 +118,7 @@ impl Claude {
             None => r#"{"mcpServers":{}}"#.to_string(),
         };
         let allowed = match &request.office {
-            Some(_) => format!("{allowed},{}", super::Office::TOOLS.join(",")),
+            Some(_) => [allowed.as_str(), &super::Office::TOOLS.join(",")].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(","),
             None => allowed,
         };
         args.extend(["--mcp-config".into(), mcp]);
@@ -623,6 +626,16 @@ mod tests {
         let settings = &args[args.iter().position(|a| a == "--settings").unwrap() + 1];
         assert!(settings.contains("\\\"/d/bin/buddy-hook\\\" --gate PreToolUse") && settings.contains("\"matcher\":\"Bash\""), "{settings}");
         assert!(!joined.contains("\"t\""), "the secret travels in the environment, not the arguments");
+    }
+
+    #[test]
+    fn without_the_web_permission_there_is_no_web_tool() {
+        let args = Claude::arguments(&TurnRequest { no_web: true, ..Default::default() });
+        let at = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+        assert_eq!(at("--tools"), "");
+        assert!(!at("--allowedTools").contains("WebSearch"));
+        let web = Claude::arguments(&TurnRequest::default());
+        assert!(web[web.iter().position(|a| a == "--tools").unwrap() + 1].starts_with("WebSearch,WebFetch"));
     }
 
     #[test]

@@ -182,6 +182,26 @@ pub fn route(store: &Store, text: &str, files: &[PathBuf]) -> Route {
     build(&tier_model, &effort, tier, reason.into())
 }
 
+/// The route for a specialist: with `model: auto` the router decides (never below Normal: a specialist's work is
+/// never small talk); with a router model id (`claude:opus`) that model; otherwise `None` (its agent.md model).
+pub fn route_agent(store: &Store, model_setting: Option<&str>, text: &str, files: &[PathBuf]) -> Option<Route> {
+    let setting = model_setting?;
+    if let Some((_, name, provider, cli)) = model(setting) {
+        let effort = tier_choice(store, Tier::Normal).1;
+        return Some(Route { tier: Tier::Normal, provider, model: cli.into(), effort, model_name: name.into(), reason: "modelo del agente".into() });
+    }
+    if setting != "auto" {
+        return None;
+    }
+    let mut route = route(store, text, files);
+    if route.tier == Tier::Light && route.reason != "lo pediste" {
+        let (id, effort) = tier_choice(store, Tier::Normal);
+        let (_, name, provider, cli) = model(&id).unwrap_or(MODELS[1]);
+        route = Route { tier: Tier::Normal, provider, model: cli.into(), effort, model_name: name.into(), reason: "encargo de Buddy".into() };
+    }
+    Some(route)
+}
+
 /// The tier and a short reason. Pure: same text, same answer.
 pub fn classify(text: &str, files: &[PathBuf]) -> (Tier, &'static str) {
     let t = fold(text);
@@ -362,6 +382,20 @@ mod tests {
         let r = route(&s, "hola", none);
         assert_eq!((r.provider, r.reason.as_str()), (ProviderId::Codex, "modelo fijo en Ajustes"));
         assert!(set_mode(&s, "claude:mythos").is_err());
+    }
+
+    #[test]
+    fn specialists_route_from_normal_up_or_keep_their_model() {
+        let (s, _d) = store();
+        let none: &[PathBuf] = &[];
+        let r = route_agent(&s, Some("auto"), "gracias", none).unwrap();
+        assert_eq!((r.tier, r.model.as_str()), (Tier::Normal, "sonnet"), "a hand-off is never small talk");
+        let r = route_agent(&s, Some("auto"), "Analiza a fondo el Clásico de mañana", none).unwrap();
+        assert_eq!(r.model, "opus");
+        let r = route_agent(&s, Some("codex:gpt-6.1-sol"), "lo que sea", none).unwrap();
+        assert_eq!((r.provider, r.model.as_str()), (ProviderId::Codex, "gpt-6.1-sol"));
+        assert!(route_agent(&s, Some("sonnet"), "x", none).is_none(), "a plain agent.md model stays as it is");
+        assert!(route_agent(&s, None, "x", none).is_none());
     }
 
     #[test]

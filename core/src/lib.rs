@@ -258,6 +258,29 @@ impl BuddyCore {
         self.chat.agents()
     }
 
+    /// What an agent can be allowed, with the words Settings shows.
+    pub fn agent_permission_catalog(&self) -> Vec<PermissionInfo> {
+        orchestrator::PERMISSIONS
+            .iter()
+            .map(|(id, name, detail)| PermissionInfo { id: (*id).into(), name: (*name).into(), detail: (*detail).into() })
+            .collect()
+    }
+
+    /// Saves which permissions an agent holds (unknown ones are dropped).
+    pub fn set_agent_permissions(&self, agent_id: String, permissions: Vec<String>) -> Result<(), CoreError> {
+        let list = orchestrator::clean_permissions(&permissions).join(",");
+        self.with_store(|s| s.set_setting(&orchestrator::permissions_key(&agent_id), &list))
+    }
+
+    /// An agent's model: "auto" (the router), a model id from `router_config().models`, or "" for its agent.md.
+    pub fn set_agent_model(&self, agent_id: String, model: String) -> Result<(), CoreError> {
+        let known = model.is_empty() || model == "auto" || router::MODELS.iter().any(|m| m.0 == model);
+        if !known {
+            return Err(CoreError::Hooks(format!("Modelo desconocido: {model}")));
+        }
+        self.with_store(|s| s.set_setting(&orchestrator::model_key(&agent_id), &model))
+    }
+
     /// Starts listening to Claude Code / Codex hooks: copies the app's bundled relay from `relay_path` (empty = skip)
     /// to `<data_dir>/bin/buddy-hook[.exe]`, then opens the local socket (Mac) or pipe (Windows) once. Never blocks.
     pub fn start_sessions(&self, relay_path: String) -> Result<(), CoreError> {
@@ -451,6 +474,16 @@ impl BuddyCore {
 
 pub fn hello() -> String {
     format!("¡Hola! Soy Buddy (núcleo {}).", env!("CARGO_PKG_VERSION"))
+}
+
+/// A permission an agent can hold.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct PermissionInfo {
+    pub id: String,
+    pub name: String,
+    pub detail: String,
 }
 
 /// Effort in the words Settings uses.

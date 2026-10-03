@@ -66,6 +66,8 @@ pub struct TurnRequest {
     pub gate: Option<Gate>,
     /// When set, the agent can create Word, Excel and PowerPoint files (Buddy's MCP server, `buddy-hook --mcp`).
     pub office: Option<Office>,
+    /// The agent may not search or read the web (its permissions).
+    pub no_web: bool,
 }
 
 /// Buddy's Office tools: the relay that serves them and the folder the files go to (never anywhere else).

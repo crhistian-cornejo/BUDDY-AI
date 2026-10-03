@@ -529,34 +529,85 @@ extension Notification.Name {
 private struct AgentSettings: View {
     let core: BuddyCore
     @State private var agents: [Agent] = []
+    @State private var catalog: [PermissionInfo] = []
+    @State private var models: [ModelOption] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            List(agents, id: \.id) { agent in
-                HStack(alignment: .top, spacing: 10) {
-                    if agent.id == "buddy" { AvatarView(size: 22) } else {
-                        Image(systemName: "person.crop.circle").font(.title2).foregroundStyle(.secondary)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(agent.name).font(.headline)
-                            ProviderMark(provider: agent.provider == .codex ? "codex" : "claude", size: 11)
+        Form {
+            ForEach(agents, id: \.id) { agent in
+                Section {
+                    if agent.id == "buddy" {
+                        LabeledContent("Modelo") {
+                            Text("El de «Modelo de Buddy» en General").foregroundStyle(.secondary)
                         }
-                        Text(agent.specialty).font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Picker("Modelo", selection: Binding(get: { modelSelection(agent) }, set: { model in
+                            try? core.setAgentModel(agentId: agent.id, model: model)
+                            reload()
+                        })) {
+                            Text("Automático (el router decide)").tag("auto")
+                            Divider()
+                            ForEach(models, id: \.id) { Text($0.name).tag($0.id) }
+                            if let own = agent.model, own != "auto", !models.contains(where: { $0.id == own }) {
+                                Divider()
+                                Text("El de su archivo (\(own))").tag("")
+                            }
+                        }
+                    }
+                    LabeledContent("Puede") {
+                        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                            ForEach(Array(stride(from: 0, to: catalog.count, by: 2)), id: \.self) { i in
+                                GridRow {
+                                    ForEach(catalog[i..<min(i + 2, catalog.count)], id: \.id) { permission in
+                                        Toggle(permission.name, isOn: Binding(
+                                            get: { agent.permissions.contains(permission.id) },
+                                            set: { on in toggle(agent, permission.id, on) }))
+                                        .toggleStyle(.checkbox)
+                                        .help(permission.detail)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        if agent.id == "buddy" { AvatarView(size: 18) }
+                        Text(agent.name)
+                        Text(agent.specialty).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
-                .padding(.vertical, 2)
             }
-            HStack {
-                Text("Cada agente es un archivo agent.md que puedes editar.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Abrir carpeta de agentes") {
-                    let dir = URL(fileURLWithPath: core.dataDir()).appendingPathComponent("agents")
-                    NSWorkspace.shared.open(dir)
+            Section {
+                HStack {
+                    Text("Cada agente es un archivo agent.md que puedes editar. Ejecutar comandos siempre pide tu clic.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Abrir carpeta de agentes") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: core.dataDir()).appendingPathComponent("agents"))
+                    }
                 }
             }
         }
-        .padding(20)
-        .onAppear { agents = core.agents() }
+        .formStyle(.grouped)
+        .onAppear(perform: reload)
+    }
+
+    /// "auto", a router model id, or "" (the model written in its agent.md).
+    private func modelSelection(_ agent: Agent) -> String {
+        guard let model = agent.model else { return "" }
+        return model == "auto" || models.contains(where: { $0.id == model }) ? model : ""
+    }
+
+    private func toggle(_ agent: Agent, _ permission: String, _ on: Bool) {
+        var list = agent.permissions.filter { $0 != permission }
+        if on { list.append(permission) }
+        try? core.setAgentPermissions(agentId: agent.id, permissions: list)
+        reload()
+    }
+
+    private func reload() {
+        agents = core.agents()
+        catalog = core.agentPermissionCatalog()
+        models = core.routerConfig().models
     }
 }

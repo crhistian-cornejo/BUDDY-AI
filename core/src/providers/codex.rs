@@ -80,7 +80,7 @@ impl Default for Codex {
 /// Read-only sandbox and no approvals: Codex can think and search, but runs nothing and edits nothing (phase 4
 /// opens that behind Buddy's approval gate).
 pub fn thread_params(request: &TurnRequest) -> Value {
-    let mut config = json!({ "web_search": "live" });
+    let mut config = json!({ "web_search": if request.no_web { "disabled" } else { "live" } });
     if let Some(office) = &request.office {
         let mut server = office.server();
         // Codex hands MCP servers a bare environment: the music tools' variables go in the config (over stdin).

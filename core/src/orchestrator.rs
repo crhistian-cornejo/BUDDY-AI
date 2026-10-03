@@ -22,9 +22,61 @@ pub struct Agent {
     pub name: String,
     pub specialty: String,
     pub provider: ProviderId,
+    /// A model name for its provider, `auto` (the router picks, see `router`), or a router model id
+    /// (`claude:opus`, `codex:gpt-6.1-sol`) set in Settings.
     pub model: Option<String>,
     pub effort: Option<String>,
     pub prompt: String,
+    /// What the agent may do (`PERMISSIONS`): from `permisos:` in agent.md, or Settings.
+    pub permissions: Vec<String>,
+}
+
+/// Every permission an agent can hold, with the words Settings shows.
+pub const PERMISSIONS: [(&str, &str, &str); 6] = [
+    ("web", "Web", "Buscar y leer páginas"),
+    ("leer", "Leer carpetas", "Leer en tus carpetas autorizadas"),
+    ("editar", "Editar carpetas", "Cambiar archivos en las carpetas que marcaste como editables"),
+    ("comandos", "Comandos", "Ejecutar comandos, siempre con tu clic"),
+    ("documentos", "Documentos", "Crear y leer Word, Excel y PowerPoint"),
+    ("musica", "Música", "Controlar Spotify o Música"),
+];
+
+/// Buddy holds them all; a specialist without `permisos:` gets the web and documents.
+fn default_permissions(id: &str) -> Vec<String> {
+    let all: Vec<&str> = PERMISSIONS.iter().map(|p| p.0).collect();
+    let list = if id == ORCHESTRATOR { all } else { vec!["web", "documentos"] };
+    list.into_iter().map(String::from).collect()
+}
+
+/// Only known permissions, each once, in catalogue order.
+pub fn clean_permissions(list: &[String]) -> Vec<String> {
+    PERMISSIONS.iter().map(|p| p.0).filter(|p| list.iter().any(|l| l.trim() == *p)).map(String::from).collect()
+}
+
+impl Agent {
+    pub fn can(&self, permission: &str) -> bool {
+        self.permissions.iter().any(|p| p == permission)
+    }
+}
+
+/// Settings keys of an agent's overrides (they win over agent.md, which stays as the user wrote it).
+pub fn model_key(id: &str) -> String {
+    format!("agent.{id}.model")
+}
+pub fn permissions_key(id: &str) -> String {
+    format!("agent.{id}.permisos")
+}
+
+/// Applies the overrides saved in Settings.
+pub fn apply_overrides(agents: &mut [Agent], store: &crate::store::Store) {
+    for agent in agents {
+        if let Some(model) = store.setting(&model_key(&agent.id)).ok().flatten().filter(|m| !m.is_empty()) {
+            agent.model = Some(model);
+        }
+        if let Some(list) = store.setting(&permissions_key(&agent.id)).ok().flatten() {
+            agent.permissions = clean_permissions(&list.split(',').map(String::from).collect::<Vec<_>>());
+        }
+    }
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -53,6 +105,9 @@ pub fn parse(text: &str) -> Option<Agent> {
         model: field("model"),
         effort: field("effort"),
         prompt: body.trim().to_string(),
+        permissions: field("permisos")
+            .map(|p| clean_permissions(&p.split(',').map(String::from).collect::<Vec<_>>()))
+            .unwrap_or_else(|| default_permissions(&id)),
         id,
     })
 }
@@ -174,6 +229,25 @@ mod tests {
         for text in ["Hola", "[x", "[[pasa x"] {
             assert!(!handoff_pending(text), "{text:?}");
         }
+    }
+
+    #[test]
+    fn permissions_come_from_agent_md_then_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = load(dir.path());
+        assert!(agents[0].can("comandos") && agents[0].can("musica"), "Buddy holds them all");
+        let parley = agents.iter().find(|a| a.id == "parley").unwrap();
+        assert_eq!(parley.permissions, ["web", "documentos"]);
+        assert_eq!(parley.model.as_deref(), Some("auto"));
+        let custom = parse("---\nid: notas\npermisos: leer, editar, borrar-todo, leer\n---\nx").unwrap();
+        assert_eq!(custom.permissions, ["leer", "editar"], "unknown ones dropped, each once");
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.set_setting(&permissions_key("parley"), "web").unwrap();
+        store.set_setting(&model_key("parley"), "claude:opus").unwrap();
+        let mut agents = agents;
+        apply_overrides(&mut agents, &store);
+        let parley = agents.iter().find(|a| a.id == "parley").unwrap();
+        assert_eq!((parley.permissions.clone(), parley.model.as_deref()), (vec!["web".to_string()], Some("claude:opus")));
     }
 
     #[test]

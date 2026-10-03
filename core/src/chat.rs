@@ -89,6 +89,13 @@ impl ChatEngine {
         })
     }
 
+    /// What one agent is told: its folders (if it may read them) and its tools.
+    fn notes_for(&self, agent: &Agent, folders: &[crate::folders::AuthorizedFolder]) -> String {
+        let folders = if agent.can("leer") || agent.can("editar") { crate::folders::prompt_note(folders) } else { String::new() };
+        let tools = if agent.can("documentos") || agent.can("musica") { self.tools_note() } else { String::new() };
+        folders + &tools
+    }
+
     /// What the agents are told about those tools: where documents go, and the skills index.
     fn tools_note(&self) -> String {
         match self.office() {
@@ -104,7 +111,9 @@ impl ChatEngine {
     }
 
     pub fn agents(&self) -> Vec<Agent> {
-        orchestrator::load(&self.data_dir)
+        let mut agents = orchestrator::load(&self.data_dir);
+        orchestrator::apply_overrides(&mut agents, &self.lock());
+        agents
     }
 
     /// Adds a message to this chat's FIFO. A running answer continues; its next message starts only after saving it.
@@ -383,8 +392,7 @@ impl ChatEngine {
         prompt.push_str(&attachments_note(files));
         prompt.push_str(question);
         let folders = crate::folders::list(&self.lock()).unwrap_or_default();
-        let office = self.tools_note();
-        let system = format!("{}{}{}{office}", buddy.prompt, orchestrator::roster_prompt(&agents), crate::folders::prompt_note(&folders));
+        let system = format!("{}{}{}", buddy.prompt, orchestrator::roster_prompt(&agents), self.notes_for(&buddy, &folders));
         // The router picks Buddy's model for this message (rules, no tokens); a hand-off still works from there.
         let route = crate::router::route(&self.lock(), question, files);
         let mut buddy_turn = buddy.clone();
@@ -403,9 +411,22 @@ impl ChatEngine {
 
         let (agent, answer) = match orchestrator::parse_handoff(&answer.text, &known) {
             Some((id, task)) if answer.failure.is_none() && !cancel.is_cancelled() => {
-                let specialist = agents.iter().find(|a| a.id == id).cloned().expect("parse_handoff checks known ids");
+                let mut specialist = agents.iter().find(|a| a.id == id).cloned().expect("parse_handoff checks known ids");
+                // `model: auto` (or a model picked in Settings): the router decides for this task too.
+                let routed = crate::router::route_agent(&self.lock(), specialist.model.as_deref(), &format!("{task}\n{question}"), files);
+                if let Some(route) = routed {
+                    crate::log::line(format!("router ({}): {} → {} ({})", specialist.name, route.tier.label(), route.model_name, route.reason));
+                    self.emit(Event::ChatTool {
+                        chat_id: chat_id.into(),
+                        name: "Modelo".into(),
+                        summary: format!("{} · {}", route.model_name, route.reason),
+                    });
+                    specialist.provider = route.provider;
+                    specialist.model = Some(route.model);
+                    specialist.effort = Some(route.effort);
+                }
                 let prompt = attachments_note(files) + &orchestrator::task_prompt(&specialist.name, &task, question);
-                let system = format!("{}{}{office}", specialist.prompt, crate::folders::prompt_note(&folders));
+                let system = format!("{}{}", specialist.prompt, self.notes_for(&specialist, &folders));
                 let answer = self.run_agent(chat_id, &specialist, &prompt, &system, files, cancel, false);
                 (specialist, answer)
             }
@@ -514,6 +535,21 @@ impl ChatEngine {
             } else {
                 String::new()
             };
+            // Only what this agent is allowed (Settings › Agentes): the rest never reaches the model.
+            let folders: Vec<_> = if agent.can("leer") || agent.can("editar") {
+                folders.into_iter().map(|mut f| {
+                    f.can_edit &= agent.can("editar");
+                    f
+                }).collect()
+            } else {
+                Vec::new()
+            };
+            let office = self.office().filter(|_| agent.can("documentos") || agent.can("musica")).map(|mut o| {
+                if !agent.can("musica") {
+                    o.link = None;
+                }
+                o
+            });
             let request = TurnRequest {
                 prompt: history + prompt,
                 system: system.into(),
@@ -528,8 +564,9 @@ impl ChatEngine {
                 effort: agent.effort.clone(),
                 attachments: files.to_vec(),
                 folders,
-                gate: self.gate(),
-                office: self.office(),
+                gate: self.gate().filter(|_| agent.can("comandos")),
+                office,
+                no_web: !agent.can("web"),
             };
             let mut text = String::new();
             let mut shown = 0usize;
