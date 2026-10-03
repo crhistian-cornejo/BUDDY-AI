@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
-// Two pages: the mascot and its speech bubble (a separate click-through window).
+// One entry per window: the mascot, its speech bubble, the chat, the history, the top bar and Settings.
 export default defineConfig({
   clearScreen: false,
   server: {
@@ -19,6 +19,7 @@ export default defineConfig({
         chat: resolve(__dirname, "chat.html"),
         history: resolve(__dirname, "history.html"),
         bar: resolve(__dirname, "bar.html"),
+        settings: resolve(__dirname, "settings.html"),
       },
     },
   },

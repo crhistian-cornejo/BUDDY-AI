@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Development only (not built): the Windows Settings window with a fake Tauri bridge, to check its look in a browser.
+     Open http://localhost:1420/preview/settings.html (npm run dev); ?empty shows every list empty. -->
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ajustes de Buddy</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/settings/settings.css" />
+    <style>html, body.settings { width: 680px; height: 520px; outline: 1px solid #8884; }</style>
+    <script>
+      const handlers = {};
+      let next = 1;
+      const empty = new URLSearchParams(location.search).has("empty");
+      const now = Date.now() / 1000;
+      const flags = { "pet.wander": true, "router.cheap": true, "commands.enabled": false, "briefing.enabled": true };
+      let folders = empty ? [] : [
+        { path: "C:\\Users\\corx\\Documents\\Proyectos", canEdit: true },
+        { path: "C:\\Users\\corx\\OneDrive\\Escritorio\\Universidad\\Ciclo 2026-II\\Cálculo multivariable", canEdit: false },
+        { path: "D:\\Fotos", canEdit: false },
+      ];
+      const hooks = [
+        { agent: "claude", name: "Claude Code", installed: true, available: true, relayReady: true },
+        { agent: "codex", name: "Codex", installed: false, available: true, relayReady: true },
+      ];
+      let topics = "noticias de tecnología; Apple; fútbol peruano; el tiempo en Lima";
+      const fake = {
+        setting_flag: ({ key }) => flags[key],
+        set_setting_flag: ({ key, on }) => { flags[key] = on; },
+        folders: () => folders,
+        pick_folder: () => (folders = [...folders, { path: "C:\\Users\\corx\\Downloads", canEdit: false }]),
+        set_folder_edit: ({ path, canEdit }) => (folders = folders.map((f) => (f.path === path ? { ...f, canEdit } : f))),
+        remove_folder: ({ path }) => (folders = folders.filter((f) => f.path !== path)),
+        hooks_status: () => hooks,
+        hooks_preview: ({ agent, install }) => ({
+          path: agent === "codex" ? "C:\\Users\\corx\\.codex\\hooks.json" : "C:\\Users\\corx\\.claude\\settings.json",
+          fingerprint: "abc",
+          diff: install
+            ? '   "hooks": {\n+    "Stop": [{ "hooks": [{ "type": "command", "command": "\\"C:/Users/corx/AppData/Local/Buddy/bin/buddy-hook.exe\\" Stop" }] }],\n+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "\\"C:/Users/corx/AppData/Local/Buddy/bin/buddy-hook.exe\\" PermissionRequest" }] }],\n   "model": "opus"'
+            : '   "hooks": {\n-    "Stop": [{ "hooks": [{ "type": "command", "command": "\\"buddy-hook.exe\\" Stop" }] }],\n   }',
+        }),
+        hooks_write: ({ agent, install }) => { hooks.find((h) => h.agent === agent).installed = install; return "C:\\Users\\corx\\.claude\\settings.json.buddy-2026-10-02.bak"; },
+        usage: () => empty ? [] : [
+          { provider: "claude", name: "Claude", windows: [{ label: "5 h", usedPct: 56, resetsAt: now + 7200 }, { label: "semana", usedPct: 74, resetsAt: now + 86400 * 3 }, { label: "semana · Opus", usedPct: 93, resetsAt: null }] },
+          { provider: "codex", name: "Codex", windows: [{ label: "semana", usedPct: 6, resetsAt: null }] },
+        ],
+        token_report: () => empty ? [] : [
+          { feature: "chat", provider: "claude", turns: 42, input: 812000, output: 64300, cached: 1450000, costUsd: 3.21 },
+          { feature: "mensajitos", provider: "claude", turns: 9, input: 18200, output: 2100, cached: 0, costUsd: 0.04 },
+          { feature: "código", provider: "codex", turns: 5, input: 950, output: 310, cached: 0, costUsd: 0 },
+        ],
+        agents: () => [
+          { id: "buddy", name: "Buddy", specialty: "Habla contigo y reparte el trabajo.", provider: "claude", model: null },
+          { id: "investigador", name: "Investigador", specialty: "Busca en la web y resume con fuentes.", provider: "claude", model: null },
+          { id: "programador", name: "Programador", specialty: "Escribe y revisa código en tus carpetas.", provider: "codex", model: null },
+        ],
+        briefing_topics: () => topics,
+        set_briefing_topics: ({ topics: t }) => (topics = t.trim() || "noticias de tecnología; Apple; fútbol peruano; el tiempo en Lima"),
+        briefing: () => empty ? [] : [
+          { topic: "Apple", text: "Apple prepara hasta 7 productos para octubre: iPad mini OLED, iMac y MacBook Pro con M6.", url: "https://example.com/a", at: now },
+          { topic: "fútbol", text: "Universitario gana 2-1 en el Monumental con gol en el 88'.", url: "https://example.com/b", at: now },
+          { topic: "tecnología", text: "Claude Code añade agentes en segundo plano para tareas largas.", url: null, at: now },
+        ],
+      };
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "settings" }, currentWebview: { windowLabel: "settings", label: "settings" } },
+        transformCallback: (cb) => { const id = next++; handlers[id] = cb; return id; },
+        unregisterCallback: () => {},
+        invoke: async (cmd, args) => (fake[cmd] ? fake[cmd](args ?? {}) : null),
+      };
+    </script>
+  </head>
+  <body class="settings">
+    <nav id="tabs" role="tablist" aria-label="Ajustes" aria-orientation="vertical"></nav>
+    <main id="page" role="tabpanel"></main>
+    <script type="module" src="/src/settings/main.ts"></script>
+  </body>
+</html>

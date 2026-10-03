@@ -22,6 +22,7 @@ const BUBBLE: &str = "bubble";
 const CHAT: &str = "chat";
 const HISTORY: &str = "history";
 const BAR: &str = "bar";
+const SETTINGS: &str = "settings";
 const CHAT_WIDTH: f64 = 400.0;
 const BUBBLE_SIZE: (f64, f64) = (340.0, 52.0);
 const SPRITE: &str = "buddy-base";
@@ -66,11 +67,13 @@ fn sprite(state: State<'_, AppCore>, id: String) -> Result<Sprite, String> {
 fn show_pet_menu(window: WebviewWindow, state: State<'_, AppCore>) -> Result<(), String> {
     let app = window.app_handle();
     let e = |e: tauri::Error| e.to_string();
+    let history = MenuItem::with_id(app, "history", "Historial de chats", true, None::<&str>).map_err(e)?;
+    let settings = MenuItem::with_id(app, "settings", "Ajustes…", true, None::<&str>).map_err(e)?;
     let walk = CheckMenuItem::with_id(app, "wander", "Pasear por la pantalla", true, wander(&state.core), None::<&str>)
         .map_err(e)?;
     let quit = MenuItem::with_id(app, "quit", "Salir de Buddy", true, None::<&str>).map_err(e)?;
     let separator = PredefinedMenuItem::separator(app).map_err(e)?;
-    let menu = Menu::with_items(app, &[&walk, &separator, &quit]).map_err(e)?;
+    let menu = Menu::with_items(app, &[&history, &settings, &walk, &separator, &quit]).map_err(e)?;
     window.popup_menu(&menu).map_err(e)
 }
 
@@ -194,15 +197,35 @@ pub fn run() {
             messages,
             agents,
             open_url,
-            briefing
+            briefing,
+            open_settings,
+            setting_flag,
+            set_setting_flag,
+            folders,
+            pick_folder,
+            set_folder_edit,
+            remove_folder,
+            hooks_preview,
+            hooks_write,
+            token_report,
+            open_agents_folder,
+            briefing_topics,
+            set_briefing_topics,
+            briefing_now
         ])
-        .on_menu_event(|app, event| {
-            if event.id() == "quit" {
-                app.exit(0);
-            } else if event.id() == "wander" {
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "quit" => app.exit(0),
+            "wander" => {
                 let core = &app.state::<AppCore>().core;
                 let _ = core.set_setting("pet.wander".into(), (!wander(core)).to_string());
             }
+            "history" => {
+                let _ = open_history(app.clone());
+            }
+            "settings" => {
+                let _ = show_settings(app);
+            }
+            _ => {}
         })
         .setup(|app| {
             // An empty folder lets the core use %LOCALAPPDATA%\Buddy.
@@ -796,6 +819,135 @@ fn is_web_url(url: &str) -> bool {
     (lower.starts_with("https://") || lower.starts_with("http://")) && !lower.contains(char::is_whitespace)
 }
 
+// MARK: Settings (twin of the Mac's SettingsView)
+
+/// The Settings window: a normal titled window, centred; brought to the front when it is already open.
+fn show_settings(app: &AppHandle) -> tauri::Result<()> {
+    let window = match app.get_webview_window(SETTINGS) {
+        Some(w) => w,
+        None => WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
+            .title("Ajustes de Buddy")
+            .inner_size(680.0, 520.0)
+            .resizable(false)
+            .maximizable(false)
+            .center()
+            .visible(false)
+            .build()?,
+    };
+    if window.is_minimized()? {
+        window.unminimize()?;
+    }
+    window.show()?;
+    window.set_focus()
+}
+
+/// Async on purpose: on Windows, building a window from a synchronous command can deadlock.
+#[tauri::command]
+async fn open_settings(app: AppHandle) -> Result<(), String> {
+    show_settings(&app).map_err(|e| e.to_string())
+}
+
+/// The on/off settings the Settings page may read and change; nothing else goes through here.
+const FLAGS: [&str; 4] = ["pet.wander", "router.cheap", "commands.enabled", "briefing.enabled"];
+
+fn flag_key(key: &str) -> Result<String, String> {
+    FLAGS.iter().find(|k| **k == key).map(|k| k.to_string()).ok_or_else(|| format!("ajuste desconocido: {key}"))
+}
+
+/// "false" is off; anything else, missing included, is on (as on the Mac).
+#[tauri::command]
+fn setting_flag(state: State<'_, AppCore>, key: String) -> Result<bool, String> {
+    let key = flag_key(&key)?;
+    Ok(state.core.setting(key).map_err(|e| e.to_string())?.as_deref() != Some("false"))
+}
+
+#[tauri::command]
+fn set_setting_flag(state: State<'_, AppCore>, key: String, on: bool) -> Result<(), String> {
+    let key = flag_key(&key)?;
+    state.core.set_setting(key, on.to_string()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn folders(state: State<'_, AppCore>) -> Result<Vec<buddy_core::AuthorizedFolder>, String> {
+    state.core.folders().map_err(|e| e.to_string())
+}
+
+/// The system's folder picker; the chosen folder is authorized read-only. Cancelling returns the list as it was.
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Result<Vec<buddy_core::AuthorizedFolder>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let dialog = app.dialog().clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        dialog.file().set_title("Elige una carpeta que Buddy pueda leer").blocking_pick_folder()
+    })
+    .await
+    .ok()
+    .flatten();
+    let core = app.state::<AppCore>().core.clone();
+    match picked.and_then(|p| p.into_path().ok()) {
+        Some(path) => core.add_folder(path.to_string_lossy().into_owned(), false).map_err(|e| e.to_string()),
+        None => core.folders().map_err(|e| e.to_string()),
+    }
+}
+
+/// «Puede editar» on a folder that is already authorized (new folders only come in through the picker).
+#[tauri::command]
+fn set_folder_edit(state: State<'_, AppCore>, path: String, can_edit: bool) -> Result<Vec<buddy_core::AuthorizedFolder>, String> {
+    let core = &state.core;
+    if !core.folders().map_err(|e| e.to_string())?.iter().any(|f| f.path == path) {
+        return Err("esa carpeta no está autorizada".into());
+    }
+    core.add_folder(path, can_edit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_folder(state: State<'_, AppCore>, path: String) -> Result<Vec<buddy_core::AuthorizedFolder>, String> {
+    state.core.remove_folder(path).map_err(|e| e.to_string())
+}
+
+/// What connecting (or disconnecting) an agent would change, shown before anything is written.
+#[tauri::command]
+fn hooks_preview(state: State<'_, AppCore>, agent: String, install: bool) -> Result<buddy_core::HookPreview, String> {
+    state.core.hooks_preview(agent, install).map_err(|e| e.to_string())
+}
+
+/// Writes exactly the previewed change (the fingerprint ties it to what the user saw); returns the backup's path.
+#[tauri::command]
+fn hooks_write(state: State<'_, AppCore>, agent: String, install: bool, fingerprint: String) -> Result<String, String> {
+    state.core.hooks_write(agent, install, fingerprint).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn token_report(state: State<'_, AppCore>, days: u32) -> Result<Vec<buddy_core::TokenReport>, String> {
+    state.core.token_report(days.clamp(1, 90)).map_err(|e| e.to_string())
+}
+
+/// Opens `<data_dir>/agents` in the file manager (the path is decided here, never by the page).
+#[tauri::command]
+fn open_agents_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = std::path::Path::new(&app.state::<AppCore>().core.data_dir()).join("agents");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn briefing_topics(state: State<'_, AppCore>) -> String {
+    state.core.briefing_topics()
+}
+
+/// Saves the topics (empty goes back to the defaults) and returns what is now in use.
+#[tauri::command]
+fn set_briefing_topics(state: State<'_, AppCore>, topics: String) -> Result<String, String> {
+    state.core.set_briefing_topics(topics).map_err(|e| e.to_string())?;
+    Ok(state.core.briefing_topics())
+}
+
+#[tauri::command]
+fn briefing_now(state: State<'_, AppCore>) {
+    state.core.briefing_now();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,6 +972,13 @@ mod tests {
         assert!(!is_web_url("file:///C:/Windows"));
         assert!(!is_web_url("javascript:alert(1)"));
         assert!(!is_web_url("https://x.com/a b"));
+    }
+
+    #[test]
+    fn only_known_flags_are_reachable() {
+        assert_eq!(flag_key("pet.wander").as_deref(), Ok("pet.wander"));
+        assert!(flag_key("pet.origin.x").is_err());
+        assert!(flag_key("").is_err());
     }
 
     #[test]
