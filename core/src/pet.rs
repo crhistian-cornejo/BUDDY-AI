@@ -7,6 +7,8 @@
 //! micro-move every 5–10 s (slow blink, a look aside, a foot swing, a yawn every ~30 s); with reduced motion, only
 //! the still frame. Any use stands it up (`stand-up`, 2 frames): the apps do it at once, and the brain also answers
 //! `stand-up` if asked while seated but in use.
+//! After ten minutes waiting seated, `lie-down` leads into slow `sleep` loops that rest on `sleep-still`.
+//! This uses time since Buddy was used, so typing elsewhere does not keep it awake. Interaction plays `wake-up`.
 
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,8 +20,8 @@ const MIN_WALK: f64 = 24.0;
 const MAX_WALK: f64 = 180.0;
 /// Buddy only walks when the user has not touched keyboard or mouse for this long: never while they work.
 pub const WALK_WHEN_IDLE_SECONDS: f64 = 20.0;
-/// Without any input for this long the user is away: Buddy sleeps.
-pub const SLEEP_AFTER_SECONDS: f64 = 300.0;
+/// After this long waiting seated without being used, Buddy lies down and sleeps (even if the user is typing).
+pub const SLEEP_AFTER_SECONDS: f64 = 600.0;
 /// Buddy sits down, bored, after this long without being used.
 pub const SIT_AFTER_SECONDS: f64 = 10.0;
 /// Seated with reduced motion there is nothing to animate: the brain is asked again only this often (to fall asleep).
@@ -46,10 +48,12 @@ pub struct PetContext {
     pub engaged: bool,
     /// Buddy is seated now (the last plan rested on `sit`).
     pub sitting: bool,
+    /// Buddy is lying down asleep (the last plan rested on `sleep-still`).
+    pub sleeping: bool,
 }
 
 /// What to do next: wait `wait_ms`, play `intro` once (when not empty), then play `state` for `duration_ms` while
-/// moving `dx` points (walks only), and hold the still frame of `rest` (`idle` or `sit`) until the next plan.
+/// moving `dx` points (walks only), and hold the still frame of `rest` (`idle`, `sit` or `sleep-still`).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
@@ -58,7 +62,7 @@ pub struct PetPlan {
     pub state: String,
     pub duration_ms: u32,
     pub dx: f64,
-    /// A short transition played once before `state`: `sit-down` or `stand-up`.
+    /// A short transition played once before `state`: `sit-down`, `stand-up`, `lie-down` or `wake-up`.
     pub intro: String,
     pub rest: String,
 }
@@ -131,16 +135,30 @@ impl PetBrain {
         };
         let untouched = if ctx.engaged { 0.0 } else { ctx.untouched_seconds.max(0.0) };
 
-        if ctx.idle_seconds >= SLEEP_AFTER_SECONDS {
-            // Dozes off seated: sits down first unless it already is (or motion is reduced).
-            let intro = if ctx.sitting || ctx.reduce_motion { "" } else { "sit-down" };
-            return PetPlan { wait_ms: 0, intro: intro.into(), rest: "sit".into(), ..plan("sleep", 10_000) };
+        if ctx.sleeping {
+            if untouched < SIT_AFTER_SECONDS {
+                let state = if ctx.reduce_motion { "idle" } else { "wake-up" };
+                return PetPlan { wait_ms: 0, ..plan(state, 0) };
+            }
+            return PetPlan {
+                wait_ms: if ctx.reduce_motion { STILL_SEATED_WAIT_MS } else { 0 },
+                rest: "sleep-still".into(),
+                ..plan(if ctx.reduce_motion { "sleep-still" } else { "sleep" }, if ctx.reduce_motion { 0 } else { 8_000 })
+            };
         }
         if ctx.sitting {
             if untouched < SIT_AFTER_SECONDS {
                 // In use again (the app usually stands Buddy up itself; this keeps both in step).
                 let state = if ctx.reduce_motion { "idle" } else { "stand-up" };
                 return PetPlan { wait_ms: 0, ..plan(state, 0) };
+            }
+            if untouched >= SIT_AFTER_SECONDS + SLEEP_AFTER_SECONDS {
+                return PetPlan {
+                    wait_ms: 0,
+                    intro: if ctx.reduce_motion { "" } else { "lie-down" }.into(),
+                    rest: "sleep-still".into(),
+                    ..plan(if ctx.reduce_motion { "sleep-still" } else { "sleep" }, if ctx.reduce_motion { 0 } else { 8_000 })
+                };
             }
             return self.seated(&ctx);
         }
@@ -242,6 +260,7 @@ mod tests {
             untouched_seconds: 0.0,
             engaged: false,
             sitting: false,
+            sleeping: false,
         }
     }
 
@@ -292,15 +311,44 @@ mod tests {
     }
 
     #[test]
-    fn reduce_motion_only_blinks_and_away_means_sleep() {
+    fn reduce_motion_only_blinks_while_engaged() {
         let brain = PetBrain::with_seed(5);
         for _ in 0..100 {
             assert_eq!(brain.next(PetContext { reduce_motion: true, engaged: true, ..ctx(500.0) }).state, "blink");
         }
-        let away = brain.next(PetContext { idle_seconds: 600.0, ..ctx(500.0) });
-        assert_eq!((away.state.as_str(), away.intro.as_str(), away.rest.as_str()), ("sleep", "sit-down", "sit"));
-        let away_seated = brain.next(PetContext { idle_seconds: 600.0, ..seated(ctx(500.0)) });
-        assert_eq!((away_seated.intro.as_str(), away_seated.rest.as_str()), ("", "sit"));
+    }
+
+    #[test]
+    fn sleeps_after_ten_minutes_seated_even_while_the_user_types() {
+        let brain = PetBrain::with_seed(41);
+        let c = PetContext { idle_seconds: 0.0, wander: false, untouched_seconds: 609.0, ..seated(ctx(500.0)) };
+        assert_eq!(brain.next(c).rest, "sit");
+        let sleep = brain.next(PetContext { untouched_seconds: 610.0, ..c });
+        assert_eq!((sleep.state.as_str(), sleep.intro.as_str(), sleep.rest.as_str()), ("sleep", "lie-down", "sleep-still"));
+        assert_eq!((sleep.wait_ms, sleep.dx), (0, 0.0));
+        assert_eq!(brain.next(PetContext { engaged: true, untouched_seconds: 900.0, ..c }).rest, "idle");
+        // System inactivity alone cannot put a recently used or standing mascot to sleep.
+        assert_ne!(brain.next(PetContext { idle_seconds: 900.0, ..ctx(500.0) }).state, "sleep");
+    }
+
+    #[test]
+    fn sleep_repeats_without_sitting_up_and_interaction_wakes_it() {
+        let brain = PetBrain::with_seed(43);
+        let c = PetContext { sleeping: true, untouched_seconds: 900.0, ..ctx(500.0) };
+        for _ in 0..10 {
+            let plan = brain.next(c);
+            assert_eq!((plan.state.as_str(), plan.rest.as_str(), plan.intro.as_str()), ("sleep", "sleep-still", ""));
+            assert_eq!((plan.wait_ms, plan.dx), (0, 0.0));
+        }
+        for c in [PetContext { engaged: true, ..c }, PetContext { untouched_seconds: 0.0, ..c }] {
+            let plan = brain.next(c);
+            assert_eq!((plan.state.as_str(), plan.rest.as_str()), ("wake-up", "idle"));
+        }
+        let reduced = brain.next(PetContext { reduce_motion: true, ..c });
+        assert_eq!((reduced.state.as_str(), reduced.rest.as_str()), ("sleep-still", "sleep-still"));
+        assert!(reduced.wait_ms >= STILL_SEATED_WAIT_MS);
+        let down = brain.next(PetContext { sleeping: false, sitting: true, reduce_motion: true, ..c });
+        assert_eq!((down.state.as_str(), down.intro.as_str()), ("sleep-still", ""));
     }
 
     #[test]
@@ -394,21 +442,24 @@ mod tests {
         let character = crate::pixel::builtin("buddy-base").unwrap();
         let brain = PetBrain::with_seed(9);
         let mut sitting = false;
+        let mut sleeping = false;
         for i in 0..2_000 {
             let c = PetContext {
                 idle_seconds: if i % 50 == 0 { 900.0 } else { 60.0 },
-                untouched_seconds: (i % 40) as f64,
+                untouched_seconds: (i % 1000) as f64,
                 engaged: i % 97 == 0,
                 reduce_motion: i % 13 == 0,
                 sitting,
+                sleeping,
                 ..ctx(500.0)
             };
             let plan = brain.next(c);
             for state in [&plan.state, &plan.intro, &plan.rest] {
                 assert!(state.is_empty() || character.states.contains_key(state), "missing state {state}");
             }
-            assert!(["idle", "sit"].contains(&plan.rest.as_str()));
+            assert!(["idle", "sit", "sleep-still"].contains(&plan.rest.as_str()));
             sitting = plan.rest == "sit";
+            sleeping = plan.rest == "sleep-still";
         }
     }
 

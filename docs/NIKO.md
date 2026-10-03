@@ -1,17 +1,39 @@
 # Niko · Finanzas
 
-Niko registra gastos, pagos, ingresos, transferencias y vouchers en Notion. Lee Gmail y Drive; no envía, borra ni etiqueta correos, ni mueve dinero. La lógica compartida vive en `core/src/niko.rs`; Mac y Windows ofrecen Ajustes › Agentes › Niko.
+Niko registra gastos, ingresos, pagos y vouchers en las mismas bases de Notion desde Claude o GPT. Al agotarse una suscripción, el router continúa con la otra. Usa los conectores existentes de claude.ai y las apps nativas de ChatGPT a través de Codex; no requiere una API key ni crear un proyecto en Google Console.
 
-## Activarlo
+## Funcionamiento del router
 
-1. Conecta Gmail, Google Drive y Notion en claude.ai › Ajustes › Conectores.
-2. Abre Claude Code y usa `/mcp` para autorizar los conectores que indiquen «Needs authentication». Que claude.ai diga conectado no garantiza que Claude Code tenga el acceso vigente.
-3. En Ajustes › Agentes › Niko, pulsa «Volver a comprobar». Comparte con el conector la página de Notion donde guardarás tus finanzas y pega su enlace.
-4. Pulsa «Revisar ahora». La primera revisión prepara Movimientos, Presupuestos y Dashboard dentro de esa página. Usa Sonnet para la preparación y Haiku para las revisiones siguientes.
-5. Activa «Niko revisa el correo en este equipo» en un solo equipo. Puedes elegir 10, 20, 30 o 60 minutos. El dashboard vive en Notion y se puede consultar desde la web, Mac o Windows.
+- Chat, Telegram y revisión del correo permiten Claude y GPT. Gemini se excluye de los turnos que necesitan estas cuentas.
+- Revisiones y chat: Haiku o GPT Luna, con esfuerzo bajo. Preparación inicial de Notion: Sonnet o GPT Sol.
+- La cuota conocida se comparte entre chat y tareas de fondo. Se omite una ruta agotada hasta su reinicio; si el proveedor no indica cuándo, se vuelve a probar tras 15 minutos. No se cambia por una simple limitación temporal de peticiones.
+- Ambos conservan la página, bases, claves de movimiento y hora de la petición. Si la cuota se agota después de usar herramientas, el siguiente proveedor debe comprobar lo ya escrito antes de continuar. Las respuestas parciales del chat de Niko no se muestran como confirmaciones.
+- Gmail y Drive se ofrecen solo para leer. Notion permite las herramientas de páginas, bases, vistas y consultas que Niko necesita. En GPT, las demás apps y herramientas quedan desactivadas en el turno; los permisos usan los nombres completos del catálogo nativo, no solo los nombres cortos mostrados por app/read.
+- Se comprueba la disponibilidad efectiva de las herramientas antes del turno de GPT. Las credenciales siguen administradas por Claude/ChatGPT; Buddy no las copia.
+- Cada revisión procesa como máximo 15 mensajes nuevos. Con destinos ya guardados empieza por Gmail; si la búsqueda falla, se detiene sin lecturas ni escrituras adicionales en Notion. Las consultas de Notion admiten hasta 100 filas por petición y los informes deben paginar para obtener el total.
+- Los cálculos del dashboard y los presupuestos los hace el núcleo. Las conexiones de fondo se cierran al terminar, sin cerrar los otros chats. Las revisiones y actualizaciones manuales del dashboard no se solapan.
 
-La revisión automática está apagada inicialmente. Las credenciales de estos conectores las administra Claude; Buddy no las guarda. Los errores de autenticación y límites del proveedor necesitan resolverse antes de comprobar una revisión real.
+La lógica compartida vive en core/src/account_router.rs, core/src/accounts.rs, core/src/niko.rs y el proveedor nativo de Codex. Mac y Windows muestran «Claude y GPT · cambio automático» en Ajustes › Agentes › Niko.
 
-## Estado verificado
+## Uso
 
-La implementación, las interfaces y las pruebas están completas. La compilación de Mac, la compilación web de Windows y las pruebas locales pasan. En la comprobación realizada al terminar esta integración, Claude Code informó Gmail y Drive conectados, y Notion pendiente de autorización. No se creó ni se verificó un dashboard real durante esta revisión.
+1. Inicia sesión en Claude Code y/o Codex con tus suscripciones. Las cuentas de cada proveedor son independientes: una conexión en ChatGPT no autoriza por sí sola la de Claude.
+2. Conserva tus conexiones de Gmail, Drive y Notion en Claude o ChatGPT. No hace falta recrear las bases al cambiar de proveedor.
+3. En Ajustes › Agentes › Niko, pulsa «Volver a comprobar», guarda la página de Notion y pulsa «Revisar ahora». Estar en la lista de apps conectadas no confirma todos los permisos de Gmail; la revisión comprueba el acceso real.
+4. Activa la revisión automática en un solo equipo cuando el acceso al correo esté disponible. Se puede programar cada 10, 20, 30 o 60 minutos. Inicialmente está apagada.
+
+## Verificación real · 3 de octubre de 2026 (Lima)
+
+Se probó el router real con las suscripciones existentes: Claude devolvió cuota agotada hasta la 1:10 a. m.; GPT Luna continuó y ejecutó notion.fetch sobre la página del usuario. Después, el núcleo leyó las bases, calculó el dashboard y lo actualizó con notion.notion-update-page; se verificó la escritura con otra lectura. No se inventaron operaciones ni una puntuación financiera.
+
+Los destinos existentes son:
+
+- [Movimientos](https://app.notion.com/p/00000000000000000000000000000001)
+- [Presupuestos](https://app.notion.com/p/00000000000000000000000000000002)
+- [Dashboard](https://app.notion.com/p/00000000000000000000000000000003)
+
+**Notion funciona por la ruta de GPT. El bloqueo pendiente es Gmail:** tanto gmail.search_emails como gmail.search_email_ids devolvieron ACCESS_TOKEN_SCOPE_INSUFFICIENT. Hace falta renovar la autorización de Gmail en ChatGPT para conceder lectura. No se necesita Google Console y este error no implica que Notion esté desconectado.
+
+También se ejecutó la revisión con los ajustes reales de Buddy: guardó ese error, conservó la ventana pendiente y no importó correos. Con la instrucción de detenerse tras el fallo, solo llamó a la búsqueda de Gmail y no consultó ni escribió en Notion. La revisión automática permanece apagada.
+
+Las pruebas cubren el cambio Claude → GPT, GPT → Claude después de una escritura parcial, objetivos y hora compartidos, pausas de cuota y recuperación, permisos y errores de conexión que no se deben mostrar como éxito. La compilación Debug de macOS y la compilación web de Windows pasaron. La suite completa detectó un fallo ajeno al router en el accesorio «gorra» del avatar; el resto pasó. La app nativa de Windows no se ejecutó en este Mac.

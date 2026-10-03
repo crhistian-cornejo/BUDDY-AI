@@ -5,25 +5,23 @@ import SwiftUI
 /// 16 pt between blocks, 20 pt at the bottom.
 enum NotchLayout {
     static let earWidth: CGFloat = 40
+    static let statusWing: CGFloat = 88
+    static let compactInset: CGFloat = 12
     static let side: CGFloat = 24
+    static let background = Color(.sRGB, red: 0, green: 0, blue: 0, opacity: 1)
     static let noticeWidth: CGFloat = 420
     static let openWidth: CGFloat = 560
     static let tileHeight: CGFloat = 116
     static let playerHeight: CGFloat = 92
     static let dropHeight: CGFloat = 112
-    static let usageRow: CGFloat = 14
-    static let briefingRow: CGFloat = 18
-    static let briefingMax = 3
-    /// The «Hoy» list: one line per mensajito, at most three.
-    static func briefingHeight(_ count: Int) -> CGFloat {
-        let rows = CGFloat(min(count, briefingMax))
-        return rows * briefingRow + (rows - 1) * 6
-    }
-    /// The usage strip: each plan is a column, its windows (5 h, week…) rows under one another.
+    static let usageHeight: CGFloat = 18
+    static let shelfHeight: CGFloat = 190
+
     @MainActor
-    static func usageHeight(_ usage: [ProviderUsage]) -> CGFloat {
-        let rows = CGFloat(min(usage.map { $0.windows.count }.max() ?? 1, 3))
-        return rows * usageRow + (rows - 1) * 5
+    static func utilitiesHeight(_ model: NotchModel) -> CGFloat {
+        let widgets = (model.tools?.batteryEnabled ?? true) || (model.tools?.calendarEnabled ?? true)
+        let clipboard = model.tools?.clipboardEnabled ?? true
+        return widgets && clipboard ? 236 : clipboard ? 128 : 96
     }
 
     /// Lines the command box shows (wrapped at ~50 characters, at most 6).
@@ -37,6 +35,7 @@ enum NotchLayout {
     static func size(_ model: NotchModel, notch: CGSize, mode: NotchModel.Mode? = nil) -> CGSize {
         switch mode ?? model.mode {
         case .idle:
+            if model.status != nil || model.notice != nil { return CGSize(width: notch.width + 2 * statusWing, height: notch.height) }
             return model.ear == .none ? notch : CGSize(width: notch.width + 2 * earWidth, height: notch.height)
         case .notice:
             let extra: CGFloat
@@ -47,11 +46,12 @@ enum NotchLayout {
             }
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + extra)
         case .open:
-            let player = model.nowPlaying == nil ? 0 : playerHeight + 16
-            let usage = model.usage.isEmpty ? 0 : usageHeight(model.usage) + 12
-            let news = model.briefing.isEmpty ? 0 : briefingHeight(model.briefing.count) + 12
+            let body: CGFloat = model.tab == .files ? shelfHeight : model.tab == .utilities ? utilitiesHeight(model)
+                : tileHeight + (model.nowPlaying == nil ? 0 : playerHeight + 16)
+            let usage = model.usage.contains { NotchUsage.window(for: $0) != nil } ? usageHeight + 12 : 0
+            let message: CGFloat = model.toolMessage.isEmpty ? 0 : 24
             return CGSize(width: max(openWidth, notch.width + 48),
-                          height: notch.height + 16 + player + tileHeight + news + usage + 20)
+                          height: notch.height + 16 + body + usage + message + 20)
         case .drop:
             return CGSize(width: max(noticeWidth, notch.width + 48), height: notch.height + 16 + dropHeight + 20)
         }
@@ -66,10 +66,14 @@ extension NotchModel {
 
     /// What sits beside the notch at rest, by priority: Buddy answering, the focus
     /// countdown, the music playing.
-    enum Ear: Equatable { case none, session(Session), buddy, focus(FocusStatus), music(EarTrack) }
+    enum Ear: Equatable { case none, system(NotchStatus), notice(Notice), session(Session), buddy, focus(FocusStatus), music(EarTrack) }
 
     var ear: Ear {
+        if let status { return .system(status) }
+        if let notice, !notice.isApproval { return .notice(notice) }
+        if let session = activeSession, session.state == "waiting" { return .session(session) }
         if buddyBusy { return .buddy }
+        if let session = activeSession { return .session(session) }
         if let focus, focus.running { return .focus(focus) }
         if let track = earTrack, track.playing { return .music(track) }
         return .none
@@ -89,18 +93,29 @@ struct NotchActions {
     var openShortcut: (Shortcut) -> Void
     var addShortcut: () -> Void
     var removeShortcut: (Shortcut) -> Void
-    var openLink: (String) -> Void
     var giveToBuddy: () -> Void
     var share: () -> Void
     var copyPaths: () -> Void
-    var clearDrop: () -> Void
     var drop: ([URL]) -> Void
+    var close: () -> Void
+    var addFiles: () -> Void
+    var removeFile: (String) -> Void
+    var openFile: (URL) -> Void
+    var saveClipboard: () -> Void
+    var copyClip: (SavedClip) -> Void
+    var giveClip: (SavedClip) -> Void
+    var removeClip: (String) -> Void
+    var setWidget: (String, Bool) -> Void
+    var pickCalendar: () -> Void
+    var clearCalendar: () -> Void
+    var openAppointment: () -> Void
 }
 
 /// The island: black like the hardware notch, white text. One notice at a time; hover opens the tools.
 struct NotchView: View {
     let model: NotchModel
     let notch: CGSize
+    let hasNotch: Bool
     let hooksConnected: Bool
     let actions: NotchActions
 
@@ -112,7 +127,6 @@ struct NotchView: View {
     @State private var retainedMode: NotchModel.Mode = .open
     @State private var retainedNotice: NotchModel.Notice?
     @State private var retainedSize: CGSize = .zero
-    @State private var retainedDropped: [URL] = []
 
     private var motion: Animation? { reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.88) }
 
@@ -122,8 +136,9 @@ struct NotchView: View {
         let expandedSize = open ? NotchLayout.size(model, notch: notch) : retainedSize
         NotchMorph(progress: reveal, size: presentationSize == .zero ? idleSize : presentationSize,
                    idleSize: idleSize, expandedSize: expandedSize, notch: notch,
-                   expanded: expandedContent, ears: ears)
+                   expanded: expandedContent, header: expandedHeader, ears: ears)
         .tooltipHost()
+        .onExitCommand(perform: actions.close)
         .environment(\.colorScheme, .dark)
         .onChange(of: model.mode, initial: true) { _, mode in
             transitionID &+= 1
@@ -152,19 +167,32 @@ struct NotchView: View {
         .onChange(of: model.notice) { _, notice in
             if let notice { retainedNotice = notice }
         }
-        .onChange(of: model.dropped) { _, files in
-            if !files.isEmpty { retainedDropped = files }
-        }
         .onDrop(of: [.fileURL], isTargeted: Binding(get: { model.dragging }, set: { model.dragging = $0 })) { providers in
             Task { @MainActor in actions.drop(await Self.urls(from: providers)) }
             return true
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // The animated outline may round inward, but the camera housing must always remain entirely black.
+        .background(alignment: .top) {
+            if hasNotch { Rectangle().fill(NotchLayout.background).frame(width: notch.width, height: notch.height) }
+        }
+        .ignoresSafeArea()
     }
 
     @ViewBuilder
     private var expandedContent: some View {
         if expandedVisible { content.transition(.identity) }
+    }
+
+    @ViewBuilder
+    private var expandedHeader: some View {
+        if expandedVisible {
+            if let status = model.status {
+                NotchStatusView(status: status, notch: notch).frame(width: notch.width + 2 * NotchLayout.statusWing)
+            } else if (model.mode == .idle ? retainedMode : model.mode) == .open {
+                overviewHeader
+            }
+        }
     }
 
     @ViewBuilder
@@ -177,32 +205,102 @@ struct NotchView: View {
             }
         case .open:
             VStack(spacing: 16) {
-                if let playing = model.nowPlaying {
-                    MusicPlayer(track: playing, readAt: model.nowPlayingAt, onMedia: actions.media, onSeek: actions.seek)
+                switch model.tab {
+                case .home:
+                    VStack(spacing: 16) {
+                        if let playing = model.nowPlaying {
+                            MusicPlayer(track: playing, readAt: model.nowPlayingAt, onMedia: actions.media, onSeek: actions.seek)
+                        }
+                        HStack(spacing: 12) {
+                            SessionsTile(sessions: model.sessions, connected: hooksConnected, onConnect: actions.connect)
+                            FocusTile(focus: model.focus, onStart: actions.focusStart, onStop: actions.focusStop)
+                            ShortcutsTile(shortcuts: model.shortcuts, onOpen: actions.openShortcut, onAdd: actions.addShortcut,
+                                          onRemove: actions.removeShortcut)
+                        }.frame(height: NotchLayout.tileHeight, alignment: .top)
+                    }
+                case .files:
+                    NotchShelfView(model: model, actions: actions)
+                case .utilities:
+                    NotchUtilitiesView(model: model, actions: actions)
                 }
-                HStack(spacing: 12) {
-                    SessionsTile(sessions: model.sessions, connected: hooksConnected, onConnect: actions.connect)
-                    FocusTile(focus: model.focus, onStart: actions.focusStart, onStop: actions.focusStop)
-                    ShortcutsTile(shortcuts: model.shortcuts, onOpen: actions.openShortcut, onAdd: actions.addShortcut,
-                                  onRemove: actions.removeShortcut)
-                }
-                .frame(height: NotchLayout.tileHeight, alignment: .top)
-                if !model.briefing.isEmpty {
-                    BriefingList(items: model.briefing, onOpen: actions.openLink)
-                        .padding(.top, -4)
-                }
-                if !model.usage.isEmpty {
+                if model.usage.contains(where: { NotchUsage.window(for: $0) != nil }) {
                     UsageStrip(usage: model.usage)
                         .padding(.top, -4)
+                }
+                if !model.toolMessage.isEmpty {
+                    Text(model.toolMessage).font(.system(size: 10)).foregroundStyle(.secondary)
+                        .lineLimit(1).frame(height: 12).padding(.top, -4).tip(model.toolMessage)
                 }
             }
             .padding(.top, 16)
         case .drop:
-            DropPanel(files: model.mode == .idle ? retainedDropped : model.dropped, dragging: model.dragging, actions: actions)
+            DropPanel(dragging: model.dragging)
                 .padding(.top, 16)
         case .idle:
             EmptyView()
         }
+    }
+
+    private var tabs: some View {
+        HStack(spacing: 4) {
+            ForEach(NotchModel.Tab.allCases, id: \.self) { tab in
+                Button { model.tab = tab; model.toolMessage = "" } label: {
+                    Image(systemName: tab.symbol)
+                        .font(.system(size: 13, weight: .medium)).frame(width: 30, height: 26)
+                        .foregroundStyle(model.tab == tab ? Color.white : .secondary)
+                        .background(.white.opacity(model.tab == tab ? 0.13 : 0), in: Capsule())
+                }.buttonStyle(.plain).accessibilityLabel(tab.rawValue)
+                    .accessibilityAddTraits(model.tab == tab ? .isSelected : [])
+                    .tip(tab == .files && !model.dropped.isEmpty ? "Archivos · \(model.dropped.count) guardados" : tab.rawValue)
+            }
+        }.fixedSize()
+    }
+
+    private var widgetMenu: some View {
+        Menu {
+            Toggle("Batería", isOn: Binding(get: { model.tools?.batteryEnabled ?? true }, set: { actions.setWidget("battery", $0) }))
+            Toggle("Próxima cita", isOn: Binding(get: { model.tools?.calendarEnabled ?? true }, set: { actions.setWidget("calendar", $0) }))
+            Toggle("Portapapeles", isOn: Binding(get: { model.tools?.clipboardEnabled ?? true }, set: { actions.setWidget("clipboard", $0) }))
+            if let system = model.system {
+                Divider()
+                Toggle("Volumen y brillo", isOn: Binding(get: { system.levelsEnabled }, set: { system.set("levels", enabled: $0) }))
+                Toggle("Conexiones", isOn: Binding(get: { system.connectionsEnabled }, set: { system.set("connections", enabled: $0) }))
+                Toggle("No molestar / Concentración", isOn: Binding(get: { system.focusEnabled }, set: { system.set("focus", enabled: $0) }))
+                if !system.replacementReady { Button("Activar reemplazo del indicador nativo…", action: system.requestAccessibility) }
+                if !system.focusAvailable { Button("Permitir estado de concentración…", action: system.requestFocus) }
+            }
+        } label: { Image(systemName: "slider.horizontal.3").font(.system(size: 13)).frame(width: 28, height: 28) }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .accessibilityLabel("Elegir widgets").tip("Elegir qué mostrar en Utilidades")
+    }
+
+    private var overviewHeader: some View {
+        HStack(spacing: 0) {
+            tabs.frame(maxWidth: .infinity, alignment: .leading)
+                .tip(model.activityLabel)
+            Color.clear.frame(width: notch.width)
+            HStack(spacing: 10) {
+                if model.tab == .utilities { widgetMenu }
+                Button { model.pinned.toggle() } label: {
+                    Image(systemName: model.pinned ? "pin.fill" : "pin")
+                        .foregroundStyle(model.pinned ? Color.accentColor : .secondary)
+                        .frame(width: 28, height: 28)
+                        .background(.white.opacity(model.pinned ? 0.12 : 0.05), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Mantener abierto")
+                .accessibilityValue(model.pinned ? "Activado" : "Desactivado")
+                .tip(model.pinned ? "Dejar de mantener abierto" : "Mantener abierto al retirar el cursor")
+                Button(action: actions.close) {
+                    Image(systemName: "xmark").frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cerrar herramientas")
+                .tip("Cerrar herramientas · Esc")
+            }.frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, NotchLayout.side)
+        .frame(height: notch.height)
     }
 
     /// At rest, beside the notch: whatever matters most right now (see `NotchModel.ear`).
@@ -211,6 +309,10 @@ struct NotchView: View {
         switch model.ear {
         case .none:
             EmptyView()
+        case let .system(status):
+            NotchStatusView(status: status, notch: notch)
+        case let .notice(notice):
+            compactNotice(notice)
         case let .session(session):
             earPair(left: AnyView(ProviderMark(provider: AgentNames.mark(session.agent), size: 14)),
                     right: AnyView(StateDot(state: session.state)),
@@ -230,6 +332,21 @@ struct NotchView: View {
                     right: AnyView(Equalizer()),
                     tip: "\(track.title) · \(track.artist)")
         }
+    }
+
+    private func compactNotice(_ notice: NotchModel.Notice) -> some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                if notice.agent == "buddy" { AvatarView(size: 16) }
+                else { ProviderMark(provider: AgentNames.mark(notice.agent), size: 13, showsTooltip: false) }
+                Text(notice.agentName).font(.system(size: 10, weight: .medium)).lineLimit(1)
+            }.frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .trailing)
+            Color.clear.frame(width: notch.width)
+            Text(notice.kind == .finished ? "Listo" : notice.kind == .failed ? "Error" : "Espera")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(notice.kind == .failed ? Color.red : notice.kind == .waiting ? Color.orange : Color.accentColor)
+                .frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .leading)
+        }.padding(.horizontal, NotchLayout.compactInset).tip("\(notice.title)\n\(notice.detail)")
     }
 
     private func earPair(left: AnyView, right: AnyView, tip: String) -> some View {
@@ -257,13 +374,14 @@ struct NotchView: View {
 
 /// One spring interpolates the background size and content opacity together. The expanded layout stays fixed while
 /// the outline shrinks, avoiding text reflow and independent insertion/removal fades during the spring.
-private struct NotchMorph<Expanded: View, Ears: View>: View, Animatable {
+private struct NotchMorph<Expanded: View, Header: View, Ears: View>: View, Animatable {
     var progress: CGFloat
     var size: CGSize
     let idleSize: CGSize
     let expandedSize: CGSize
     let notch: CGSize
     let expanded: Expanded
+    let header: Header
     let ears: Ears
 
     nonisolated var animatableData: AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>> {
@@ -285,6 +403,11 @@ private struct NotchMorph<Expanded: View, Ears: View>: View, Animatable {
                 .offset(y: -6 * (1 - p))
                 .allowsHitTesting(p == 1)
                 .accessibilityHidden(p < 1)
+            header
+                .frame(width: max(expandedSize.width, 1), height: notch.height)
+                .opacity(p)
+                .allowsHitTesting(p == 1)
+                .accessibilityHidden(p < 1)
             if p < 1 {
                 ears.frame(width: idleSize.width, height: notch.height)
                     .opacity(1 - p)
@@ -292,8 +415,9 @@ private struct NotchMorph<Expanded: View, Ears: View>: View, Animatable {
             }
         }
         .frame(width: width, height: height, alignment: .top)
-        .background(shape.fill(.black))
+        .background(shape.fill(NotchLayout.background))
         .clipShape(shape)
+        .shadow(color: .black.opacity(0.3 * p), radius: 16, y: 8)
         // Geometry and opacity are already interpolated together; descendants must not start a second fade.
         .animation(nil, value: progress)
         .animation(nil, value: size)
@@ -507,6 +631,7 @@ private struct MusicPlayer: View {
         .padding(14)
         .frame(height: NotchLayout.playerHeight)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.08)))
     }
 
     @ViewBuilder
@@ -594,106 +719,30 @@ private struct SeekBar: View {
 
 // MARK: - Usage
 
-/// What is used of each plan: one column per provider (its mark on the left), a row per window under one another, so
-/// every row is plainly that provider's.
+/// A single compact row: provider mark and used percentage. Window and reset live in the tooltip.
 private struct UsageStrip: View {
     let usage: [ProviderUsage]
 
     var body: some View {
-        HStack(alignment: .top, spacing: 18) {
+        HStack(spacing: 18) {
             ForEach(usage, id: \.provider) { plan in
-                HStack(alignment: .top, spacing: 8) {
-                    ProviderMark(provider: plan.provider, size: 12)
-                        .frame(height: NotchLayout.usageRow)
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(plan.windows.prefix(3), id: \.label) { window in
-                            UsageBar(window: window)
-                        }
+                if let window = NotchUsage.window(for: plan) {
+                    HStack(spacing: 6) {
+                        ProviderMark(provider: plan.provider, size: 12, showsTooltip: false)
+                        Text("\(Int(window.usedPct.rounded())) %")
+                            .foregroundStyle(window.usedPct >= 90 ? Color.red : window.usedPct >= 70 ? .orange : .secondary)
+                            .monospacedDigit()
                     }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .frame(height: NotchLayout.usageHeight(usage), alignment: .top)
-    }
-}
-
-/// Today's «mensajitos»: the topic, then the line; a click opens its source.
-private struct BriefingList: View {
-    let items: [BriefingItem]
-    var onOpen: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(items.prefix(NotchLayout.briefingMax).enumerated()), id: \.offset) { _, item in
-                Button {
-                    if let url = item.url { onOpen(url) }
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(item.topic)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .frame(width: 72, alignment: .leading)
-                        Text(item.text)
-                            .font(.system(size: 12))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 0)
-                        if item.url != nil {
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(height: NotchLayout.briefingRow)
+                    .font(.system(size: 11, weight: .semibold))
                     .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(item.url == nil)
-                .tip(item.text)
-            }
-        }
-        .frame(height: NotchLayout.briefingHeight(items.count), alignment: .top)
-    }
-}
-
-private struct UsageBar: View {
-    let window: UsageWindow
-
-    private var color: Color { window.usedPct >= 90 ? .red : window.usedPct >= 70 ? .orange : .white }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(window.label)
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-            ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.15))
-                GeometryReader { geo in
-                    Capsule().fill(color).frame(width: geo.size.width * min(max(window.usedPct / 100, 0), 1))
+                    .tip(NotchUsage.help(plan: plan, window: window))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(NotchUsage.help(plan: plan, window: window))
                 }
             }
-            .frame(height: 3)
-            Text("\(Int(window.usedPct.rounded())) %")
-                .monospacedDigit()
-                .frame(width: 34, alignment: .trailing)
         }
-        .font(.system(size: 10, weight: .semibold))
-        .frame(height: NotchLayout.usageRow)
-        .tip(Self.help(window))
-    }
-
-    static func help(_ w: UsageWindow) -> String {
-        var text = "\(Int(w.usedPct.rounded())) % usado (\(w.label))"
-        if let resets = w.resetsAt {
-            let date = Date(timeIntervalSince1970: TimeInterval(resets))
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "es")
-            f.setLocalizedDateFormatFromTemplate(Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE d HH:mm")
-            text += " · se reinicia \(f.string(from: date))"
-        }
-        return text
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(height: NotchLayout.usageHeight)
     }
 }
 
@@ -716,6 +765,7 @@ private struct Tile<Content: View>: View {
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: NotchLayout.tileHeight, maxHeight: NotchLayout.tileHeight, alignment: .topLeading)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.08)))
         .clipped()
     }
 }
@@ -778,10 +828,16 @@ private struct FocusTile: View {
                         .tip("Terminar el bloque de enfoque ahora")
                 }
             } else {
-                Text("Sin distracciones")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Menu {
+                    ForEach([5, 15, 25, 50, 90, 120], id: \.self) { minutes in
+                        Button("\(minutes) minutos") { onStart(UInt32(minutes)) }
+                    }
+                } label: {
+                    Text("Elegir duración").font(.system(size: 11))
+                }
+                .menuStyle(.borderlessButton)
+                .foregroundStyle(.secondary)
+                .tip("Bloques de enfoque de 5 a 120 minutos")
                 HStack(spacing: 6) {
                     Button("25 min") { onStart(25) }
                         .buttonStyle(IslandButtonStyle(prominent: true, compact: true))
@@ -885,53 +941,19 @@ private struct ShortcutIcon: View {
 
 // MARK: - Drop
 
-/// «Suelta tus archivos aquí»: while dragging, a target; once dropped, what to do with them.
+/// Files accumulate in the persistent shelf after being dropped.
 private struct DropPanel: View {
-    let files: [URL]
     let dragging: Bool
-    let actions: NotchActions
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if files.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray.and.arrow.down")
-                        .font(.system(size: 22, weight: .medium))
-                        .symbolEffect(.bounce, value: dragging)
-                    Text("Suelta tus archivos aquí").font(.system(size: 13, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(.white.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
-            } else {
-                HStack(spacing: 10) {
-                    Image(nsImage: NSWorkspace.shared.icon(forFile: files[0].path))
-                        .resizable().frame(width: 32, height: 32)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(files.count == 1 ? files[0].lastPathComponent : "\(files.count) archivos")
-                            .font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                        Text(files.count == 1 ? files[0].deletingLastPathComponent().path : files.map(\.lastPathComponent).joined(separator: ", "))
-                            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    }
-                    Spacer()
-                    Button(action: actions.clearDrop) { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain)
-                        .tip("Descartar")
-                }
-                HStack(spacing: 8) {
-                    Button("Dárselo a Buddy", action: actions.giveToBuddy)
-                        .buttonStyle(IslandButtonStyle(prominent: true))
-                        .tip("Abre el chat con los archivos")
-                    Button("Compartir…", action: actions.share)
-                        .buttonStyle(IslandButtonStyle(prominent: false))
-                        .tip("AirDrop, Mail, Mensajes…")
-                    Button("Copiar ruta", action: actions.copyPaths)
-                        .buttonStyle(IslandButtonStyle(prominent: false))
-                        .tip("Copia la ruta al portapapeles")
-                }
-            }
+        VStack(spacing: 8) {
+            Image(systemName: "tray.and.arrow.down")
+                .font(.system(size: 22, weight: .medium)).symbolEffect(.bounce, value: dragging)
+            Text("Suelta tus archivos aquí").font(.system(size: 13, weight: .semibold))
         }
-        .frame(height: NotchLayout.dropHeight, alignment: .top)
+        .frame(maxWidth: .infinity).frame(height: NotchLayout.dropHeight)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(.white.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
     }
 }
 
@@ -939,6 +961,7 @@ private struct DropPanel: View {
 struct IslandButtonStyle: ButtonStyle {
     let prominent: Bool
     var compact = false
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -947,7 +970,7 @@ struct IslandButtonStyle: ButtonStyle {
             .padding(.horizontal, compact ? 10 : 14)
             .frame(height: compact ? 24 : 28)
             .background(prominent ? Color.white : Color.white.opacity(0.16), in: Capsule())
-            .opacity(configuration.isPressed ? 0.7 : 1)
+            .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.7 : 1)
             .contentShape(Capsule())
     }
 }

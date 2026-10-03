@@ -3,6 +3,7 @@
 
 mod capture;
 mod media;
+mod notch;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -94,6 +95,7 @@ fn pet_next(
     untouched_seconds: f64,
     hovering: bool,
     sitting: bool,
+    sleeping: bool,
 ) -> Result<PetPlan, String> {
     let (window_rect, area) = pet_rects(&window).map_err(|e| e.to_string())?;
     let chat_open = state.chat_open.load(Ordering::SeqCst);
@@ -107,6 +109,7 @@ fn pet_next(
         untouched_seconds,
         engaged: hovering || chat_open,
         sitting,
+        sleeping,
     }))
 }
 
@@ -202,6 +205,22 @@ pub fn run() {
             open_history,
             history_pick,
             bar_resize,
+            notch::notch_tools,
+            notch::notch_copy_paths,
+            notch::notch_add_files,
+            notch::notch_remove_file,
+            notch::notch_pick_files,
+            notch::notch_save_clip,
+            notch::notch_copy_clip,
+            notch::notch_give_clip,
+            notch::notch_take_drafts,
+            notch::notch_remove_clip,
+            notch::notch_widget,
+            notch::notch_pick_calendar,
+            notch::notch_clear_calendar,
+            notch::notch_calendar,
+            notch::notch_open_appointment,
+            notch::notch_battery,
             media_watch,
             media_now_playing,
             media_control,
@@ -271,6 +290,7 @@ pub fn run() {
             niko_review_now,
             niko_refresh_dashboard,
             telegram_account_request,
+            parley_odds_request,
             telegram_status,
             telegram_connect,
             telegram_disconnect,
@@ -305,6 +325,7 @@ pub fn run() {
                 chat_height: std::sync::Mutex::new(60.0),
                 say: std::sync::Mutex::new(None),
             });
+            app.manage(notch::Inbox::default());
             forward_events(app.handle(), &core);
 
             let pet = app.get_webview_window(PET).expect("la ventana «pet» está en tauri.conf.json");
@@ -751,10 +772,7 @@ fn open_document(app: AppHandle, path: String) -> Result<(), String> {
 /// Files dropped on the bar: a new chat with them attached.
 #[tauri::command]
 fn give_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
-    if !app.state::<AppCore>().chat_open.load(Ordering::SeqCst) {
-        toggle_chat(app.clone())?;
-    }
-    app.emit_to(CHAT, "attach", paths).map_err(|e| e.to_string())
+    notch::give_draft(&app, notch::Draft { text: None, paths })
 }
 
 /// The hook events a preview adds (the last word of each new `buddy-hook` command line), for a short summary.
@@ -1383,5 +1401,13 @@ async fn telegram_account_request(app: AppHandle, action: String, value: String)
     let core = app.state::<AppCore>().core.clone();
     tauri::async_runtime::spawn_blocking(move || core.telegram_account_request(action, value))
         .await.map_err(|_| "La conexión con Telegram se interrumpió.".to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn parley_odds_request(app: AppHandle, action: String, value: String) -> Result<String, String> {
+    let core = app.state::<AppCore>().core.clone();
+    tauri::async_runtime::spawn_blocking(move || core.parley_odds_request(action, value))
+        .await.map_err(|_| "La configuración de cuotas se interrumpió.".to_string())?
         .map_err(|e| e.to_string())
 }

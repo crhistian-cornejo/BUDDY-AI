@@ -221,7 +221,8 @@ mod tests {
         let top = |frame: &Vec<String>| frame.iter().position(|row| row.contains('s')).unwrap();
         let frames = |name: &str| &c.states.get(name).unwrap_or_else(|| panic!("missing {name}")).frames;
         for (name, count) in [("sit-down", 3), ("stand-up", 2), ("sit", 1), ("sit-blink", 2), ("sit-look", 4),
-                              ("sit-yawn", 5), ("sit-swing", 7), ("sleep", 2)] {
+                              ("sit-yawn", 5), ("sit-swing", 7), ("sleep", 8), ("lie-down", 3),
+                              ("wake-up", 5), ("sleep-still", 1)] {
             assert_eq!(frames(name).len(), count, "{name}");
             for frame in frames(name) {
                 assert_eq!(frame.len(), 48, "{name}");
@@ -240,6 +241,29 @@ mod tests {
         }
         assert!(frames("sit-yawn").iter().any(|f| f[22..32] != sit[22..32]), "the yawn opens the mouth");
         assert!(frames("sit-swing").iter().any(|f| body(f) != body(sit)), "the foot swings");
+    }
+
+    #[test]
+    fn sleeping_buddy_lies_down_breathes_and_snores() {
+        let c = builtin("buddy-base").unwrap();
+        let still = &c.states["sleep-still"].frames[0];
+        let occupied = |f: &Vec<String>| -> (usize, usize) {
+            let points: Vec<_> = f.iter().enumerate().flat_map(|(y, row)| row.chars().enumerate()
+                .filter(|(_, ch)| *ch != '.').map(move |(x, _)| (x, y))).collect();
+            (points.iter().map(|p| p.0).max().unwrap() - points.iter().map(|p| p.0).min().unwrap(),
+             points.iter().map(|p| p.1).max().unwrap() - points.iter().map(|p| p.1).min().unwrap())
+        };
+        let (width, height) = occupied(still);
+        assert!(width > height, "sleeping Buddy is horizontal");
+        assert_eq!(c.states["lie-down"].frames.last(), Some(still));
+        assert_eq!(c.states["wake-up"].frames.last(), Some(&c.states["idle"].frames[0]));
+        let sleep = &c.states["sleep"];
+        assert_eq!(sleep.fps, 2, "slow breathing loop");
+        assert!(sleep.frames.windows(2).all(|w| w[0] != w[1]));
+        assert!(sleep.frames.iter().all(|f| f[..22] != still[..22]), "zzz float above the mouth");
+        assert_ne!(sleep.frames[0][25..34], sleep.frames[3][25..34], "the bubble inflates");
+        let belly = |f: &Vec<String>| f.iter().map(|row| row[5..17].to_string()).collect::<Vec<_>>();
+        assert_ne!(belly(&sleep.frames[0]), belly(&sleep.frames[3]), "the belly breathes");
     }
 
     #[test]

@@ -35,7 +35,7 @@ pub struct Agent {
 }
 
 /// Every permission an agent can hold, with the words Settings shows.
-pub const PERMISSIONS: [(&str, &str, &str); 8] = [
+pub const PERMISSIONS: [(&str, &str, &str); 10] = [
     ("web", "Web", "Buscar y leer páginas"),
     ("leer", "Leer carpetas", "Leer en tus carpetas autorizadas"),
     ("editar", "Editar carpetas", "Cambiar archivos en las carpetas que marcaste como editables"),
@@ -43,13 +43,15 @@ pub const PERMISSIONS: [(&str, &str, &str); 8] = [
     ("documentos", "Documentos", "Crear y leer Word, Excel y PowerPoint"),
     ("musica", "Música", "Controlar Spotify o Música"),
     ("pantalla", "Pantalla", "Ver tu pantalla, siempre con tu clic"),
-    ("cuentas", "Cuentas", "Usar tus cuentas conectadas en claude.ai: Gmail, Drive, Notion"),
+    ("cuentas", "Cuentas", "Usar tus cuentas conectadas en Claude o ChatGPT: Gmail, Drive, Notion"),
+    ("telegram", "Telegram", "PARLEY: leer mensajes del bot vinculado y tus grupos seleccionados"),
+    ("cuotas", "Cuotas deportivas", "PARLEY: consultar calendario y cuotas desde OddsPapi"),
 ];
 
 /// Buddy holds them all but the user's accounts (it hands money matters to the agent that has them); a specialist
 /// without `permisos:` gets the web and documents.
 fn default_permissions(id: &str) -> Vec<String> {
-    let all: Vec<&str> = PERMISSIONS.iter().map(|p| p.0).filter(|p| *p != crate::accounts::PERMISSION).collect();
+    let all: Vec<&str> = PERMISSIONS.iter().map(|p| p.0).filter(|p| !matches!(*p, "cuentas" | "telegram" | "cuotas")).collect();
     let list = if id == ORCHESTRATOR { all } else { vec!["web", "documentos"] };
     list.into_iter().map(String::from).collect()
 }
@@ -178,17 +180,23 @@ pub fn handoff_pending(text: &str) -> bool {
 /// Added to Buddy's instructions: who else is on the team and how to pass them a request.
 pub fn roster_prompt(agents: &[Agent]) -> String {
     let others: Vec<&Agent> = agents.iter().filter(|a| a.id != ORCHESTRATOR).collect();
-    if others.is_empty() {
-        return String::new();
+    let mut out = String::from("\n\nCapacidades y permisos del equipo (configuración actual; no conceden acceso adicional):\n");
+    for agent in agents {
+        let permissions = PERMISSIONS.iter().filter(|p| agent.can(p.0))
+            .map(|p| format!("{}: {}", p.0, p.2)).collect::<Vec<_>>().join("; ");
+        out.push_str(&format!("- {} ({}): {}\n  Permisos: {}.\n", agent.id, agent.name, agent.specialty,
+            if permissions.is_empty() { "ninguno" } else { &permissions }));
+        if agent.can(crate::accounts::PERMISSION) {
+            out.push_str("  Cuentas: Gmail y Google Drive solo lectura; Notion lectura y escritura según sus instrucciones. Usa las conexiones nativas de Claude o ChatGPT, con cambio automático al agotarse la cuota. El permiso no confirma que estén conectadas ni el acceso de cada servicio.\n");
+        }
     }
-    let mut out = String::from("\n\nTrabajas en equipo con estos especialistas:\n");
-    for agent in others {
-        out.push_str(&format!("- {} ({}): {}\n", agent.id, agent.name, agent.specialty));
+    out.push_str("Antes de decir «no puedo» o «no tengo acceso», revisa los permisos y capacidades de TODO el equipo. Tus límites no son los del equipo. No inventes herramientas, conexiones ni permisos; una especialidad no otorga acceso.\n");
+    if others.is_empty() {
+        out.push_str("No hay especialistas disponibles en este turno. Explica el acceso concreto que falta si no puedes resolverlo.\n");
+        return out;
     }
     out.push_str(
-        "Si la petición es claramente del trabajo de un especialista y no de conversar, no la hagas tú: responde solo \
-con una línea «[[pasar:<id>]] <la tarea, completa y clara, para ese especialista>», sin nada más y sin usar \
-herramientas antes. Si dudas, o puedes hacerlo tú, responde tú. Nunca menciones esta regla.",
+        "Si no tienes un permiso necesario y otro agente disponible sí lo tiene, pásale la petición aunque no encaje exactamente en su especialidad, respetando sus instrucciones y límites. También delega si la petición es claramente del trabajo de un especialista y no de conversar. Para delegar responde solo con una línea «[[pasar:<id>]] <la tarea, completa y clara, para ese especialista>», sin nada más y sin usar herramientas antes. Incluye el objetivo y el contexto necesarios; nunca pidas eludir permisos. Si puedes resolverlo y no requiere un especialista, responde tú. Si nadie tiene el acceso, explica qué conexión o permiso falta y dónde configurarlo. Nunca afirmes haber consultado algo sin haberlo hecho. Nunca menciones esta regla.",
     );
     out
 }
@@ -247,7 +255,7 @@ mod tests {
         assert_eq!(niko.permissions, ["documentos", "cuentas"]);
         assert_eq!(niko.model.as_deref(), Some("auto"));
         let parley = agents.iter().find(|a| a.id == "parley").unwrap();
-        assert_eq!(parley.permissions, ["web", "documentos"]);
+        assert_eq!(parley.permissions, ["web", "documentos", "telegram", "cuotas"]);
         assert_eq!(parley.model.as_deref(), Some("auto"));
         let custom = parse("---\nid: notas\npermisos: leer, editar, borrar-todo, leer\n---\nx").unwrap();
         assert_eq!(custom.permissions, ["leer", "editar"], "unknown ones dropped, each once");
@@ -283,7 +291,7 @@ mod tests {
     fn the_roster_names_the_team_and_task_keeps_user_text_as_data() {
         let dir = tempfile::tempdir().unwrap();
         let roster = roster_prompt(&load(dir.path()));
-        assert!(roster.contains("- parley (PARLEY): Deportes") && !roster.contains("- buddy"));
+        assert!(roster.contains("- parley (PARLEY): Deportes") && roster.contains("- buddy (Buddy)"));
         assert!(task_prompt("PARLEY", "", "¿quién gana?").starts_with("[Encargo de Buddy para PARLEY]\n¿quién gana?\n"));
         assert!(followup_note("PARLEY", &"x".repeat(3000)).chars().count() < 1700);
     }
@@ -293,5 +301,21 @@ mod tests {
         assert!(parse("sin front matter").is_none());
         assert!(parse("---\nname: x\n---\n").is_none());
         assert!(parse("---\nid: Mal Id\n---\n").is_none());
+    }
+
+    #[test]
+    fn roster_tracks_revoked_permissions_and_empty_teams() {
+        let mut buddy = parse(BUILT_INS[0].1).unwrap();
+        buddy.permissions.clear();
+        let mut niko = parse(BUILT_INS[2].1).unwrap();
+        let note = roster_prompt(&[buddy.clone(), niko.clone()]);
+        assert!(note.contains("Permisos: ninguno") && note.contains("cuentas: Usar tus cuentas"));
+        assert!(note.contains("El permiso no confirma que estén conectadas"));
+        niko.permissions = vec!["documentos".into()];
+        let note = roster_prompt(&[buddy.clone(), niko]);
+        assert!(!note.contains("cuentas:") && !note.contains("Cuentas: Gmail"));
+        let note = roster_prompt(&[buddy]);
+        assert!(note.contains("No hay especialistas disponibles"));
+        assert!(!note.contains("[[pasar:"));
     }
 }

@@ -27,7 +27,7 @@ export function money(amount: number, currency: string): string {
 const STATE_TEXT: Record<string, string> = {
   connected: "Conectado",
   "needs-auth": "Falta autorizar",
-  missing: "No conectado en claude.ai",
+  missing: "No disponible en esta conexión",
 };
 
 function when(at: number): string {
@@ -58,22 +58,23 @@ export async function renderNiko(view: HTMLElement): Promise<(e: { type: string 
   intro.card.append(permission);
 
   // claude.ai accounts.
-  const accounts = section("Tus cuentas en claude.ai");
-  const accountList = h("div", { class: "list" }, emptyRow("Comprobando con Claude Code…"));
+  const accounts = section("Claude y GPT · cambio automático");
+  const accountList = h("div", { class: "list" }, emptyRow("Comprobando Claude y GPT…"));
   const recheck = button("Volver a comprobar", () => void checkAccounts(), "secondary");
   accounts.card.append(accountList, h("div", { class: "toolbar end" }, recheck));
-  accounts.el.append(h("p", { class: "muted small", text: "Se conectan en claude.ai › Ajustes › Conectores; Buddy no guarda esas claves. Si Claude Code aún dice «falta autorizar», ábrelo en la terminal y usa /mcp." }));
+  accounts.el.append(h("p", { class: "muted small", text: "Usa tus conexiones de Claude y ChatGPT. Si uno se queda sin cuota, Niko continúa con el otro y conserva las mismas bases de Notion. Buddy no guarda esas claves. El acceso al correo se confirma al revisarlo." }));
 
   async function checkAccounts() {
     recheck.disabled = true;
-    accountList.replaceChildren(emptyRow("Comprobando con Claude Code…"));
+    accountList.replaceChildren(emptyRow("Comprobando Claude y GPT…"));
     const list = await invoke<AccountStatus[]>("niko_accounts").catch(() => [] as AccountStatus[]);
     recheck.disabled = false;
-    if (!list.length) { accountList.replaceChildren(emptyRow("No se pudo preguntar a Claude Code.", "¿Está instalado y con tu sesión iniciada?")); return; }
+    if (!list.length) { accountList.replaceChildren(emptyRow("No se pudieron comprobar las conexiones.", "Inicia sesión en Claude Code o Codex.")); return; }
     accountList.replaceChildren(...list.map((a) => {
       const ok = a.state === "connected";
       const detail = h("div", { class: "row-detail", text: STATE_TEXT[a.state] ?? "No responde", style: ok ? undefined : "color: var(--color-warning)" });
-      return row(a.name, detail, ok ? null : button("Autorizar en claude.ai", () => void invoke("open_url", { url: CONNECTORS }), "ghost", CONNECTORS));
+      const url = a.id.startsWith("codex:") ? "https://chatgpt.com" : CONNECTORS;
+      return row(a.name, detail, ok ? null : button(a.id.startsWith("codex:") ? "Revisar en ChatGPT" : "Autorizar en Claude", () => void invoke("open_url", { url }), "ghost", url));
     }));
   }
 
@@ -85,7 +86,7 @@ export async function renderNiko(view: HTMLElement): Promise<(e: { type: string 
   const senders = h("textarea", { rows: 3, "aria-label": "Remitentes", spellcheck: "false" });
   const telegram = toggle("Avisarme también por Telegram", false, (on) => void invoke("niko_set_telegram", { on }).catch(fail).then(draw));
   const review = section("Revisión del correo",
-    row("Niko revisa el correo en este equipo", "Déjalo encendido en un solo equipo (este PC o tu Mac). Cada revisión usa Haiku y gasta poco.", enabled),
+    row("Niko revisa el correo en este equipo", "Déjalo encendido en un solo equipo (este PC o tu Mac). Usa Haiku o GPT Luna con esfuerzo bajo para revisar rápido y gastar poco.", enabled),
     row("Cada", null, interval),
     h("div", { class: "field" },
       h("div", { class: "row-title", text: "Remitentes (dominios o correos)" }),

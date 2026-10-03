@@ -6,6 +6,7 @@ and one animated GIF per state. The JSON is what ships; this script is how it is
 poses (eyes, arms, legs, mouth, bob, a symbol), so new states are added in STATES below. Needs Pillow.
 """
 import json
+import math
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -60,6 +61,9 @@ class Pose:
     glow: int = 0  # the open screen lights the face: 1 soft, 2 brighter (flicker, thinking pulse)
     chin: bool = False  # at the laptop: the right hand rests on the chin (thinking)
     symbol: str = ""  # dots1 dots2 dots3 question question2 exclaim star
+    recline: int = 0  # 1 halfway to lying down, 2 lying on its side
+    breath: int = 0  # one-pixel rise of the sleeping belly
+    snore: int = -1  # -1 no effects; 0..7 breathing bubble and floating zzz
 
 
 def rr(x, y, x0, y0, x1, y1, r):
@@ -213,7 +217,56 @@ def draw(p: Pose):
     if p.shake:
         g = [(row[-p.shake:] + row[:-p.shake]) if p.shake > 0 else (row[-p.shake:] + row[:-p.shake]) for row in g]
     draw_symbol(g, p.symbol)
+    if p.recline:
+        g = recline(g, p.recline, p.breath)
+    if p.snore >= 0:
+        draw_snore(g, p.snore)
     return ["".join(r) for r in g]
+
+
+def recline(source, stage, breath):
+    """Rotate the existing seated pixels onto their side, keeping the whole sprout inside the canvas."""
+    angle = math.pi / 4 if stage == 1 else math.pi / 2
+    cs, sn = math.cos(angle), math.sin(angle)
+    points = [(x, y) for y, row in enumerate(source) for x, ch in enumerate(row) if ch != "."]
+    rotated = [(cs * (x - 23.5) - sn * (y - 25.5), sn * (x - 23.5) + cs * (y - 25.5)) for x, y in points]
+    lo_x, hi_x = min(x for x, y in rotated), max(x for x, y in rotated)
+    lo_y, hi_y = min(y for x, y in rotated), max(y for x, y in rotated)
+    scale = min(1, 43 / (hi_x - lo_x), 43 / (hi_y - lo_y))
+    cx = 23.5 - (hi_x + lo_x) * scale / 2
+    cy = 47 - hi_y * scale
+    out = [["."] * N for _ in range(N)]
+    for y in range(N):
+        for x in range(N):
+            rx, ry = (x - cx) / scale, (y - cy) / scale
+            sx = round(cs * rx + sn * ry + 23.5)
+            sy = round(-sn * rx + cs * ry + 25.5)
+            if 0 <= sx < N and 0 <= sy < N:
+                out[y][x] = source[sy][sx]
+    if breath and stage == 2:
+        # Expand the belly's upper silhouette without shifting rows apart or moving its feet.
+        for x in range(5, 17):
+            top = next((y for y in range(N) if out[y][x] != "."), None)
+            if top is not None and top > 0:
+                out[top - 1][x] = out[top][x]
+                out[top][x] = "b"
+    return out
+
+
+def draw_snore(g, phase):
+    """A little mint snot bubble at the mouth inflates, then shrinks; three pixel z's drift upward."""
+    radius = (1, 2, 3, 4, 4, 3, 2, 1)[phase]
+    cx, cy = 24, 29
+    g[32][21] = g[31][22] = "B"  # short stem to the mouth
+    shape(g, lambda x, y: (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2 + 1,
+          lambda x, y: "w" if x < cx and y < cy else "l", outline="B")
+    for i in range(3):
+        zx, zy = 27 + i * 6 + phase // 3, 21 - i * 6 - phase // 2
+        pts = {(zx + dx, zy + dy) for dy, row in enumerate(["###", "..#", ".#.", "#..", "###"])
+               for dx, ch in enumerate(row) if ch == "#"}
+        outline_points(g, pts)
+        for x, y in pts:
+            put(g, x, y, "l")
 
 
 def seated_feet(g, left_lift=0, right_lift=0):
@@ -389,6 +442,7 @@ def draw_symbol(g, symbol):
 I = Pose()
 SIT = Pose(sit=2, eyes="half", mouth="flat")
 LAP = Pose(sit=2, eyes="down", mouth="flat", glasses=1)  # seated at the laptop
+SLEEP = replace(SIT, eyes="closed", mouth="o", recline=2)
 STATES = {
     # name: (fps, poses). Every state but idle is played by the app and then returns to idle.
     "idle": (4, [I, replace(I, hands=1), replace(I, eyes="left", hands=1),
@@ -451,7 +505,7 @@ STATES = {
         replace(I, eyes="happy", symbol="star"),
     ]),
     # Seated and bored (after a while without being used; PetBrain decides). `sit` is the still frame held in
-    # between; the others are short, sparse moves that end back on it. Buddy dozes off seated too.
+    # between; the others are short, sparse moves that end back on it.
     "sit-down": (8, [replace(I, sit=1, mouth="flat"), replace(SIT, eyes="open", head=1), SIT]),
     "stand-up": (8, [replace(I, sit=1), I]),
     "sit": (1, [SIT]),
@@ -483,10 +537,11 @@ STATES = {
                          replace(LAP, laptop=3, glow=2, chin=True, eyes="up", symbol="dots2"),
                          replace(LAP, laptop=3, glow=2, chin=True, eyes="up", symbol="dots3"),
                          replace(LAP, laptop=3, glow=1, chin=True, eyes="up")]),
-    "sleep": (1, [
-        replace(SIT, eyes="closed"),
-        replace(SIT, eyes="closed", head=1),
-    ]),
+    "lie-down": (4, [replace(SIT, eyes="closed"), replace(SLEEP, recline=1), SLEEP]),
+    "wake-up": (6, [replace(SLEEP, eyes="half"), replace(SLEEP, recline=1, eyes="half"), SIT,
+                     replace(I, sit=1), I]),
+    "sleep-still": (1, [SLEEP]),
+    "sleep": (2, [replace(SLEEP, breath=int(2 <= i <= 5), snore=i) for i in range(8)]),
 }
 
 

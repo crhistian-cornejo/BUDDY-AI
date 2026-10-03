@@ -23,6 +23,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     private var lastUse = Date()
     /// Holding the seated frame (the last plan rested on `sit`).
     private var seated = false
+    private var sleeping: Bool { ["lie-down", "sleep", "sleep-still"].contains(model.state) }
     private var hovering = false
     /// The life loop is waiting before its next plan (so a use can re-plan at once).
     private var waiting = false
@@ -78,7 +79,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Asks the core's PetBrain for the next plan, waits, plays it, and again. `standUp` first gets a seated Buddy up.
-    private func startLife(standUp: Bool = false) {
+    private func startLife(standUp: Bool = false, wakeUp: Bool = false) {
         life?.cancel()
         waiting = false
         life = Task { [weak self] in
@@ -86,7 +87,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
                 if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                     self.model.show("idle")
                 } else {
-                    await self.model.play("stand-up", duration: 0)
+                    await self.model.play(wakeUp ? "wake-up" : "stand-up", duration: 0)
                 }
             }
             while !Task.isCancelled {
@@ -121,9 +122,10 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     /// Buddy was used: the count to sitting restarts, a seated Buddy stands up and a waiting plan is made again.
     private func used(standUp: Bool = true) {
         lastUse = Date()
-        if seated {
+        if seated || sleeping {
+            let wakeUp = sleeping
             seated = false
-            startLife(standUp: standUp && activity == nil)
+            startLife(standUp: standUp && activity == nil, wakeUp: wakeUp)
         } else if waiting {
             startLife()
         }
@@ -136,7 +138,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
                           reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
                           wander: wander && !holdStill, idleSeconds: idle,
                           untouchedSeconds: activity != nil ? 0 : Date().timeIntervalSince(lastUse),
-                          engaged: hovering || holdStill, sitting: seated)
+                          engaged: hovering || holdStill, sitting: seated, sleeping: sleeping)
     }
 
     /// Steps the window sideways once per frame (pixel-art stepping), never past the screen's edges.
@@ -169,6 +171,7 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         activityTask?.cancel()
         let wasBusy = activity != nil
         let wasSeated = seated
+        let wasSleeping = sleeping
         activity = state
         if state != nil || wasBusy { used(standUp: false) }
         let laptop = state.flatMap { Self.laptopStates[$0] }.flatMap { model.has($0) ? $0 : nil }
@@ -176,9 +179,9 @@ final class PetWindowController: NSObject, NSWindowDelegate {
             if atLaptop && leave {
                 activityTask = Task { [weak self] in
                     await self?.leaveLaptop()
-                    if let self, !Task.isCancelled, !self.seated { self.model.show("idle") }
+                    if let self, !Task.isCancelled, !self.seated, !self.sleeping { self.model.show("idle") }
                 }
-            } else if !seated {
+            } else if !seated && !sleeping {
                 model.show("idle")
             }
             return
@@ -188,7 +191,9 @@ final class PetWindowController: NSObject, NSWindowDelegate {
             let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             if let laptop {
                 if !self.atLaptop {
-                    if wasSeated && !reduce { guard await self.model.play("stand-up", duration: 0) else { return } }
+                    if (wasSeated || wasSleeping) && !reduce {
+                        guard await self.model.play(wasSleeping ? "wake-up" : "stand-up", duration: 0) else { return }
+                    }
                     self.atLaptop = true
                     if !reduce {
                         guard await self.model.play("laptop-on", duration: 0, rest: "laptop-type") else { return }
@@ -199,8 +204,8 @@ final class PetWindowController: NSObject, NSWindowDelegate {
             }
             await self.leaveLaptop()
             if Task.isCancelled { return }
-            if wasSeated && !reduce {
-                guard await self.model.play("stand-up", duration: 0) else { return }
+            if (wasSeated || wasSleeping) && !reduce {
+                guard await self.model.play(wasSleeping ? "wake-up" : "stand-up", duration: 0) else { return }
             }
             await self.model.loop(state)
         }

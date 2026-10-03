@@ -9,7 +9,7 @@ interface Account { apiId?: number; configured: boolean; authorized: boolean; st
 /** Separate from the bot: the user's account, read only and only on an explicit click. */
 export function renderTelegramAccount(): HTMLElement {
   const { el, card } = section("Telegram · Cuenta personal");
-  el.append(h("p", { class: "muted small", text: "Consulta los últimos 20 mensajes por grupo al pulsar Consultar mensajes. Solo lee los grupos elegidos: excluye chats privados y contenido protegido. No envía mensajes ni marca como leído. Las credenciales y la sesión van al Administrador de credenciales; el código y la contraseña no se guardan. Analizar con PARLEY envía los mensajes y hasta 10 fotos al proveedor del agente." }));
+  el.append(h("p", { class: "muted small", text: "Consultar mensajes muestra los últimos 20 por grupo. Analizar hoy con PARLEY vuelve a leer los mensajes de hoy con hora de Lima, hasta 200 por grupo, y verifica qué picks quedan pendientes. Solo lee los grupos elegidos; no envía mensajes ni los marca como leídos. Las credenciales y la sesión van al Administrador de credenciales. El análisis envía los mensajes y hasta 10 fotos al proveedor del agente; informa cualquier lectura parcial." }));
   let state: Account = { configured: false, authorized: false, step: "idle", chats: [], selected: [], posts: [] };
   let editingCredentials = false;
   let busy = false;
@@ -68,7 +68,7 @@ export function renderTelegramAccount(): HTMLElement {
       }
       if (state.selected.length) content.push(h("p", { class: "muted small", text: `${state.selected.length} grupos seleccionados (máximo 10)` }),
         h("div", { class: "actions" }, button("Consultar mensajes", () => void request("fetch")),
-          ...(state.posts.length ? [button("Analizar con PARLEY", () => void request("analyze"), "primary")] : [])));
+          button("Analizar hoy con PARLEY", () => void request("analyze"), "primary")));
       if (analysis) content.push(h("details", { open: true }, h("summary", { text: "Análisis de PARLEY" }), h("p", { style: "white-space:pre-wrap", text: analysis }), h("p", { class: "muted small", text: "También está en el historial: Telegram · Grupos" })));
       if (state.posts.length) {
         const messages = h("details", {}, h("summary", { text: `Mensajes consultados (${state.posts.length})` }));

@@ -46,6 +46,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 chat?.attach(files)
                 windows?.open()
             }
+            notch.onGiveText = { [weak chat, weak windows] text in
+                guard let chat else { return }
+                chat.draft = chat.draft.isEmpty ? text : chat.draft + "\n" + text
+                windows?.open()
+            }
             // Chat events draw the chat, session events the notch; mascot events animate Buddy.
             core.subscribe(listener: CoreEvents { [weak chat, weak pet, weak notch] event in
                 chat?.handle(event)
@@ -153,6 +158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
     }
+
+    func applicationWillTerminate(_ notification: Notification) { notch?.stop() }
 
     /// One line for Buddy's bubble (it does not wrap).
     private static func short(_ text: String, limit: Int = 72) -> String {

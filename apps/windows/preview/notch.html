@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Buddy · vista de prueba del notch</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <link rel="stylesheet" href="/src/bar/bar.css" />
+  <style>body.bar { padding-top: 20px; background: #25252a; } #island { width: 560px; } #overview { display:flex; } </style>
+</head>
+<body class="bar">
+  <div id="island" class="open">
+    <section id="overview">
+      <header class="overview-head"><nav id="tool-tabs" aria-label="Herramientas del notch"></nav><div class="overview-title"><span>Vista de prueba · datos ficticios</span></div><div id="widget-controls"></div></header>
+      <div id="home-tools"><div class="tile">Inicio · música, agentes, enfoque y atajos</div></div>
+      <div id="files-tools" hidden></div>
+      <div id="utility-tools" hidden></div>
+      <div id="usage"><span class="usage-chip" title="Codex · semana · 28 % usado">✦ 28 %</span></div>
+      <div id="tool-message" role="status" hidden></div>
+    </section>
+  </div>
+  <script type="module" src="./notch.ts"></script>
+</body>
+</html>

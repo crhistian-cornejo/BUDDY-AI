@@ -187,6 +187,9 @@ impl Default for Claude {
 }
 
 impl Provider for Claude {
+    fn release_session(&self, id: &str) {
+        self.pool.lock().unwrap().retain(|live| live.session.as_deref() != Some(id));
+    }
     fn id(&self) -> ProviderId {
         ProviderId::Claude
     }

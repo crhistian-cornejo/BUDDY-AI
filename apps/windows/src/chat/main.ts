@@ -63,7 +63,7 @@ function attach(paths: string[]) {
 }
 let streaming = false;
 /** The answer being written. */
-let live: { view: AnswerView; author: HTMLElement; activity: HTMLElement; actions: HTMLElement; text: string; sources: ChatSource[] } | null = null;
+let live: { view: AnswerView; author: HTMLElement; activity: HTMLElement; actions: HTMLElement; text: string; sources: ChatSource[]; agentName?: string; agentId?: string } | null = null;
 
 const icon = (path: string, size = 16) => svg(path, size, { fill: "none", stroke: "currentColor", "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round" });
 $("new").append(icon(TABLER.edit));
@@ -152,6 +152,7 @@ function activityFor(tool: string, summary: string): Activity {
   if (tool === "WebSearch") return { icon: TABLER.search, text: summary ? `Buscando: ${summary}` : "Buscando en la web…" };
   if (tool === "WebFetch") return { icon: TABLER.search, text: "Leyendo una página…" };
   if (tool === "Cambio") return { icon: TABLER.arrowsExchange, text: summary };
+  if (tool === "Telegram" || tool === "Cuotas") return { icon: TABLER.search, text: summary };
   return { icon: TABLER.dots, text: "Trabajando…" };
 }
 
@@ -161,10 +162,23 @@ function addUser(text: string, attached: string[] = []) {
 }
 
 /** Buddy's face and the agent's name, with tooltips. */
-function setAuthor(el: HTMLElement, name: string) {
-  const face = h("img", { class: "avatar", alt: "", title: name === "Buddy" ? "Buddy" : `${name}, del equipo de Buddy` });
-  void faceForName(name).then((url) => { if (url) face.setAttribute("src", url); });
-  el.replaceChildren(face, h("span", { text: name }));
+function setAuthor(el: HTMLElement, name: string, agentId = "buddy", active = false, failed = false) {
+  const avatar = (author: string) => {
+    const face = h("img", { class: "avatar", alt: "", title: author });
+    void faceForName(author).then((url) => { if (url) face.setAttribute("src", url); });
+    return face;
+  };
+  if (agentId === "buddy") {
+    el.replaceChildren(avatar(name), h("span", { text: name }));
+    el.removeAttribute("aria-label");
+    return;
+  }
+  const connection = h("span", { class: `agent-connection${active ? " active" : ""}${failed ? " failed" : ""}`, "aria-hidden": "true" },
+    h("i", { class: "agent-signal" }), h("i", { class: "agent-signal" }));
+  el.replaceChildren(avatar("Buddy"), h("span", { text: "Buddy" }), connection, avatar(name), h("span", { class: "agent-name", text: name }));
+  if (active) el.append(h("span", { class: "agent-collaborating", text: "Colaborando" }));
+  el.setAttribute("aria-label", active ? `Buddy colaborando con ${name}` : failed ? `Buddy y ${name}: tarea interrumpida` : `Buddy, respuesta de ${name}`);
+  el.title = active ? `Buddy le encarga la tarea a ${name}, con sus propios permisos` : `Respuesta de ${name}, del equipo de Buddy`;
 }
 
 /** The mark of the service that wrote the answer, after the copy and redo buttons. */
@@ -246,9 +260,9 @@ function documentCard(path: string): HTMLElement {
   return card;
 }
 
-function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false, documents: string[] = [], model: string | null = null) {
+function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false, documents: string[] = [], model: string | null = null, agentId = "buddy") {
   const authorEl = h("div", { class: "msg-author" });
-  setAuthor(authorEl, name);
+  setAuthor(authorEl, name, agentId, false, failed);
   const activityEl = h("div", { class: "activity", role: "status" });
   activityEl.hidden = true;
   const wrap = h("div", { class: "msg-assistant" }, authorEl, activityEl);
@@ -346,6 +360,7 @@ function finish(failureText: string | null) {
     }).catch(() => {});
   }
   if (live) {
+    setAuthor(live.author, live.agentName ?? "Buddy", live.agentId ?? "buddy", false, !!failureText);
     setActivity(live.activity, null);
     liveState.text = live.text;
     live.actions.hidden = !live.text;
@@ -374,7 +389,9 @@ function onCore(event: CoreEvent) {
   switch (event.type) {
     case "chatStarted": {
       const e = event as Extract<CoreEvent, { type: "chatStarted" }>;
-      setAuthor(live.author, e.agentName);
+      live.agentName = e.agentName;
+      live.agentId = e.agent;
+      setAuthor(live.author, e.agentName, e.agent, true);
       setMark(live.actions, e.provider);
       if (!live.text) {
         setActivity(live.activity, e.agent === "buddy" ? THINKING : { icon: TABLER.gitBranch, text: `Buddy le pasa la tarea a ${e.agentName}…` });
@@ -425,7 +442,7 @@ async function openChat(id: string) {
     if (m.role === "user") addUser(m.text, m.attachments ?? []);
     else {
       const sources = m.sources.map((s) => makeSource(s.title, s.url)).filter((s): s is ChatSource => !!s);
-      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed, m.attachments ?? [], m.model ?? null);
+      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed, m.attachments ?? [], m.model ?? null, m.agent);
     }
   }
   render();
@@ -494,6 +511,19 @@ void listen<string[]>("attach", ({ payload }) => {
   attach(payload);
   input.focus();
 });
+interface NotchDraft { text: string | null; paths: string[] }
+let notchDrafts = Promise.resolve();
+function takeNotchDrafts() {
+  notchDrafts = notchDrafts.then(async () => {
+    const drafts = await invoke<NotchDraft[]>("notch_take_drafts");
+    for (const draft of drafts ?? []) {
+      if (draft.paths.length) { newChat(); attach(draft.paths); }
+      if (draft.text !== null) input.value = input.value ? `${input.value}\n${draft.text}` : draft.text;
+    }
+    if (drafts?.length) { render(); input.focus(); }
+  }).catch((error) => console.error("No se pudo recibir el borrador del notch:", error));
+}
+void listen("notch-draft", takeNotchDrafts).then(takeNotchDrafts);
 $("attach").addEventListener("click", () => void invoke<string[]>("pick_files").then(attach));
 render();
 input.focus();

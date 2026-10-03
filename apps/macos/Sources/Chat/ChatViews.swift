@@ -283,7 +283,7 @@ private struct MessageRow: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                AuthorLine(name: message.author ?? "Buddy")
+                AuthorLine(name: message.author ?? "Buddy", agentID: message.agentID, active: message.isStreaming, failed: message.failed)
                 if let activity = message.activity {
                     ActivityLine(activity: activity)
                 }
@@ -311,14 +311,69 @@ private struct MessageRow: View {
 /// Buddy's face and the agent's name.
 private struct AuthorLine: View {
     let name: String
+    let agentID: String
+    let active: Bool
+    let failed: Bool
 
     var body: some View {
         HStack(spacing: 6) {
-            AgentAvatarView(agentId: Avatar.agentId(named: name), size: 18)
-                .tip(name == "Buddy" ? "Buddy" : "\(name), del equipo de Buddy")
-            Text(name)
+            AgentAvatarView(agentId: "buddy", size: 18)
+            Text(agentID == "buddy" ? name : "Buddy")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+            if agentID != "buddy" {
+                AgentConnection(active: active, failed: failed)
+                AgentAvatarView(agentId: agentID, size: 18)
+                Text(name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if active {
+                    Text("Colaborando")
+                        .font(.caption2)
+                        .foregroundStyle(.tint)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(agentID == "buddy" ? name : active ? "Buddy colaborando con \(name)" : failed ? "Buddy y \(name): tarea interrumpida" : "Buddy, respuesta de \(name)")
+        .tip(agentID == "buddy" ? name : active ? "Buddy le encarga la tarea a \(name), con sus propios permisos" : "Respuesta de \(name), del equipo de Buddy")
+    }
+}
+
+/// Two signals travel in opposite directions only while the delegated turn is active.
+private struct AgentConnection: View {
+    let active: Bool
+    let failed: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if active && !reduceMotion {
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                    let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6) / 1.6
+                    tracks(phase: phase)
+                }
+            } else {
+                tracks(phase: 0.5)
+            }
+        }
+        .frame(width: 30, height: 12)
+        .foregroundStyle(active ? Color.accentColor : failed ? Color.secondary : Color.accentColor.opacity(0.55))
+        .accessibilityHidden(true)
+    }
+
+    private func tracks(phase: Double) -> some View {
+        VStack(spacing: 5) {
+            Capsule().fill(Color.secondary.opacity(0.25)).frame(height: 1)
+                .overlay(alignment: .leading) {
+                    Circle().frame(width: 4, height: 4).offset(x: 26 * phase)
+                }
+            Capsule().fill(Color.secondary.opacity(0.25)).frame(height: 1)
+                .overlay(alignment: .leading) {
+                    Circle().frame(width: 4, height: 4).offset(x: 26 * (1 - phase))
+                }
         }
     }
 }

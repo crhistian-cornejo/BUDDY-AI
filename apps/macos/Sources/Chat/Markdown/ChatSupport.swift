@@ -37,6 +37,7 @@ struct LiveMessage: Identifiable, Equatable, Sendable {
     var status: String?
     /// Who answered ("Buddy", "PARLEY") and with which provider ("claude", "codex").
     var author: String?
+    var agentID = "buddy"
     var provider: String?
     /// Files attached to a user message (Buddy's copies).
     var files: [String] = []
@@ -65,6 +66,10 @@ struct ChatActivity: Equatable, Sendable {
             return ChatActivity(symbol: "doc.text.magnifyingglass", text: "Leyendo el archivo…")
         case "Cambio":
             return ChatActivity(symbol: "arrow.left.arrow.right", text: summary)
+        case "Telegram":
+            return ChatActivity(symbol: "paperplane", text: summary)
+        case "Cuotas":
+            return ChatActivity(symbol: "chart.line.uptrend.xyaxis", text: summary)
         default:
             return ChatActivity(symbol: "gearshape", text: "Trabajando…")
         }

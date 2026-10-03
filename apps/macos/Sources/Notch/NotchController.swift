@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The island in the notch (or a pill at the top of a screen without one). The window is a fixed transparent area at
 /// the top centre; it only takes the mouse inside the island's current shape, so everything around it stays clickable.
@@ -7,6 +8,7 @@ import SwiftUI
 @MainActor
 final class NotchController {
     private let core: BuddyCore
+    private let system: NotchSystemMonitor
     private let model = NotchModel()
     private var geometry: NotchGeometry?
     private var panel: NotchPanel?
@@ -16,17 +18,23 @@ final class NotchController {
     private var leaveWork: DispatchWorkItem?
     private let media = MediaWatcher()
     private var hooksConnected = false
+    private var utilitiesTask: Task<Void, Never>?
+    private var calendarRead: Task<Void, Never>?
+    private var calendarGeneration = 0
+    private var shelfRefreshedAt = Date.distantPast
 
     /// Opens a chat by id next to Buddy.
     var onOpenChat: ((String) -> Void)?
     /// Files handed to Buddy from the drop zone (opens the chat with them).
     var onGiveFiles: (([URL]) -> Void)?
+    var onGiveText: ((String) -> Void)?
 
     /// The most the island ever needs; the window keeps this size.
     static let canvas = CGSize(width: 640, height: 460)
 
     init(core: BuddyCore) {
         self.core = core
+        self.system = NotchSystemMonitor(core: core)
     }
 
     func start() {
@@ -48,6 +56,10 @@ final class NotchController {
         panel.orderFrontRegardless()
         self.panel = panel
         self.host = host
+        model.system = system
+        AppServices.notchSystem = system
+        system.onStatus = { [weak self] status in self?.model.showStatus(status) }
+        system.start()
         media.onChange = { [weak self] track in
             self?.model.nowPlaying = track
             self?.model.nowPlayingAt = Date()
@@ -56,7 +68,7 @@ final class NotchController {
         watchPlayers()
         model.shortcuts = (try? core.shortcuts()) ?? []
         model.usage = core.usage()
-        model.briefing = core.briefing()
+        if let tools = try? core.notchTools() { model.acceptTools(tools) }
         observe()
         let handler: (NSEvent) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.pointerMoved() } }
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged], handler: handler) as Any)
@@ -64,11 +76,27 @@ final class NotchController {
             handler(event)
             return event
         } as Any)
+        monitors.append(NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let handled = MainActor.assumeIsolated {
+                guard let self, event.keyCode == 53, event.window === self.panel else { return false }
+                self.model.collapse()
+                return true
+            }
+            return handled ? nil : event
+        } as Any)
         #if DEBUG
-        // BUDDY_DEBUG_NOTCH=open|drop: shows that state at launch, to look at it without touching the mouse.
+        // Explicit debug fixtures only; normal launches always display actual system readings.
         switch ProcessInfo.processInfo.environment["BUDDY_DEBUG_NOTCH"] {
         case "open": DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.debugPinned = true; self.model.setHovering(true) }
-        case "drop": DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.model.dropped = [URL(fileURLWithPath: NSHomeDirectory() + "/Downloads")] }
+        case "drop": DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.model.dragging = true }
+        case "volume": debugStatus(.init(kind: .volume, title: "Volumen", symbol: "speaker.wave.2.fill", level: 0.65))
+        case "brightness": debugStatus(.init(kind: .brightness, title: "Pantalla", symbol: "sun.max.fill", level: 0.75))
+        case "connection": debugStatus(.init(kind: .connection, title: "AirPods", symbol: "airpodspro", text: "Conectado", active: true))
+        case "focus": debugStatus(.init(kind: .focus, title: "No molestar", symbol: "moon.fill", text: "On", active: true))
+        case "notification": DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            self.debugPinned = true
+            self.model.show(.init(kind: .finished, agent: "buddy", title: "Tu tarea está lista", detail: "Aviso de prueba"))
+        }
         default: break
         }
         #endif
@@ -77,10 +105,30 @@ final class NotchController {
         }
     }
 
+    #if DEBUG
+    private func debugStatus(_ status: NotchStatus) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            self.debugPinned = true
+            self.model.showStatus(status, seconds: 60)
+        }
+    }
+    #endif
+
     // MARK: Core events
+
+    func stop() {
+        system.stop()
+        utilitiesTask?.cancel(); calendarRead?.cancel()
+        media.stop()
+        for monitor in monitors { NSEvent.removeMonitor(monitor) }
+        monitors.removeAll()
+        panel?.close()
+    }
 
     func handle(_ event: Event) {
         switch event {
+        case let .settingChanged(key):
+            if key.hasPrefix("notch.system.") { system.reload() }
         case let .approvalRequest(requestId, sessionId, agent, project, title, summary, detail, canAllow, always):
             approvalSessions[requestId] = sessionId
             let name = AgentNames.name(agent)
@@ -97,8 +145,6 @@ final class NotchController {
             model.buddyActivity = (kind, label)
         case .chatDone, .chatFailed:
             model.buddyActivity = nil
-        case .briefingReady:
-            model.briefing = core.briefing()
         case let .financeRecorded(monto, _, tipo, concepto, comercio):
             model.show(.init(kind: .finished, agent: "niko", title: "Niko anotó: \(monto) · \(comercio.isEmpty ? concepto : comercio)",
                              detail: concepto.isEmpty || comercio.isEmpty ? tipo.capitalized : "\(tipo.capitalized) · \(concepto)"))
@@ -179,7 +225,8 @@ final class NotchController {
         // The pointer at the very top of the screen sits exactly on the rectangle's upper edge, which `contains` leaves
         // out: it flickered in and out there, opening and closing the island. The areas reach past the top edge, and
         // once open the island gets a margin so the pointer hugging its border does not close it.
-        let trigger = model.mode == .idle ? geometry.frame(for: geometry.notch).insetBy(dx: -6, dy: -2) : islandRect.insetBy(dx: -10, dy: -10)
+        let compactStatus = model.status != nil || model.notice != nil
+        let trigger = model.mode == .idle && !compactStatus ? geometry.frame(for: geometry.notch).insetBy(dx: -6, dy: -2) : islandRect.insetBy(dx: -10, dy: -10)
         let inside = NSRect(x: trigger.minX, y: trigger.minY, width: trigger.width, height: trigger.height + 30).contains(p)
         panel.ignoresMouseEvents = !inside
         if inside {
@@ -209,7 +256,7 @@ final class NotchController {
     // MARK: Drawing
 
     private func view() -> NotchView {
-        NotchView(model: model, notch: geometry?.notch ?? CGSize(width: 190, height: 32), hooksConnected: hooksConnected,
+        NotchView(model: model, notch: geometry?.notch ?? CGSize(width: 190, height: 32), hasNotch: geometry?.hasNotch ?? false, hooksConnected: hooksConnected,
                   actions: NotchActions(
                       answer: { [weak self] id, allow in
                           self?.core.answerApproval(requestId: id, allow: allow)
@@ -230,15 +277,9 @@ final class NotchController {
                       removeShortcut: { [weak self] item in
                           self?.model.shortcuts = (try? self?.core.removeShortcut(id: item.id)) ?? self?.model.shortcuts ?? []
                       },
-                      openLink: { link in
-                          // Only web links from the briefing; anything else is ignored.
-                          guard let url = URL(string: link), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
-                          NSWorkspace.shared.open(url)
-                      },
                       giveToBuddy: { [weak self] in
                           guard let self else { return }
-                          let files = self.model.dropped
-                          self.model.dropped = []
+                          let files = self.model.dropped.filter { FileManager.default.fileExists(atPath: $0.path) }
                           self.onGiveFiles?(files)
                       },
                       share: { [weak self] in self?.share() },
@@ -246,13 +287,24 @@ final class NotchController {
                           guard let self else { return }
                           NSPasteboard.general.clearContents()
                           NSPasteboard.general.setString(self.model.dropped.map(\.path).joined(separator: "\n"), forType: .string)
-                          self.model.dropped = []
                       },
-                      clearDrop: { [weak self] in self?.model.dropped = [] },
                       drop: { [weak self] urls in
-                          self?.model.dragging = false
-                          if !urls.isEmpty { self?.model.dropped = urls }
-                      }))
+                          guard let self else { return }
+                          self.model.dragging = false
+                          if !urls.isEmpty { self.performTool { self.model.acceptTools(try self.core.notchAddFiles(paths: urls.map(\.path))); self.model.revealFiles() } }
+                      },
+                      close: { [weak self] in self?.model.collapse() },
+                      addFiles: { [weak self] in self?.pickShelfFiles() },
+                      removeFile: { [weak self] path in self?.performTool { guard let self else { return }; self.model.acceptTools(try self.core.notchRemoveFile(path: path)) } },
+                      openFile: { url in NSWorkspace.shared.activateFileViewerSelecting([url]) },
+                      saveClipboard: { [weak self] in self?.saveClipboard() },
+                      copyClip: { [weak self] clip in self?.copyClip(clip) },
+                      giveClip: { [weak self] clip in self?.onGiveText?(clip.text) },
+                      removeClip: { [weak self] id in self?.performTool { guard let self else { return }; self.model.acceptTools(try self.core.notchRemoveClip(id: id)) } },
+                      setWidget: { [weak self] widget, enabled in self?.performTool { guard let self else { return }; self.model.acceptTools(try self.core.notchWidget(widget: widget, enabled: enabled)); self.refreshUtilities() } },
+                      pickCalendar: { [weak self] in self?.pickCalendar() },
+                      clearCalendar: { [weak self] in self?.performTool { guard let self else { return }; self.model.acceptTools(try self.core.notchSetCalendar(path: nil)); self.model.appointment = nil; self.model.calendarError = ""; self.refreshUtilities() } },
+                      openAppointment: { [weak self] in self?.openAppointment() }))
     }
 
     // MARK: Music for the ears
@@ -369,14 +421,14 @@ final class NotchController {
     /// The system's share menu (AirDrop, Mail, Messages…) for the dropped files.
     private func share() {
         guard let host, !model.dropped.isEmpty else { return }
-        let picker = NSSharingServicePicker(items: model.dropped)
+        let picker = NSSharingServicePicker(items: model.dropped.filter { FileManager.default.fileExists(atPath: $0.path) })
         let size = NotchLayout.size(model, notch: geometry?.notch ?? .zero)
         let rect = NSRect(x: (host.bounds.width - size.width) / 2 + 24, y: host.bounds.height - size.height + 20, width: 120, height: 28)
         NSApp.activate()
         picker.show(relativeTo: rect, of: host, preferredEdge: .minY)
     }
 
-    /// Redraws with fresh inputs whenever the model changes.
+    /// Keeps native hit testing and media watching in sync with SwiftUI's observed state.
     private func observe() {
         withObservationTracking {
             _ = model.mode
@@ -390,15 +442,119 @@ final class NotchController {
             _ = model.buddyBusy
             _ = model.usage
             _ = model.earTrack
+            _ = model.pinned
+            _ = model.collapsedByUser
+            _ = model.buddyActivity
+            _ = model.tab
+            _ = model.tools
+            _ = model.status
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                self.host?.rootView = self.view()
+                // SwiftUI observes the model itself. Replacing its root for every session event closes open menus.
                 // The players are asked only while the overview is open.
                 if self.model.mode == .open { self.media.start() } else { self.media.stop() }
+                self.syncUtilities()
                 self.pointerMoved()
                 self.observe()
             }
+        }
+    }
+
+    private func performTool(_ work: () throws -> Void) {
+        do { try work(); model.toolMessage = "" }
+        catch { model.toolMessage = String(describing: error) }
+    }
+
+    private func pickShelfFiles() {
+        let picker = NSOpenPanel()
+        picker.title = "Añadir a la bandeja"; picker.prompt = "Añadir"
+        picker.canChooseFiles = true; picker.canChooseDirectories = true; picker.allowsMultipleSelection = true
+        NSApp.activate()
+        picker.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let self else { return }
+                self.performTool {
+                    self.model.acceptTools(try self.core.notchAddFiles(paths: picker.urls.map(\.path)))
+                    self.model.revealFiles()
+                }
+            }
+        }
+    }
+
+    private func saveClipboard() {
+        performTool {
+            guard let text = NSPasteboard.general.string(forType: .string) else { throw NSError(domain: "Buddy", code: 1, userInfo: [NSLocalizedDescriptionKey: "El portapapeles no contiene texto."]) }
+            model.acceptTools(try core.notchSaveClip(text: text))
+        }
+    }
+
+    private func copyClip(_ clip: SavedClip) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(clip.text, forType: .string)
+        model.toolMessage = "Texto copiado."
+    }
+
+    private func pickCalendar() {
+        let picker = NSOpenPanel()
+        picker.title = "Elegir agenda local (.ics)"; picker.prompt = "Usar agenda"
+        picker.allowedContentTypes = [.init(filenameExtension: "ics")!]
+        NSApp.activate()
+        let core = core
+        picker.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let url = picker.url else { return }
+                let (tools, error) = await Task.detached(priority: .utility) { () -> (NotchTools?, String) in
+                    do { return (try core.notchSetCalendar(path: url.path), "") }
+                    catch { return (nil, String(describing: error)) }
+                }.value
+                guard let self else { return }
+                self.model.toolMessage = error
+                if let tools { self.model.acceptTools(tools); self.refreshUtilities() }
+            }
+        }
+    }
+
+    private func openAppointment() {
+        performTool {
+            if let link = model.appointment?.url, let url = ExternalLink.validated(link) { NSWorkspace.shared.open(url) }
+            else { NSWorkspace.shared.open(URL(fileURLWithPath: try core.notchAppointmentFile())) }
+        }
+    }
+
+    private func syncUtilities() {
+        if model.mode == .open && model.tab == .files && Date().timeIntervalSince(shelfRefreshedAt) > 30 {
+            shelfRefreshedAt = Date()
+            if let tools = try? core.notchTools(), tools != model.tools { model.acceptTools(tools) }
+        }
+        let active = model.mode == .open && model.tab == .utilities
+        if !active {
+            utilitiesTask?.cancel(); utilitiesTask = nil
+            calendarRead?.cancel(); calendarRead = nil; calendarGeneration += 1
+            return
+        }
+        guard utilitiesTask == nil else { return }
+        utilitiesTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.refreshUtilities()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+    }
+
+    private func refreshUtilities() {
+        model.battery = model.tools?.batteryEnabled == true ? NotchBattery.read() : nil
+        calendarRead?.cancel(); calendarGeneration += 1
+        guard model.tools?.calendarEnabled == true else { model.appointment = nil; return }
+        let core = core; let generation = calendarGeneration
+        calendarRead = Task { [weak self] in
+            let (appointment, error) = await Task.detached(priority: .utility) { () -> (Appointment?, String) in
+                do { return (try core.notchCalendar(), "") }
+                catch { return (nil, "No se pudo leer la agenda. Vuelve a elegir el archivo .ics.") }
+            }.value
+            guard let self, !Task.isCancelled, generation == self.calendarGeneration else { return }
+            self.model.appointment = appointment; self.model.calendarError = error
         }
     }
 
@@ -412,7 +568,11 @@ final class NotchController {
     // MARK: Hooks
 
     private func refreshHooks() {
-        hooksConnected = core.hooksStatus().contains { $0.installed }
+        let connected = core.hooksStatus().contains { $0.installed }
+        if connected != hooksConnected {
+            hooksConnected = connected
+            host?.rootView = view()
+        }
     }
 
     /// Shows what would change in each agent's configuration and writes it only after "Conectar".

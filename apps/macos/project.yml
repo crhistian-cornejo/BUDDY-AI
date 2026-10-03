@@ -93,6 +93,8 @@ targets:
         LSUIElement: YES
         NSAppleEventsUsageDescription: "Buddy pregunta a Spotify o Música qué suena y usa sus botones de anterior, pausa y siguiente en el notch. No toca nada más."
         NSHighResolutionCapable: YES
+        NSBluetoothAlwaysUsageDescription: "Buddy muestra en el notch cuándo se conectan o desconectan tus auriculares y otros dispositivos. No inicia conexiones ni cambia tus dispositivos."
+        NSFocusStatusUsageDescription: "Buddy muestra en el notch cuándo activas o desactivas Concentración y silencias las notificaciones."
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.crhistian-cornejo.buddy

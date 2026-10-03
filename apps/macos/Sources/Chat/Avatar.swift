@@ -85,6 +85,7 @@ struct AgentAvatarView: View {
 struct ProviderMark: View {
     let provider: String?
     var size: CGFloat = 12
+    var showsTooltip = true
 
     var body: some View {
         switch provider {
@@ -96,7 +97,7 @@ struct ProviderMark: View {
             if let image = GeminiMark.image {
                 Image(nsImage: image).resizable().scaledToFit()
                     .frame(width: size, height: size)
-                    .tip("Escrito con Gemini")
+                    .tip(showsTooltip ? "Escrito con Gemini" : "")
                     .accessibilityLabel("Escrito con Gemini")
             }
         default:
@@ -108,7 +109,7 @@ struct ProviderMark: View {
         BrandMarkShape(mark: brand)
             .fill(brand == .openai ? Color.primary : brand.color)
             .frame(width: size, height: size)
-            .tip(help)
+            .tip(showsTooltip ? help : "")
             .accessibilityLabel(help)
     }
 }

@@ -27,6 +27,10 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 base64 = "0.23.1"
 ureq = "3"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
+ical = { version = "0.11", default-features = false, features = ["ical"] }
+chrono-tz = "0.10"
+rrule = "0.14"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

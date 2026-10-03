@@ -4,6 +4,7 @@
 //! Apps only draw what the core hands them: sprites, settings and the event stream.
 
 pub mod accounts;
+pub mod account_router;
 pub mod activity;
 pub mod briefing;
 pub mod chat;
@@ -15,8 +16,10 @@ pub mod log;
 pub mod look;
 pub mod media;
 pub mod niko;
+pub mod notch;
 pub mod orchestrator;
 pub mod parley;
+mod odds;
 pub mod paths;
 pub mod pet;
 pub mod pixel;
@@ -48,6 +51,8 @@ pub use briefing::BriefingItem;
 pub use media::NowPlayingInfo;
 pub use skills::Skill;
 pub use tools::{FocusStatus, Shortcut};
+pub use notch::{NotchTools, ShelfFile, SavedClip};
+pub use notch::calendar::Appointment;
 pub use router::{ModelOption, RouterConfig, Tier, TierChoice};
 pub use usage::{ProviderUsage, UsageWindow};
 pub use sessions::{HookPreview, HookStatusInfo, SessionHub, SessionInfo};
@@ -102,7 +107,8 @@ pub struct BuddyCore {
     sessions: Arc<SessionHub>,
     spotify: Arc<spotify::Spotify>,
     telegram: Arc<telegram::Telegram>,
-    telegram_account: telegram_account::Account,
+    telegram_account: Arc<telegram_account::Account>,
+    odds: Arc<odds::Odds>,
     niko: Arc<niko::Niko>,
 }
 
@@ -142,7 +148,7 @@ impl BuddyCore {
         let sessions = Arc::new(SessionHub::new(data_dir.clone(), bus.clone()));
         let briefing = Arc::new(briefing::Briefing::new(store.clone(), bus.clone(), Box::new(briefing::ClaudeSource)));
         let chat = Arc::new(
-            ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers)
+            ChatEngine::new(data_dir.clone(), store.clone(), bus.clone(), providers.clone())
                 .with_usage(usage.clone())
                 .with_gate(sessions.clone()),
         );
@@ -158,13 +164,14 @@ impl BuddyCore {
         }));
         // Telegram: each message of the paired chat is a restricted PARLEY turn in «Telegram · PARLEY»; money notes
         // («gasté 45 en almuerzo», «Niko, …») go to Niko in «Telegram · Niko».
-        let engine = chat.clone();
+        let engine = Arc::downgrade(&chat);
         let telegram = Arc::new(telegram::Telegram::new(
             store.clone(),
             bus.clone(),
             Arc::new(telegram::HttpApi),
             Box::new(telegram::TokenSecret),
             Box::new(move |text, files| {
+                let engine = engine.upgrade().ok_or("Buddy se está cerrando.")?;
                 let (chat_id, title, agent) = if niko::is_finance_message(text) {
                     ("telegram-niko", "Telegram · Niko", niko::AGENT)
                 } else {
@@ -176,8 +183,10 @@ impl BuddyCore {
                 })
             }),
         ).with_media_dir(data_dir.join("telegram-bot-media")));
-        let telegram_account = telegram_account::Account::new(store.clone(), data_dir.clone());
-        let niko = Arc::new(niko::Niko::new(data_dir.clone(), store.clone(), bus.clone(), Box::new(niko::ClaudeSource { data_dir: data_dir.clone() })));
+        let telegram_account = Arc::new(telegram_account::Account::new(store.clone(), data_dir.clone()));
+        let odds = Arc::new(odds::Odds::new(store.clone()));
+        chat.set_parley_source(Arc::new(parley::Sources { account: telegram_account.clone(), bot: telegram.clone(), odds: odds.clone(), store: store.clone() }));
+        let niko = Arc::new(niko::Niko::new(data_dir.clone(), store.clone(), bus.clone(), Box::new(niko::RoutedSource { data_dir: data_dir.clone(), store: store.clone(), usage: usage.clone(), providers })));
         let tg = telegram.clone();
         niko.set_notifier(Box::new(move |text| {
             let tg = tg.clone();
@@ -187,7 +196,7 @@ impl BuddyCore {
                 }
             });
         }));
-        Ok(Self { telegram_account, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram, niko })
+        Ok(Self { telegram_account, odds, data_dir, store, bus, chat, sessions, focus: tools::Focus::default(), usage, briefing, spotify, telegram, niko })
     }
 
     /// Rust-side subscription (Windows app, tests): one channel per subscriber.
@@ -464,11 +473,20 @@ impl BuddyCore {
     /// Personal account actions from Settings. Secrets only enter the OS vault, never the history.
     pub fn telegram_account_request(&self, action: String, value: String) -> Result<String, CoreError> {
         if action == "analyze" {
-            let (prompt, files) = self.telegram_account.context().map_err(CoreError::Hooks)?;
-            let answer = self.chat.run_direct_with_attachments("telegram-groups", "Telegram · Grupos", "parley", &prompt, true, &files)?;
+            let answer = self.chat.run_direct("telegram-groups", "Telegram · Grupos", "parley", "Revisa los mensajes de hoy de todos mis grupos seleccionados. Dime qué picks siguen pendientes por hora, cuáles están en vivo o terminaron y propón parlays solo con los pendientes verificados.", true)?;
             return Ok(serde_json::json!({"analysis":answer}).to_string());
         }
         self.telegram_account.request(&action, &value).map_err(CoreError::Hooks)
+    }
+
+    /// PARLEY's API key is configured outside chats, and is never read back to the UI.
+    pub fn parley_odds_request(&self, action: String, value: String) -> Result<String, CoreError> {
+        match action.as_str() {
+            "status" => {},
+            "configure" => self.odds.configure(&value).map_err(CoreError::Hooks)?,
+            _ => return Err(CoreError::Hooks("Acción de cuotas no válida.".into())),
+        }
+        Ok(self.odds.status().to_string())
     }
 
     /// Telegram for Settings: connected bot, paired chat and pairing code. While connected and not
@@ -593,6 +611,22 @@ impl BuddyCore {
 
     pub fn focus_status(&self) -> FocusStatus {
         self.focus.status()
+    }
+
+    pub fn notch_tools(&self) -> Result<NotchTools, CoreError> { self.with_store(notch::load) }
+    pub fn notch_add_files(&self, paths: Vec<String>) -> Result<NotchTools, CoreError> { self.with_store(|s| notch::add_files(s, &paths)) }
+    pub fn notch_remove_file(&self, path: String) -> Result<NotchTools, CoreError> { self.with_store(|s| notch::remove_file(s, &path)) }
+    pub fn notch_save_clip(&self, text: String) -> Result<NotchTools, CoreError> { self.with_store(|s| notch::add_clip(s, &text)) }
+    pub fn notch_remove_clip(&self, id: String) -> Result<NotchTools, CoreError> { self.with_store(|s| notch::remove_clip(s, &id)) }
+    pub fn notch_widget(&self, widget: String, enabled: bool) -> Result<NotchTools, CoreError> { self.with_store(|s| notch::widget(s, &widget, enabled)) }
+    pub fn notch_set_calendar(&self, path: Option<String>) -> Result<NotchTools, CoreError> { self.with_store(|s| notch::set_calendar(s, path)) }
+    pub fn notch_calendar(&self) -> Result<Option<Appointment>, CoreError> {
+        let state = self.notch_tools()?;
+        match state.calendar_path { Some(path) => notch::calendar::read(PathBuf::from(path).as_path(), notch::calendar::now()), None => Ok(None) }
+    }
+    pub fn notch_appointment_file(&self) -> Result<String, CoreError> {
+        let event = self.notch_calendar()?.ok_or_else(|| CoreError::Io("No hay una próxima cita en la agenda.".into()))?;
+        notch::calendar::export(&event, &self.data_dir.join("notch"))
     }
 
     /// The folders the agents may use (read, or read and edit).

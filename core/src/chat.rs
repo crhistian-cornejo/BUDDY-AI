@@ -39,6 +39,7 @@ pub struct ChatEngine {
     redirected: Mutex<HashSet<String>>,
     usage: Option<Arc<crate::usage::Usage>>,
     gate: Option<Arc<crate::sessions::SessionHub>>,
+    parley_source: std::sync::OnceLock<Arc<dyn crate::parley::Source>>,
 }
 
 /// What one agent's turn produced.
@@ -55,7 +56,11 @@ struct Answer {
 
 impl ChatEngine {
     pub fn new(data_dir: PathBuf, store: Arc<Mutex<Store>>, bus: Arc<EventBus>, providers: Vec<Arc<dyn Provider>>) -> Self {
-        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()), dispatch: Mutex::new(()), pending: Mutex::new(HashMap::new()), redirected: Mutex::new(HashSet::new()), usage: None, gate: None }
+        Self { data_dir, store, bus, providers, running: Mutex::new(HashMap::new()), dispatch: Mutex::new(()), pending: Mutex::new(HashMap::new()), redirected: Mutex::new(HashSet::new()), usage: None, gate: None, parley_source: std::sync::OnceLock::new() }
+    }
+
+    pub(crate) fn set_parley_source(&self, source: Arc<dyn crate::parley::Source>) {
+        let _ = self.parley_source.set(source);
     }
 
     /// Commands go through this hub's gate (a click each time) while it runs and the user allows commands.
@@ -111,6 +116,29 @@ impl ChatEngine {
             return Vec::new();
         }
         crate::connectors::active(&self.lock(), &crate::connectors::SystemKeys)
+    }
+
+    /// Delegation uses the same provider restrictions as execution; permissions are never borrowed by Buddy.
+    fn agent_available(&self, agent: &Agent) -> bool {
+        self.providers.iter().any(|p| p.installed()
+            && (agent.can("web") || p.id() != ProviderId::Antigravity)
+            && (!agent.can(crate::accounts::PERMISSION) || crate::account_router::compatible(p.id())))
+    }
+
+    fn team_note(&self, agents: &[Agent]) -> String {
+        let available: Vec<_> = agents.iter().filter(|a| a.id == ORCHESTRATOR || self.agent_available(a)).cloned().collect();
+        let mut note = orchestrator::roster_prompt(&available);
+        for agent in agents.iter().filter(|a| a.id != ORCHESTRATOR && !self.agent_available(a)) {
+            note.push_str(&format!("\n{} ({}) no está disponible: falta un proveedor instalado compatible con sus permisos. No le delegues tareas.\n", agent.id, agent.name));
+        }
+        let store = self.lock();
+        let connectors = crate::connectors::infos(&store).into_iter().filter(|c| c.enabled).map(|c| c.name).collect::<Vec<_>>();
+        note.push_str(&format!("\nConectores habilitados para agentes con permiso web: {}.\n", if connectors.is_empty() { "ninguno".into() } else { connectors.join(", ") }));
+        if store.setting(COMMANDS_SETTING).ok().flatten().as_deref() == Some("false") {
+            note.push_str("Los comandos están desactivados globalmente, incluso para agentes con ese permiso.\n");
+        }
+        note.push_str("PARLEY consulta automáticamente el bot vinculado y los mensajes de hoy de los grupos seleccionados de la cuenta personal de Telegram si tiene permiso telegram. Con permisos cuotas y web descarga el calendario y cuotas de Betano desde OddsPapi (requiere clave en Ajustes › Conexiones). Delega a PARLEY las consultas de picks, grupos deportivos y parlays; no le pidas scripts ni Context7 para obtener cuotas. Solo PARLEY tiene este flujo nativo; la conexión y cobertura se comprueban al ejecutar, nunca las supongas.\n");
+        note
     }
 
     /// What the agents are told about those tools: where documents go, and the skills index.
@@ -344,12 +372,10 @@ impl ChatEngine {
             let connectors = engine.connectors(buddy);
             let request = TurnRequest {
                 system: format!(
-                    "{}{}{}{}{}",
+                    "{}{}{}",
                     buddy.prompt,
-                    orchestrator::roster_prompt(&agents),
-                    crate::folders::prompt_note(&folders),
-                    engine.tools_note(),
-                    crate::connectors::prompt_note(&connectors)
+                    engine.team_note(&agents),
+                    engine.notes_for(buddy, &folders)
                 ),
                 connectors,
                 workspace: orchestrator::workspace(&engine.data_dir, &buddy.id),
@@ -413,7 +439,7 @@ impl ChatEngine {
         prompt.push_str(&attachments_note(files));
         prompt.push_str(question);
         let folders = crate::folders::list(&self.lock()).unwrap_or_default();
-        let system = format!("{}{}{}", buddy.prompt, orchestrator::roster_prompt(&agents), self.notes_for(&buddy, &folders));
+        let system = format!("{}{}{}", buddy.prompt, self.team_note(&agents), self.notes_for(&buddy, &folders));
         // The router picks Buddy's model for this message (rules, no tokens); a hand-off still works from there.
         let route = crate::router::route(&self.lock(), question, files);
         let mut buddy_turn = buddy.clone();
@@ -446,7 +472,7 @@ impl ChatEngine {
                     specialist.model = Some(route.model);
                     specialist.effort = Some(route.effort);
                 }
-                claude_for_accounts(&mut specialist);
+                route_accounts(&mut specialist);
                 let prompt = attachments_note(files) + &orchestrator::task_prompt(&specialist.name, &task, question);
                 let system = format!("{}{}", specialist.prompt, self.notes_for(&specialist, &folders));
                 let answer = self.run_agent(chat_id, &specialist, &prompt, &system, files, cancel, false);
@@ -520,6 +546,34 @@ impl ChatEngine {
         cancel: &Cancel,
         hold_handoff: bool,
     ) -> Answer {
+        let mut all_files = files.to_vec();
+        let mut prepared_prompt = prompt.to_string();
+        let mut prepared_system = system.to_string();
+        let mut source_started = false;
+        if agent.id == "parley" {
+            prepared_system.push_str(crate::parley::CONTRACT);
+            if let Some(source) = self.parley_source.get() {
+                self.emit(Event::ChatStarted { chat_id: chat_id.into(), agent: agent.id.clone(), agent_name: agent.name.clone(), provider: agent.provider.as_str().into() });
+                source_started = true;
+                let prepared = source.prepare(agent, prompt, cancel, &mut |name, summary| {
+                    self.mascot("work");
+                    self.emit(Event::ChatActivity { chat_id: chat_id.into(), kind: "web".into(), label: summary.into() });
+                    self.emit(Event::ChatTool { chat_id: chat_id.into(), name: name.into(), summary: summary.into() });
+                });
+                prepared_prompt = format!("{}\n\n[Petición original]\n{}", prepared.text, prompt);
+                let paths: Vec<_> = prepared.files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                match self.copy_attachments(chat_id, &paths) {
+                    Ok(copies) => all_files.extend(copies.into_iter().map(PathBuf::from)),
+                    Err(_) => prepared_prompt.push_str("\nNo se pudieron adjuntar las fotos de Telegram: no inventes su contenido.\n"),
+                }
+            }
+        }
+        let files = all_files.as_slice();
+        let prompt = prepared_prompt.as_str();
+        if agent.id == "niko" {
+            prepared_system.push_str(&crate::niko::chat_context(&self.lock()));
+        }
+        let system = prepared_system.as_str();
         let mut order: Vec<Arc<dyn Provider>> = self.providers.iter().filter(|p| p.id() == agent.provider).cloned().collect();
         order.extend(self.providers.iter().filter(|p| p.id() != agent.provider && p.installed()).cloned());
         // A turn with images goes first to a provider that can look at them (Claude, Codex, later Gemini).
@@ -531,9 +585,10 @@ impl ChatEngine {
         if !agent.can("web") {
             order.retain(|p| p.id() != ProviderId::Antigravity);
         }
-        // The user's claude.ai accounts (Gmail, Notion) exist only for Claude.
+        // Only subscription providers with native account connectors can take this turn.
         if agent.can(crate::accounts::PERMISSION) {
-            order.retain(|p| p.id() == ProviderId::Claude);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            order.retain(|p| crate::account_router::available(&self.lock(), p.id(), now));
         }
         let mut last_failure = None;
         let mut provider_used = agent.provider;
@@ -544,18 +599,18 @@ impl ChatEngine {
                     chat_id: chat_id.into(),
                     name: "Cambio".into(),
                     summary: if provider.id() == ProviderId::Codex {
-                        "Sigo con GPT-6.1 Sol".into()
+                        if agent.id == "niko" { "Sigo con GPT Luna".into() } else { "Sigo con GPT-6.1 Sol".into() }
                     } else {
                         format!("Sigo con {}", provider.id().display_name())
                     },
                 });
             }
-            self.emit(Event::ChatStarted {
+            if !source_started || attempt > 0 || provider.id() != agent.provider { self.emit(Event::ChatStarted {
                 chat_id: chat_id.into(),
                 agent: agent.id.clone(),
                 agent_name: agent.name.clone(),
                 provider: provider.id().as_str().into(),
-            });
+            }); }
             let same_provider = provider.id() == agent.provider;
             let folders = crate::folders::list(&self.lock()).unwrap_or_default();
             let resume = self.lock().session(chat_id, &agent.id, provider.id().as_str()).ok().flatten();
@@ -591,24 +646,28 @@ impl ChatEngine {
                 o
             });
             let request = TurnRequest {
-                prompt: history + prompt,
+                prompt: if attempt > 0 && agent.id == "niko" {
+                    format!("La ruta anterior se interrumpió. Lee primero Notion para comprobar si esta operación ya quedó registrada. Reutiliza su Clave y confirma lo existente; nunca dupliques movimientos ni recrees las bases.\n\n{history}{prompt}")
+                } else { history + prompt },
                 system: system.into(),
                 workspace: orchestrator::workspace(&self.data_dir, &agent.id),
                 resume,
                 // A model name belongs to its provider; another provider uses its own default.
-                model: if provider.id() == ProviderId::Codex && !same_provider {
+                model: if agent.id == "niko" || (agent.can(crate::accounts::PERMISSION) && !same_provider) {
+                    Some(crate::account_router::model(provider.id(), false).into())
+                } else if provider.id() == ProviderId::Codex && !same_provider {
                     Some(crate::providers::codex::DEFAULT_MODEL.into())
                 } else {
                     agent.model.clone().filter(|_| same_provider)
                 },
-                effort: agent.effort.clone(),
+                effort: if agent.id == "niko" { Some("low".into()) } else { agent.effort.clone() },
                 attachments: files.to_vec(),
                 folders,
                 gate: self.gate().filter(|_| agent.can("comandos")),
                 office,
                 no_web: !agent.can("web"),
                 connectors: self.connectors(agent),
-                accounts: agent.can(crate::accounts::PERMISSION) && provider.id() == ProviderId::Claude,
+                accounts: agent.can(crate::accounts::PERMISSION) && crate::account_router::compatible(provider.id()),
             };
             let model_label = crate::router::model_label(provider.id(), request.model.as_deref(), request.effort.as_deref());
             let mut text = String::new();
@@ -622,7 +681,7 @@ impl ChatEngine {
                 }
                 TurnEvent::Delta(delta) => {
                     text.push_str(&delta);
-                    if !(hold_handoff && orchestrator::handoff_pending(&text)) {
+                    if agent.id != "niko" && !(hold_handoff && orchestrator::handoff_pending(&text)) {
                         self.emit(Event::ChatDelta { chat_id: chat_id.into(), text: text[shown..].to_string() });
                         shown = text.len();
                     }
@@ -657,6 +716,10 @@ impl ChatEngine {
                 }
                 TurnEvent::Done => {}
                 TurnEvent::Failed(f) => {
+                    if agent.can(crate::accounts::PERMISSION) {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                        crate::account_router::failed(&self.lock(), provider.id(), &f, now);
+                    }
                     // Gemini's plan ran out: the meter says so (with when it comes back) until `/usage` refreshes.
                     if provider.id() == ProviderId::Antigravity && f.is_no_usage() {
                         if let Some(usage) = &self.usage {
@@ -666,10 +729,15 @@ impl ChatEngine {
                     failure = Some(f)
                 }
             });
+            let may_retry = failure.as_ref().is_some_and(|f| {
+                let account_auth = agent.can(crate::accounts::PERMISSION) && f.kind == FailureKind::Auth;
+                let before_work = text.is_empty() && (f.kind == FailureKind::Missing || (!worked && (f.is_no_usage() || account_auth)));
+                before_work || (agent.id == "niko" && f.is_no_usage())
+            });
             match failure {
                 // Not installed, or an answer that never came (Missing), or no usage left before any tool ran: the
                 // next provider takes the turn.
-                Some(f) if text.is_empty() && (f.kind == FailureKind::Missing || (!worked && f.is_no_usage())) && !cancel.is_cancelled() => {
+                Some(f) if may_retry && !cancel.is_cancelled() => {
                     last_failure = Some(f.summary(provider.id()));
                     continue;
                 }
@@ -677,6 +745,7 @@ impl ChatEngine {
                     return Answer { text, shown, sources, provider: provider.id(), failure: Some(f.summary(provider.id())), model: model_label };
                 }
                 None => {
+                    if agent.can(crate::accounts::PERMISSION) { crate::account_router::succeeded(&self.lock(), provider.id()); }
                     return Answer { text, shown, sources, provider: provider.id(), failure: None, model: model_label };
                 }
             }
@@ -688,7 +757,7 @@ impl ChatEngine {
             model: String::new(),
             provider: provider_used,
             failure: Some(
-                last_failure.unwrap_or_else(|| "No encuentro Claude, Codex ni Gemini en este equipo. Instala uno e inicia sesión.".into()),
+                last_failure.unwrap_or_else(|| if agent.can(crate::accounts::PERMISSION) { "Claude y GPT no tienen una ruta disponible con tus cuentas. Niko retomará al recuperarse una.".into() } else { "No encuentro Claude, Codex ni Gemini en este equipo. Instala uno e inicia sesión.".into() }),
             ),
         }
     }
@@ -728,7 +797,7 @@ impl ChatEngine {
             agent.model = Some(route.model);
             agent.effort = Some(route.effort);
         }
-        claude_for_accounts(&mut agent);
+        route_accounts(&mut agent);
         let folders = crate::folders::list(&self.lock()).unwrap_or_default();
         let mut system = format!("{}{}", agent.prompt, self.notes_for(&agent, &folders));
         if restricted {
@@ -778,12 +847,11 @@ impl ChatEngine {
     }
 }
 
-/// An agent with the user's claude.ai accounts runs on Claude whatever the router picked (Codex and Gemini cannot
-/// reach them); a model of another provider becomes Claude's Sonnet.
-fn claude_for_accounts(agent: &mut Agent) {
-    if agent.can(crate::accounts::PERMISSION) && agent.provider != ProviderId::Claude {
+/// Gemini has no native account route here. Claude and GPT keep their own connectors.
+fn route_accounts(agent: &mut Agent) {
+    if agent.can(crate::accounts::PERMISSION) && !crate::account_router::compatible(agent.provider) {
         agent.provider = ProviderId::Claude;
-        agent.model = Some("sonnet".into());
+        agent.model = Some("haiku".into());
     }
 }
 
@@ -869,6 +937,7 @@ mod tests {
         script: Mutex<Vec<Vec<TurnEvent>>>,
         prompts: Mutex<Vec<(String, String)>>,
         models: Mutex<Vec<Option<String>>>,
+        access: Mutex<Vec<(bool, bool)>>,
     }
 
     impl Fake {
@@ -880,6 +949,7 @@ mod tests {
                 script: Mutex::new(scripts),
                 prompts: Mutex::default(),
                 models: Mutex::default(),
+                access: Mutex::default(),
             })
         }
 
@@ -891,6 +961,7 @@ mod tests {
                 script: Mutex::new(scripts),
                 prompts: Mutex::default(),
                 models: Mutex::default(),
+                access: Mutex::default(),
             })
         }
     }
@@ -908,6 +979,7 @@ mod tests {
         fn run(&self, request: &TurnRequest, _: &Cancel, emit: &mut dyn FnMut(TurnEvent)) {
             self.prompts.lock().unwrap().push((request.prompt.clone(), request.system.clone()));
             self.models.lock().unwrap().push(request.model.clone());
+            self.access.lock().unwrap().push((request.no_web, request.accounts));
             let mut scripts = self.script.lock().unwrap();
             let events = if scripts.is_empty() { vec![TurnEvent::Done] } else { scripts.remove(0) };
             for e in events {
@@ -1159,6 +1231,87 @@ mod tests {
     }
 
     #[test]
+    fn delegation_uses_current_permissions_without_giving_accounts_to_buddy() {
+        let claude = Fake::new(ProviderId::Claude, vec![
+            vec![TurnEvent::Delta("[[pasar:parley]] Busca el correo solicitado".into()), TurnEvent::Done],
+            vec![TurnEvent::Delta("Encontré el correo.".into()), TurnEvent::Done],
+        ]);
+        let (engine, rx, _dir) = engine(vec![claude.clone()]);
+        engine.lock().set_setting(&orchestrator::permissions_key("parley"), "cuentas").unwrap();
+        let chat = engine.send(None, "Busca mi correo".into(), vec![]).unwrap();
+        let events = until_end(&rx);
+        assert_eq!(deltas(&events), "Encontré el correo.");
+        assert_eq!(*claude.access.lock().unwrap(), [(false, false), (true, true)]);
+        let prompts = claude.prompts.lock().unwrap();
+        let parley = prompts[0].1.split("- parley (PARLEY):").nth(1).unwrap();
+        assert!(parley.contains("Permisos: cuentas:"));
+        assert!(!parley.contains("Permisos: web:"));
+        assert!(prompts[1].1.contains("Cuentas del usuario"));
+        assert_eq!(engine.lock().messages(&chat).unwrap()[1].agent, "parley");
+    }
+
+    #[test]
+    fn team_note_excludes_agents_without_a_compatible_provider() {
+        let codex = Fake::new(ProviderId::Codex, vec![]);
+        let (engine, _rx, _dir) = engine(vec![codex]);
+        let note = engine.team_note(&engine.agents());
+        assert!(note.contains("- parley (PARLEY):"));
+        assert!(note.contains("- niko (Niko):"), "GPT has a native accounts route: {note}");
+        assert!(note.contains("Context7"));
+        engine.lock().set_setting("connector.context7.enabled", "false").unwrap();
+        assert!(engine.team_note(&engine.agents()).contains("Conectores habilitados para agentes con permiso web: ninguno."));
+    }
+
+    #[test]
+    fn gemini_cannot_receive_agents_that_need_account_tools_or_have_no_web() {
+        let gemini = Fake::new(ProviderId::Antigravity, vec![]);
+        let (engine, _rx, _dir) = engine(vec![gemini]);
+        let note = engine.team_note(&engine.agents());
+        assert!(note.contains("- parley (PARLEY):"));
+        assert!(!note.contains("- niko (Niko):"));
+        engine.lock().set_setting(&orchestrator::permissions_key("parley"), "telegram").unwrap();
+        assert!(!engine.team_note(&engine.agents()).contains("- parley (PARLEY):"));
+    }
+
+    #[test]
+    fn parley_refreshes_native_sources_per_turn_once_even_on_provider_fallback() {
+        #[derive(Default)]
+        struct Source { calls: Mutex<Vec<(String, Vec<String>)>> }
+        impl crate::parley::Source for Source {
+            fn prepare(&self, agent: &Agent, question: &str, _: &Cancel, progress: &mut dyn FnMut(&str, &str)) -> crate::parley::Prepared {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push((question.into(), agent.permissions.clone()));
+                progress("Telegram", "Lectura de hoy");
+                crate::parley::Prepared { text: format!("DATOS FRESCOS {}", calls.len()), files: vec![] }
+            }
+        }
+        let claude = Fake::new(ProviderId::Claude, vec![vec![TurnEvent::Failed(Failure::new("usage limit reached"))],vec![TurnEvent::Done]]);
+        let codex = Fake::new(ProviderId::Codex, vec![vec![TurnEvent::Delta("Pendientes verificados".into()),TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![claude.clone(),codex.clone()]);
+        engine.lock().set_setting(&orchestrator::model_key("parley"), "claude:opus").unwrap();
+        let source = Arc::new(Source::default()); engine.set_parley_source(source.clone());
+        engine.run_direct("native-test", "Picks", "parley", "Revisa mis grupos de hoy", true).unwrap();
+        assert_eq!(source.calls.lock().unwrap().len(),1);
+        for provider in [&claude,&codex] {
+            let prompts = provider.prompts.lock().unwrap();
+            assert!(prompts[0].0.contains("DATOS FRESCOS 1"));
+            assert!(prompts[0].0.contains("[Petición original]\nRevisa mis grupos de hoy"));
+            assert!(prompts[0].1.contains(crate::parley::CONTRACT));
+        }
+        let events: Vec<_> = rx.try_iter().collect();
+        assert_eq!(events.iter().filter(|e| matches!(e,Event::ChatTool {name,..} if name=="Telegram")).count(),1);
+        engine.lock().set_setting(&orchestrator::permissions_key("parley"), "web").unwrap();
+        engine.run_direct("native-test", "Picks", "parley", "Cuáles quedan ahora", true).unwrap();
+        let calls = source.calls.lock().unwrap();
+        assert_eq!(calls.len(),2); assert_eq!(calls[1].1,["web"]); drop(calls);
+        let prompts = claude.prompts.lock().unwrap();
+        assert!(prompts[1].0.contains("DATOS FRESCOS 2")); drop(prompts);
+        // Other agents never execute PARLEY's account or API reads.
+        engine.send(None,"Hola Buddy".into(),vec![]).unwrap(); until_end(&rx);
+        assert_eq!(source.calls.lock().unwrap().len(),2);
+    }
+
+    #[test]
     fn after_a_hand_off_buddy_gets_a_note() {
         let claude = Fake::new(
             ProviderId::Claude,
@@ -1339,20 +1492,44 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_with_accounts_only_runs_on_claude_with_them() {
+    fn niko_switches_to_gpt_with_accounts_and_a_fast_model_when_claude_runs_out() {
         let claude = Fake::new(ProviderId::Claude, vec![vec![TurnEvent::Failed(Failure::new("usage limit reached"))]]);
         let codex = Fake::new(ProviderId::Codex, vec![vec![TurnEvent::Delta("Aquí Codex".into()), TurnEvent::Done]]);
         let (engine, _rx, _dir) = engine(vec![claude.clone(), codex.clone()]);
-        engine.lock().set_setting("router.mode", "codex:gpt-6.1-sol").unwrap();
         let answer = engine.run_direct("niko-test", "Niko", "niko", "gasté 45 en almuerzo", true);
-        assert!(answer.is_err(), "no other provider takes a turn that needs the accounts");
-        assert!(codex.prompts.lock().unwrap().is_empty());
-        assert_eq!(claude.models.lock().unwrap()[0].as_deref(), Some("sonnet"), "a Codex model becomes Sonnet");
+        assert_eq!(answer.unwrap(), "Aquí Codex");
+        assert_eq!(claude.models.lock().unwrap()[0].as_deref(), Some("haiku"));
+        assert_eq!(codex.models.lock().unwrap()[0].as_deref(), Some("gpt-6-luna"));
+        assert!(codex.access.lock().unwrap()[0].1);
+        assert!(codex.prompts.lock().unwrap()[0].0.contains("nunca dupliques"));
         assert!(claude.prompts.lock().unwrap()[0].1.contains("Cuentas del usuario"));
         let mut agent = engine.agents().into_iter().find(|a| a.id == "niko").unwrap();
         agent.provider = ProviderId::Antigravity;
-        claude_for_accounts(&mut agent);
+        route_accounts(&mut agent);
         assert_eq!(agent.provider, ProviderId::Claude);
+    }
+
+    #[test]
+    fn niko_reconciles_a_partial_gpt_write_on_claude_and_keeps_the_same_targets() {
+        let codex = Fake::new(ProviderId::Codex, vec![vec![
+            TurnEvent::Tool { name: "mcp__codex_apps__notion.notion-create-pages".into(), summary: "registro".into() },
+            TurnEvent::Delta("respuesta incompleta".into()),
+            TurnEvent::Failed(Failure::new("usage limit reached"))
+        ]]);
+        let claude = Fake::new(ProviderId::Claude, vec![vec![TurnEvent::Delta("Ya estaba anotado: S/ 45,00".into()), TurnEvent::Done]]);
+        let (engine, rx, _dir) = engine(vec![codex.clone(), claude.clone()]);
+        engine.lock().set_setting("router.mode", "codex:gpt-6.1-sol").unwrap();
+        engine.lock().set_setting("niko.notion.movimientos", "https://www.notion.so/11111111111111111111111111111111").unwrap();
+        let text = engine.run_direct("niko-partial", "Niko", "niko", "gasté 45 en almuerzo", true).unwrap();
+        assert_eq!(text, "Ya estaba anotado: S/ 45,00");
+        let a = &codex.prompts.lock().unwrap()[0];
+        let b = &claude.prompts.lock().unwrap()[0];
+        assert!(a.1.contains("11111111111111111111111111111111"));
+        assert_eq!(a.1, b.1, "same targets and operation time across retries");
+        assert!(b.0.contains("Reutiliza su Clave"));
+        assert!(claude.access.lock().unwrap()[0].1);
+        assert!(!deltas(&rx.try_iter().collect::<Vec<_>>()).contains("respuesta incompleta"));
+        assert_eq!(engine.lock().messages("niko-partial").unwrap().last().unwrap().text, text);
     }
 
     #[test]

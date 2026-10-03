@@ -9,6 +9,9 @@ import { h, svg } from "../chat/dom";
 import { TABLER } from "../chat/tabler";
 import { PROVIDER_MARKS } from "../chat/provider-marks";
 import { agentFace } from "../chat/avatar";
+import { activeSession as findActiveSession, compactActivity, activityLabel } from "./activity";
+import { compactWindow, usageHelp, type ProviderUsage } from "./usage";
+import { NotchToolPanel } from "./tools";
 
 type Kind = "approval" | "finished" | "waiting" | "failed";
 interface Notice { kind: Kind; agent: string; title: string; detail: string; command?: string; requestId?: string; canAllow?: boolean; always?: string }
@@ -16,9 +19,6 @@ interface Session { id: string; agent: string; project: string; state: string }
 interface NowPlaying { app: string; title: string; artist: string; status: string; positionMs: number | null; durationMs: number | null; thumbnail: string | null }
 interface FocusStatus { running: boolean; startedAt: number; endsAt: number; minutes: number }
 interface Shortcut { id: string; name: string; target: string; kind: string }
-interface UsageWindow { label: string; usedPct: number; resetsAt: number | null }
-interface BriefingItem { topic: string; text: string; url: string | null; at: number }
-interface ProviderUsage { provider: string; name: string; windows: UsageWindow[] }
 type CoreEvent =
   | { type: "approvalRequest"; requestId: string; sessionId: string; agent: string; project: string; title: string; summary: string; detail: string; canAllow: boolean; always: string }
   | { type: "approvalClosed"; requestId: string }
@@ -43,6 +43,7 @@ const ICON = { fill: "none", stroke: "currentColor", "stroke-width": "1.75", "st
 const icon = (path: string, size = 16) => svg(path, size, ICON);
 const PILL = { width: 160, height: 8 };
 const EARS = { width: 220, height: 30 };
+const NOTICE_EARS = { width: 304, height: 30 };
 const NOTICE_SECONDS = 6;
 const WIDTH = { notice: 420, open: 560, drop: 420 } as const;
 
@@ -50,12 +51,15 @@ let notice: Notice | null = null;
 const queue: Notice[] = [];
 let sessions: Session[] = [];
 let hovering = false;
+let pinned = false;
+let collapsedByUser = false;
+let hoverTimer = 0;
+let leaveTimer = 0;
 let dismissTimer = 0;
 let track: NowPlaying | null = null;
 let trackAt = Date.now();
 let focus: FocusStatus | null = null;
 let shortcuts: Shortcut[] = [];
-let dropped: string[] = [];
 let dragging = false;
 let tick = 0;
 let hooksConnected = false;
@@ -64,9 +68,8 @@ let buddyBusy = false;
 /** What Buddy's turn is doing (the core's ChatActivity): the ear shows its icon. */
 let buddyActivity: { kind: string; label: string } | null = null;
 let usage: ProviderUsage[] = [];
-/** Today's «mensajitos», newest first. */
-let news: BriefingItem[] = [];
 const pendingApproval = new Map<string, string>();
+const tools = new NotchToolPanel(render);
 
 const agentName = (agent: string) =>
   agent === "codex" ? "Codex" : agent === "antigravity" ? "Gemini" : agent === "buddy" ? "Buddy" : agent === "niko" ? "Niko" : "Claude Code";
@@ -80,9 +83,12 @@ function providerMark(agent: string, size: number): Element {
   return el;
 }
 
-const activeSession = () => sessions.find((s) => s.state === "waiting") ?? sessions.find((s) => s.state === "working");
+const activeSession = () => findActiveSession(sessions) as Session | undefined;
+const activityState = () => ({ sessions, buddyBusy, buddyLabel: buddyActivity?.label,
+  focusing: !!focus?.running, playing: track?.status === "playing", player: track?.app });
 const mode = (): "notice" | "drop" | "open" | "idle" =>
-  notice ? "notice" : dragging || dropped.length ? "drop" : hovering ? "open" : "idle";
+  notice && (notice.kind === "approval" || pinned || (hovering && !collapsedByUser)) ? "notice"
+    : dragging ? "drop" : pinned || (hovering && !collapsedByUser) ? "open" : "idle";
 const left = () => Math.max((focus?.endsAt ?? 0) - Date.now() / 1000, 0);
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 const stateText = (state: string) =>
@@ -95,9 +101,11 @@ function render() {
   noticeEl.hidden = m !== "notice";
   overview.hidden = m !== "open";
   dropEl.hidden = m !== "drop";
+  tools.draw(m === "open");
   const active = activeSession();
   const focusing = !!focus?.running;
   const ear = earKind();
+  ears.classList.toggle("compact-notice", ear === "notice");
   ears.hidden = m !== "idle" || ear === "none";
   if (m === "idle") drawEars(active);
   if (m === "notice") drawNotice();
@@ -106,21 +114,18 @@ function render() {
   // A countdown or a playing track redraws once a second, only while it is on screen.
   window.clearInterval(tick);
   if ((m === "open" && (focusing || track?.status === "playing")) || (m === "idle" && ear === "focus")) {
-    tick = window.setInterval(() => (m === "open" ? drawOverview() : drawEars(active)), 1000);
+    tick = window.setInterval(() => (m === "open" ? updateTimers() : drawEars(active)), 1000);
   }
   requestAnimationFrame(() => {
-    const size = m === "idle" ? (ear !== "none" ? EARS : PILL) : { width: WIDTH[m], height: Math.ceil(island.scrollHeight) };
+    const size = m === "idle" ? (ear === "notice" ? NOTICE_EARS : ear !== "none" ? EARS : PILL) : { width: WIDTH[m], height: Math.ceil(island.scrollHeight) };
     void invoke("bar_resize", size);
   });
 }
 
 /** What sits beside the bar at rest, by priority: an agent, Buddy answering, the focus countdown, the music playing. */
-function earKind(): "session" | "buddy" | "focus" | "music" | "none" {
-  if (activeSession()) return "session";
-  if (buddyBusy) return "buddy";
-  if (focus?.running) return "focus";
-  if (track?.status === "playing") return "music";
-  return "none";
+function earKind(): "notice" | "session" | "buddy" | "focus" | "music" | "none" {
+  if (notice && notice.kind !== "approval") return "notice";
+  return compactActivity(activityState());
 }
 
 /** Tabler paths (MIT) and colours for what Buddy is doing: Word blue, Excel green, PowerPoint orange… */
@@ -139,6 +144,14 @@ const ACTIVITY: Record<string, [string, string]> = {
 
 function drawEars(active: Session | undefined) {
   const kind = earKind();
+  if (kind === "notice" && notice) {
+    const mark = notice.agent === "buddy" || notice.agent === "niko" ? icon(TABLER.sparkles, 14) : providerMark(notice.agent, 14);
+    $("ear-left").replaceChildren(mark, h("span", { text: agentName(notice.agent) }));
+    $("ear-right").replaceChildren(h("span", { class: `notice-state ${notice.kind}`,
+      text: notice.kind === "finished" ? "Listo" : notice.kind === "failed" ? "Error" : "Espera" }));
+    ears.title = `${notice.title} · ${notice.detail}`;
+    return;
+  }
   if (kind === "buddy") {
     $("ear-left").replaceChildren(h("span", { style: "display:inline-grid" }, icon(TABLER.sparkles, 14)));
     const doing = buddyActivity && ACTIVITY[buddyActivity.kind];
@@ -196,44 +209,33 @@ function drawNotice() {
 }
 
 function drawOverview() {
-  drawMusic();
-  drawAgents();
-  drawFocus();
-  drawShortcuts();
-  drawNews();
+  $("activity-label").textContent = activityLabel(activityState(), agentName);
+  $("pin-tools").setAttribute("aria-pressed", String(pinned));
+  $("pin-tools").title = pinned ? "Dejar de mantener abierto" : "Mantener abierto al retirar el cursor";
+  if (tools.tab === "home") {
+    drawMusic();
+    drawAgents();
+    drawFocus();
+    drawShortcuts();
+  }
   drawUsage();
 }
 
-/** Today's «mensajitos»: the topic, then the line; a click opens its source. */
-function drawNews() {
-  const el = $("news");
-  el.hidden = !news.length;
-  el.replaceChildren(...news.slice(0, 3).map((item) => {
-    const row = h("button", { class: "news-row", title: item.text, disabled: !item.url },
-      h("span", { class: "muted topic", text: item.topic }),
-      h("span", { class: "text", text: item.text }));
-    if (item.url) {
-      row.append(h("span", { class: "go" }, icon(TABLER.arrowUpRight, 11)));
-      row.addEventListener("click", () => void invoke("open_url", { url: item.url }));
-    }
-    return row;
-  }));
-}
-
-/** What is used of each plan: one column per provider, a row per window under one another. */
+/** One mark and percentage per provider, with the window and reset in the tooltip. */
 function drawUsage() {
   const el = $("usage");
-  el.hidden = !usage.length;
-  el.replaceChildren(...usage.map((plan) => h("div", { class: "plan" }, providerMark(plan.provider, 12),
-    h("div", { class: "windows" }, ...plan.windows.slice(0, 3).map((w) => {
-      const pct = Math.round(w.usedPct);
-      const reset = w.resetsAt ? ` · se reinicia ${new Date(w.resetsAt * 1000).toLocaleString("es", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "";
-      const level = pct >= 90 ? "high" : pct >= 70 ? "warn" : "";
-      return h("div", { class: "window", title: `${pct} % usado (${w.label})${reset}` },
-        h("span", { class: "muted label", text: w.label }),
-        h("div", { class: "meter" }, h("i", { class: level, style: `width:${Math.min(Math.max(pct, 0), 100)}%` })),
-        h("span", { class: "pct", text: `${pct} %` }));
-    })))));
+  const plans = usage.flatMap((plan) => {
+    const window = compactWindow(plan);
+    if (!window) return [];
+    const help = usageHelp(plan, window);
+    const level = window.usedPct >= 90 ? "high" : window.usedPct >= 70 ? "warn" : "";
+    const mark = providerMark(plan.provider, 12);
+    mark.removeAttribute("title");
+    return [h("span", { class: `usage-chip ${level}`, title: help, "aria-label": help, tabindex: "0" },
+      mark, h("span", { text: `${Math.round(window.usedPct)} %` }))];
+  });
+  el.hidden = !plans.length;
+  el.replaceChildren(...plans);
 }
 
 function drawMusic() {
@@ -246,10 +248,10 @@ function drawMusic() {
     h("button", { class: "icon-btn", type: "button", title, "aria-label": title, onclick: () => void invoke("media_control", { action }) }, icon(path, size));
   const info: Node[] = [h("strong", { text: t.title }), h("span", { class: "muted", text: [t.artist, t.app].filter(Boolean).join(" · ") })];
   if (t.durationMs && t.positionMs !== null) {
-    const now = Math.min(t.positionMs + (playing ? Date.now() - trackAt : 0), t.durationMs);
+    const now = Math.max(0, Math.min(t.positionMs + (playing ? Date.now() - trackAt : 0), t.durationMs));
     const fill = h("div", { class: "bar-fill", style: `width:${(now / t.durationMs) * 100}%` });
-    info.push(h("div", { class: "progress" }, h("span", { text: clock(now / 1000) }), h("div", { class: "bar-track" }, fill),
-      h("span", { text: `-${clock((t.durationMs - now) / 1000)}` })));
+    info.push(h("div", { class: "progress" }, h("span", { id: "track-elapsed", text: clock(now / 1000) }), h("div", { class: "bar-track" }, fill),
+      h("span", { id: "track-remaining", text: `-${clock((t.durationMs - now) / 1000)}` })));
   }
   music.replaceChildren(
     t.thumbnail ? h("img", { src: t.thumbnail, alt: "" }) : h("span", { class: "art" }),
@@ -294,12 +296,41 @@ function drawFocus() {
       h("div", { class: "ring" }, ring, h("span", { text: clock(left()) })),
       h("button", { class: "pill", type: "button", title: "Terminar el bloque de enfoque ahora", onclick: () => void invoke("focus_stop") }, "Parar")));
   } else {
-    body.push(h("span", { class: "muted", text: "Sin distracciones" }),
+    const duration = h("select", { class: "focus-duration", "aria-label": "Elegir duración del enfoque", title: "Bloques de enfoque de 5 a 120 minutos" },
+      h("option", { value: "", text: "Elegir duración" }),
+      ...[5, 15, 25, 50, 90, 120].map((minutes) => h("option", { value: minutes, text: `${minutes} minutos` })));
+    duration.addEventListener("change", () => {
+      const minutes = Number(duration.value);
+      if (minutes) void invoke("focus_start", { minutes });
+      duration.value = "";
+    });
+    body.push(duration,
       h("div", { class: "row-btns" },
         h("button", { class: "pill primary", type: "button", title: "Empezar 25 minutos de enfoque", onclick: () => void invoke("focus_start", { minutes: 25 }) }, "25 min"),
         h("button", { class: "pill", type: "button", title: "Empezar 50 minutos de enfoque", onclick: () => void invoke("focus_start", { minutes: 50 }) }, "50")));
   }
   $("focus").replaceChildren(h("h2", {}, icon(TABLER.history, 14), "Enfoque"), ...body);
+}
+
+/** Only update time and progress: keep buttons and keyboard focus intact between ticks. */
+function updateTimers() {
+  if (focus?.running) {
+    const ring = document.querySelector("#focus .ring");
+    const label = ring?.querySelector("span");
+    if (label) label.textContent = clock(left());
+    const remaining = ring?.querySelector("circle:last-child");
+    const c = 2 * Math.PI * 20;
+    remaining?.setAttribute("stroke-dasharray", `${Math.min(left() / Math.max(focus.endsAt - focus.startedAt, 1), 1) * c} ${c}`);
+  }
+  if (track?.durationMs && track.positionMs !== null) {
+    const now = Math.max(0, Math.min(track.positionMs + (track.status === "playing" ? Date.now() - trackAt : 0), track.durationMs));
+    const elapsed = document.getElementById("track-elapsed");
+    const remaining = document.getElementById("track-remaining");
+    const fill = document.querySelector<HTMLElement>("#music .bar-fill");
+    if (elapsed) elapsed.textContent = clock(now / 1000);
+    if (remaining) remaining.textContent = `-${clock((track.durationMs - now) / 1000)}`;
+    if (fill) fill.style.width = `${now / track.durationMs * 100}%`;
+  }
 }
 
 function drawShortcuts() {
@@ -324,23 +355,7 @@ function drawShortcuts() {
 }
 
 function drawDrop() {
-  if (!dropped.length) {
-    dropEl.replaceChildren(h("div", { class: "drop-target" }, icon(TABLER.folder, 22), h("span", { text: "Suelta tus archivos aquí" })));
-    return;
-  }
-  const name = (p: string) => p.split(/[\\/]/).pop() ?? p;
-  const files = dropped;
-  dropEl.replaceChildren(
-    h("div", { class: "drop-file" }, icon(TABLER.folder, 28),
-      h("div", { class: "names" }, h("strong", { text: files.length === 1 ? name(files[0]!) : `${files.length} archivos` }),
-        h("span", { class: "muted", text: files.length === 1 ? files[0]! : files.map(name).join(", ") })),
-      h("button", { class: "icon-btn", type: "button", title: "Descartar", onclick: () => { dropped = []; render(); } }, icon(TABLER.x, 16))),
-    h("div", { class: "actions", style: "justify-content:flex-start" },
-      h("button", { class: "btn primary", type: "button", title: "Abre el chat con los archivos",
-        onclick: () => { void invoke("give_files", { paths: files }); dropped = []; render(); } }, "Dárselo a Buddy"),
-      h("button", { class: "btn", type: "button", title: "Muestra el archivo en el Explorador", onclick: () => void invoke("reveal_path", { path: files[0] }) }, "Mostrar en carpeta"),
-      h("button", { class: "btn", type: "button", title: "Copia la ruta al portapapeles",
-        onclick: () => { void navigator.clipboard.writeText(files.join("\n")); dropped = []; render(); } }, "Copiar ruta")));
+  dropEl.replaceChildren(h("div", { class: "drop-target" }, icon(TABLER.folder, 22), h("span", { text: "Suelta tus archivos aquí" })));
 }
 
 function show(n: Notice) {
@@ -402,9 +417,6 @@ function onCore(e: CoreEvent) {
     case "usageChanged":
       void invoke<ProviderUsage[]>("usage").then((u) => { usage = u; if (mode() === "open") render(); });
       break;
-    case "briefingReady":
-      void invoke<BriefingItem[]>("briefing").then((b) => { news = b; if (mode() === "open") render(); });
-      break;
     case "usageLow": {
       const u = e as Extract<CoreEvent, { type: "usageLow" }>;
       const name = planName(u.provider);
@@ -436,13 +448,13 @@ function onCore(e: CoreEvent) {
     case "chatActivity": {
       const a = e as unknown as { kind: string; label: string };
       buddyActivity = { kind: a.kind, label: a.label };
-      if (mode() === "idle") render();
+      render();
       break;
     }
     case "chatDone":
     case "chatFailed":
       buddyActivity = null;
-      if (mode() === "idle") render();
+      render();
       break;
     case "focusChanged":
       void invoke<FocusStatus>("focus_status").then((f) => { focus = f.running ? f : null; render(); });
@@ -487,18 +499,43 @@ async function refreshHooks() {
 }
 
 island.addEventListener("mouseenter", () => {
-  hovering = true;
+  window.clearTimeout(leaveTimer);
   window.clearTimeout(dismissTimer);
-  if (!notice) {
-    void refreshHooks();
-    void invoke("refresh_usage");
-  }
-  render();
+  if (hovering || hoverTimer) return;
+  hoverTimer = window.setTimeout(() => {
+    hoverTimer = 0;
+    hovering = true;
+    if (!notice) {
+      void refreshHooks();
+      void invoke("refresh_usage");
+    }
+    render();
+  }, 120);
 });
 island.addEventListener("mouseleave", () => {
-  hovering = false;
-  if (notice && notice.kind !== "approval") dismissTimer = window.setTimeout(dismiss, 2000);
-  render();
+  window.clearTimeout(hoverTimer);
+  hoverTimer = 0;
+  window.clearTimeout(leaveTimer);
+  leaveTimer = window.setTimeout(() => {
+    hovering = false;
+    collapsedByUser = false;
+    if (notice && notice.kind !== "approval") dismissTimer = window.setTimeout(dismiss, 2000);
+    render();
+  }, 300);
+});
+
+$("pin-tools").append(icon("M16 3l5 5l-4 1l-3 6l-5 -5l6 -3z M3 21l6 -6", 14));
+$("close-tools").append(icon(TABLER.x, 14));
+$("pin-tools").addEventListener("click", () => { pinned = !pinned; render(); });
+function closeTools() {
+  pinned = false;
+  collapsedByUser = true;
+  if (notice && notice.kind !== "approval") dismiss();
+  else render();
+}
+$("close-tools").addEventListener("click", closeTools);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.preventDefault(); closeTools(); }
 });
 
 // Files dragged onto the bar.
@@ -510,7 +547,9 @@ void getCurrentWebview().onDragDropEvent(({ payload }) => {
     render();
   } else if (payload.type === "drop") {
     dragging = false;
-    dropped = payload.paths;
+    hovering = true;
+    collapsedByUser = false;
+    tools.addFiles(payload.paths);
     render();
   }
 });
@@ -525,10 +564,8 @@ void Promise.all([
   invoke<FocusStatus>("focus_status").catch(() => null),
   invoke<Shortcut[]>("shortcuts").catch(() => []),
   invoke<ProviderUsage[]>("usage").catch(() => []),
-  invoke<BriefingItem[]>("briefing").catch(() => []),
-]).then(([list, f, s, u, b]) => {
+]).then(([list, f, s, u]) => {
   usage = u;
-  news = b;
   sessions = list.map((x) => ({ id: x.sessionId, agent: x.agent, project: x.project, state: x.state }));
   focus = f?.running ? f : null;
   shortcuts = s;

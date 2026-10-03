@@ -27,6 +27,7 @@
       // ?telegram=pairing | paired shows those states (default: not connected).
       const tgMode = new URLSearchParams(location.search).get("telegram") ?? "";
       let telegram = { connected: tgMode !== "", paired: tgMode === "paired", botName: tgMode ? "@mi_buddy_bot" : "", pairingCode: tgMode === "pairing" ? "482913" : "", error: "" };
+      let oddsReady = new URLSearchParams(location.search).get("odds") === "ready";
       // Niko · finanzas (made-up movements).
       const niko = { enabled: true, interval: 20, senders: "notificacionesbcp.com.pe, interbank.pe, bbva.pe, netflix.com", parentPage: "",
         dashboardUrl: "https://www.notion.so/Dashboard-0123456789abcdef0123456789abcdef", telegram: false, agentReady: true, running: false,
@@ -49,6 +50,11 @@
         remove_folder: ({ path }) => (folders = folders.filter((f) => f.path !== path)),
         hooks_status: () => hooks,
         telegram_status: () => telegram,
+        telegram_account_request: () => JSON.stringify({ configured: false, authorized: false, step: "idle", chats: [], selected: [], posts: [] }),
+        parley_odds_request: ({ action, value }) => {
+          if (action === "configure") oddsReady = !!value.trim();
+          return JSON.stringify({ enabled: oddsReady, hasKey: oddsReady, bookmaker: "betano.pe", dailyCap: 20 });
+        },
         telegram_connect: ({ token }) => {
           if (!/^\d+:[\w-]{30,}$/.test(token.trim())) throw "Ese no parece un token de bot. Cópialo completo de @BotFather (números, dos puntos y letras).";
           telegram = { connected: true, paired: false, botName: "@mi_buddy_bot", pairingCode: "482913", error: "" };

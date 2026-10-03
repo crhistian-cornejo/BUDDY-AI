@@ -11,14 +11,25 @@
       <div id="ears" hidden><span id="ear-left"></span><span class="spacer"></span><span id="ear-right"></span></div>
       <section id="notice" hidden></section>
       <section id="overview" hidden>
+        <header class="overview-head">
+          <nav id="tool-tabs" aria-label="Herramientas del notch"></nav>
+          <div class="overview-title"><span id="activity-label"></span></div>
+          <div id="widget-controls"></div>
+          <button id="pin-tools" class="icon-btn" type="button" aria-label="Mantener abierto" aria-pressed="false" title="Mantener abierto al retirar el cursor"></button>
+          <button id="close-tools" class="icon-btn" type="button" aria-label="Cerrar herramientas" title="Cerrar herramientas · Esc"></button>
+        </header>
+        <div id="home-tools">
         <div id="music" class="tile player" hidden></div>
         <div class="tiles">
           <div class="tile" id="agents"></div>
           <div class="tile" id="focus"></div>
           <div class="tile" id="shortcuts"></div>
         </div>
-        <div id="news" hidden></div>
+        </div>
+        <div id="files-tools" hidden></div>
+        <div id="utility-tools" hidden></div>
         <div id="usage" hidden></div>
+        <div id="tool-message" role="status" hidden></div>
       </section>
       <section id="drop" hidden></section>
     </div>

@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 enum AppServices {
     static var core: BuddyCore?
+    static var notchSystem: NotchSystemMonitor?
 }
 
 /// Buddy's Settings in a regular titled window (an app without Dock icon cannot rely on the Settings scene's menu).
@@ -94,6 +95,7 @@ private struct GeneralSettings: View {
                 }
             }
             ModelSettings(core: core)
+            if let system = AppServices.notchSystem { NotchSystemSettings(system: system) }
             Section("Agentes") {
                 CoreToggle(core: core, key: "commands.enabled", title: "Permitir que ejecuten comandos",
                            detail: "Siempre con tu clic: cada comando sale en el notch con Permitir o Rechazar.")
@@ -322,6 +324,7 @@ private struct ConnectionSettings: View {
             SpotifySection(core: core)
             TelegramSection(core: core)
             TelegramAccountSection(core: core)
+            ParleyOddsSection(core: core)
             ConnectorsSection(core: core)
         }
         .formStyle(.grouped)

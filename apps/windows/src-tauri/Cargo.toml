@@ -22,6 +22,7 @@ tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+arboard = { version = "3.6", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 # GetLastInputInfo (seconds since the last input, for "Buddy sleeps when you are away"). A query, not a hook.
@@ -34,6 +35,7 @@ windows = { version = "0.61", features = [
   "Media_Control",
   "Storage_Streams",
   "Win32_System_Com",
+  "Win32_System_Power",
   # Screenshots for agents (capture.rs), only after the user's click.
   "Win32_Foundation",
   "Win32_Graphics_Gdi",

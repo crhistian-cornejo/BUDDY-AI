@@ -7,6 +7,21 @@ import Observation
 @Observable
 final class NotchModel {
     enum Mode: Equatable { case idle, notice, open, drop }
+    enum Tab: String, CaseIterable {
+        case home = "Inicio", files = "Archivos", utilities = "Utilidades"
+        var symbol: String {
+            switch self { case .home: return "house.fill"; case .files: return "plus"; case .utilities: return "square.grid.2x2" }
+        }
+    }
+    var tab: Tab = .home
+    var tools: NotchTools?
+    var battery: NotchBattery?
+    var appointment: Appointment?
+    var calendarError = ""
+    var toolMessage = ""
+    var status: NotchStatus?
+    var system: NotchSystemMonitor?
+    @ObservationIgnored private var statusTask: Task<Void, Never>?
 
     /// Where a session runs: its folder and the app (bundle id) holding its terminal, to bring the user back to it.
     struct Place: Equatable {
@@ -39,6 +54,8 @@ final class NotchModel {
     private(set) var notice: Notice?
     private(set) var sessions: [Session] = []
     private(set) var hovering = false
+    var pinned = false
+    private(set) var collapsedByUser = false
     /// What Spotify or Music is playing (read only while the island is open).
     var nowPlaying: NowPlaying?
     /// When the reading above was taken (the progress bar runs from it).
@@ -51,8 +68,6 @@ final class NotchModel {
     var dragging = false
     /// What is used of each plan.
     var usage: [ProviderUsage] = []
-    /// Today's «mensajitos», newest first.
-    var briefing: [BriefingItem] = []
     /// Buddy is answering in the chat (the ears show it while the chat is closed).
     var buddyBusy = false
     /// What Buddy's turn is doing (`activity::of_tool` in the core): the ear shows its icon, the tooltip its label.
@@ -73,15 +88,57 @@ final class NotchModel {
     static let noticeSeconds: Double = 6
 
     var mode: Mode {
-        if notice != nil { return .notice }
-        if dragging || !dropped.isEmpty { return .drop }
-        return hovering ? .open : .idle
+        if let notice, notice.isApproval || pinned || (hovering && !collapsedByUser) { return .notice }
+        if dragging { return .drop }
+        return pinned || (hovering && !collapsedByUser) ? .open : .idle
+    }
+
+    func acceptTools(_ tools: NotchTools) {
+        self.tools = tools
+        dropped = tools.files.map { URL(fileURLWithPath: $0.path) }
+    }
+
+    func showStatus(_ status: NotchStatus, seconds: Double = 2.4) {
+        self.status = status
+        statusTask?.cancel()
+        statusTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            guard let self, !Task.isCancelled, self.status?.id == status.id else { return }
+            self.status = nil
+        }
+    }
+
+    func revealFiles() {
+        tab = .files
+        dragging = false
+        collapsedByUser = false
+        hovering = true
     }
 
     func setHovering(_ value: Bool) {
         hovering = value
+        if !value { collapsedByUser = false }
         // A notice under the pointer stays; it leaves on its own once the pointer goes.
         if !value, let notice, !notice.isApproval { scheduleDismiss(after: 2) }
+    }
+
+    /// Closing tools never answers or hides a permission request, or discards files.
+    func collapse() {
+        pinned = false
+        collapsedByUser = true
+        if notice?.isApproval == false { dismiss() }
+    }
+
+    var activityLabel: String {
+        if let session = activeSession, session.state == "waiting" {
+            return "\(AgentNames.name(session.agent)) espera tu respuesta"
+        }
+        if buddyBusy { return buddyActivity?.label ?? "Buddy está respondiendo" }
+        let working = sessions.filter { $0.state == "working" }.count
+        if working > 0 { return working == 1 ? "1 agente trabajando" : "\(working) agentes trabajando" }
+        if focus?.running == true { return "Enfoque en curso" }
+        if let earTrack, earTrack.playing { return "Sonando en \(earTrack.app)" }
+        return "Todo a mano"
     }
 
     func show(_ notice: Notice) {

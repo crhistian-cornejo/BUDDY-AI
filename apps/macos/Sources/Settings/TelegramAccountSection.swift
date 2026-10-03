@@ -98,7 +98,7 @@ struct TelegramAccountSection: View {
                     Text("\(state.selected.count) grupos seleccionados").font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("Consultar mensajes") { perform("fetch") }.disabled(busy)
-                        Button("Analizar con PARLEY") { perform("analyze") }.disabled(busy || state.posts.isEmpty)
+                        Button("Analizar hoy con PARLEY") { perform("analyze") }.disabled(busy)
                     }
                 }
                 if let analysis {
@@ -127,7 +127,7 @@ struct TelegramAccountSection: View {
         } header: {
             Label("Telegram · Cuenta personal", systemImage: "person.crop.circle")
         } footer: {
-            Text("Lectura de los grupos elegidos al pulsar Consultar mensajes (últimos 20 por grupo). No envía mensajes, no se une a grupos ni los marca como leídos. Los chats privados y el contenido protegido quedan fuera. Las credenciales y la sesión se guardan en el Llavero; el código y la contraseña no se guardan. Analizar con PARLEY envía los mensajes y hasta 10 fotos al proveedor del agente.")
+            Text("Consultar mensajes muestra los últimos 20 por grupo. Analizar hoy con PARLEY vuelve a leer los mensajes de hoy con hora de Lima, hasta 200 por grupo, y verifica qué picks quedan pendientes. Solo lee los grupos elegidos; no envía mensajes ni los marca como leídos. Las credenciales y la sesión van al Llavero. El análisis envía los mensajes y hasta 10 fotos al proveedor del agente; informa cualquier lectura parcial.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .onAppear { perform("status") }

@@ -71,7 +71,7 @@ pub struct TurnRequest {
     pub no_web: bool,
     /// Remote MCP servers (Settings › Conectores) for this turn; ignored without the web (see `remote`).
     pub connectors: Vec<crate::connectors::Connector>,
-    /// The user's accounts connected in claude.ai (Gmail and Drive to read, Notion): `accounts`. Claude only.
+    /// Native subscription accounts: claude.ai on Claude, ChatGPT apps on Codex. Gmail/Drive read, Notion write.
     pub accounts: bool,
 }
 
@@ -312,6 +312,8 @@ pub trait Provider: Send + Sync {
     fn installed(&self) -> bool;
     /// Gets ready for a turn like `request` (start-up done while the user types). Optional.
     fn prewarm(&self, _request: &TurnRequest) {}
+    /// Release a one-off background conversation without closing the user's other chats.
+    fn release_session(&self, _id: &str) {}
     /// Whether it can look at images (`TurnRequest::images`). A provider that cannot is skipped for turns that
     /// carry images while another one can take them.
     fn sees_images(&self) -> bool {

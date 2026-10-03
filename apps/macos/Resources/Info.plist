@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Buddy pregunta a Spotify o Música qué suena y usa sus botones de anterior, pausa y siguiente en el notch. No toca nada más.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Buddy muestra en el notch cuándo se conectan o desconectan tus auriculares y otros dispositivos. No inicia conexiones ni cambia tus dispositivos.</string>
+	<key>NSFocusStatusUsageDescription</key>
+	<string>Buddy muestra en el notch cuándo activas o desactivas Concentración y silencias las notificaciones.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

@@ -144,6 +144,17 @@ button {
   image-rendering: pixelated;
 }
 
+.agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-collaborating { color: var(--color-accent); font-size: 11px; font-weight: 400; }
+.agent-connection { display: flex; flex-direction: column; justify-content: center; gap: 5px; width: 30px; height: 12px; flex-shrink: 0; color: var(--color-accent); opacity: .55; }
+.agent-connection.active { opacity: 1; }
+.agent-connection.failed { color: var(--color-text-muted); }
+.agent-signal { display: block; position: relative; height: 1px; background: color-mix(in srgb, currentColor 25%, transparent); border-radius: 1px; }
+.agent-signal::after { content: ""; position: absolute; top: -1.5px; left: 13px; width: 4px; height: 4px; background: currentColor; border-radius: 50%; }
+.agent-connection.active .agent-signal::after { left: 0; animation: agent-exchange 1.6s linear infinite; }
+.agent-connection.active .agent-signal:last-child::after { animation-direction: reverse; }
+@keyframes agent-exchange { from { transform: translateX(0); } to { transform: translateX(26px); } }
+
 .provider {
   display: inline-grid;
   align-self: center;
@@ -290,6 +301,7 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .agent-connection.active .agent-signal::after { animation: none; left: 13px; }
   .activity svg {
     animation: none;
   }

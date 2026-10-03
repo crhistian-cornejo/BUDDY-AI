@@ -13,9 +13,9 @@ interface PetPlan {
   state: string;
   durationMs: number;
   dx: number;
-  /** A short transition played once first: "sit-down" or "stand-up" ("" for none). */
+  /** A short transition played once first ("" for none). */
   intro: string;
-  /** The still frame held afterwards: "idle" or "sit". */
+  /** The still frame held afterwards: "idle", "sit" or "sleep-still". */
   rest: string;
 }
 
@@ -28,6 +28,9 @@ let lifeToken = 0;
 let lastUse = Date.now();
 /** Holding the seated frame (the last plan rested on "sit"). */
 let seated = false;
+function sleeping(): boolean {
+  return !!player && ["lie-down", "sleep", "sleep-still"].includes(player.state);
+}
 let hovering = false;
 /** The idle loop is waiting before its next plan (so a use can re-plan at once). */
 let waiting = false;
@@ -55,12 +58,12 @@ async function main(): Promise<void> {
 }
 
 /** Ask the core what to do, wait, play it, repeat. Timers sleep in between. `standUp` first gets a seated Buddy up. */
-async function life(standUp = false): Promise<void> {
+async function life(standUp = false, wakeUp = false): Promise<void> {
   const token = ++lifeToken;
   waiting = false;
   if (standUp) {
     if (reduceMotion.matches) player.show("idle");
-    else await player.play("stand-up", 0);
+    else await player.play(wakeUp ? "wake-up" : "stand-up", 0);
   }
   while (token === lifeToken) {
     const plan = await invoke<PetPlan>("pet_next", {
@@ -68,6 +71,7 @@ async function life(standUp = false): Promise<void> {
       untouchedSeconds: (Date.now() - lastUse) / 1000,
       hovering,
       sitting: seated,
+      sleeping: sleeping(),
     });
     if (token !== lifeToken) return;
     waiting = true;
@@ -94,9 +98,10 @@ async function life(standUp = false): Promise<void> {
 function used(standUp = true): void {
   lastUse = Date.now();
   if (!player || activity !== null) return;
-  if (seated) {
+  if (seated || sleeping()) {
+    const wakeUp = sleeping();
     seated = false;
-    void life(standUp);
+    void life(standUp, wakeUp);
   } else if (waiting) {
     void life();
   }
@@ -158,6 +163,8 @@ void listen<{ type: string; state?: string }>("core-event", ({ payload }) => {
   if (payload.type !== "mascotState" || !player) return;
   const state = payload.state ?? "idle";
   const wasSeated = seated;
+  const wasSleeping = sleeping();
+  const wakeState = wasSleeping ? "wake-up" : "stand-up";
   if (["think", "work", "ask", "listen"].includes(state)) {
     activity = state;
     seated = false;
@@ -167,7 +174,7 @@ void listen<{ type: string; state?: string }>("core-event", ({ payload }) => {
     void (async () => {
       if (laptop && player.has(laptop)) {
         if (!atLaptop) {
-          if (wasSeated && !reduceMotion.matches && !(await player.play("stand-up", 0))) return;
+          if ((wasSeated || wasSleeping) && !reduceMotion.matches && !(await player.play(wakeState, 0))) return;
           atLaptop = true;
           if (!reduceMotion.matches && !(await player.play("laptop-on", 0, undefined, "laptop-type"))) return;
         }
@@ -175,7 +182,7 @@ void listen<{ type: string; state?: string }>("core-event", ({ payload }) => {
         return;
       }
       if (!(await leaveLaptop())) return;
-      if (wasSeated && !reduceMotion.matches && !(await player.play("stand-up", 0))) return;
+      if ((wasSeated || wasSleeping) && !reduceMotion.matches && !(await player.play(wakeState, 0))) return;
       void player.loop(state);
     })();
   } else {
@@ -194,7 +201,7 @@ void listen<{ type: string; state?: string }>("core-event", ({ payload }) => {
       return reacts ? player.play(state, 1) : true;
     })();
     // A plan made while seated (or the stopped loop) must not run: plan again once the reaction ends.
-    if (wasBusy || wasSeated || waiting) {
+    if (wasBusy || wasSeated || wasSleeping || waiting) {
       lifeToken++;
       void reaction.then(() => {
         if (activity === null) void life();

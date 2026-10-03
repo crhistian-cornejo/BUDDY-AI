@@ -47,7 +47,7 @@ struct NikoSettings: View {
             Section {
                 if accounts.isEmpty {
                     HStack {
-                        Text(checking ? "Comprobando con Claude Code…" : "No se pudo preguntar a Claude Code.")
+                        Text(checking ? "Comprobando Claude y GPT…" : "No se pudieron comprobar las conexiones.")
                             .foregroundStyle(.secondary)
                         Spacer()
                         if checking { ProgressView().controlSize(.small) }
@@ -56,7 +56,7 @@ struct NikoSettings: View {
                 ForEach(accounts, id: \.id) { account in
                     LabeledContent {
                         if account.state != "connected" {
-                            Link("Autorizar en claude.ai", destination: Self.connectors)
+                            Link(account.id.hasPrefix("codex:") ? "Revisar en ChatGPT" : "Autorizar en Claude", destination: account.id.hasPrefix("codex:") ? URL(string: "https://chatgpt.com")! : Self.connectors)
                         }
                     } label: {
                         Label {
@@ -73,9 +73,9 @@ struct NikoSettings: View {
                     Button("Volver a comprobar", action: checkAccounts).disabled(checking)
                 }
             } header: {
-                Text("Tus cuentas en claude.ai")
+                Text("Claude y GPT · cambio automático")
             } footer: {
-                Text("Se conectan en claude.ai › Ajustes › Conectores; Buddy no guarda esas claves. Si Claude Code aún dice «falta autorizar», ábrelo en la terminal y usa /mcp.")
+                Text("Usa tus conexiones de Claude y ChatGPT. Si uno se queda sin cuota, Niko continúa con el otro y conserva las mismas bases de Notion. Buddy no guarda esas claves. El acceso al correo se confirma al revisarlo.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -85,7 +85,7 @@ struct NikoSettings: View {
                     reload()
                 })) {
                     Text("Niko revisa el correo en este equipo")
-                    Text("Déjalo encendido en un solo equipo (este Mac o tu PC). Cada revisión usa Haiku y gasta poco.")
+                    Text("Déjalo encendido en un solo equipo (este Mac o tu PC). Usa Haiku o GPT Luna con esfuerzo bajo para revisar rápido y gastar poco.")
                 }
                 Picker("Cada", selection: Binding(get: { status?.interval ?? 20 }, set: { minutes in
                     try? core.nikoSetInterval(minutes: minutes)
@@ -214,7 +214,7 @@ struct NikoSettings: View {
         switch account.state {
         case "connected": return "Conectado"
         case "needs-auth": return "Falta autorizar"
-        case "missing": return "No conectado en claude.ai"
+        case "missing": return "No disponible en esta conexión"
         default: return "No responde"
         }
     }

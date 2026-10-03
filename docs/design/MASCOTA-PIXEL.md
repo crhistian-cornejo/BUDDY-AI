@@ -76,7 +76,8 @@ Siguen el modelo de las mascotas de ChatGPT/Codex (trabajando, necesita decisió
 
 `idle`, `blink`, `look`, `wave`, `walk-right`, `walk-left`, `drag`, `think`, `work`, `ask`, `error`, `done` y `sleep`.
 Sentado y aburrido: `sit-down` (3), `sit` (1, fijo), `sit-blink` (2), `sit-look` (4), `sit-yawn` (5), `sit-swing` (7) y
-`stand-up` (2). `sleep` ahora también es sentado. Las hojas de cada estado salen con `scripts/characters/buddy_base.py --preview DIR`.
+`stand-up` (2). Para dormir: `lie-down` (3), `sleep` (8 a 2 fps), `sleep-still` (1) y `wake-up` (5).
+Las hojas de cada estado salen con `scripts/characters/buddy_base.py --preview DIR`.
 
 ### Con lentes y laptop (2026-10-02)
 
@@ -105,7 +106,11 @@ laptop plateada y teclea; al terminar la cierra, se quita los lentes y se levant
 - **`PetBrain` decide** cada 4–9 s: respirar, parpadear, mirar a los lados, saludar o pasear (22 %).
   - **Pasea** 24–180 pt a 32 pt/s, sin salir del ancho útil de la pantalla.
   - Cerca de un borde **se da la vuelta**; si no hay sitio, hace otra cosa.
-- **Duerme** tras 5 min sin teclado ni ratón: `CGEventSource` en Mac, `GetLastInputInfo` en Windows, consultas sin ganchos.
+- **Duerme** tras unos 10 min esperando sentado sin usarlo (610 s desde el último uso, incluidos los 10 s antes
+  de sentarse), aunque sigas usando el teclado en otra app. Se acuesta de lado en 3 fotogramas y respira a 2 fps:
+  salen tres «zzz» de la boca y una burbujita de moco se infla y desinfla. Sigue acostado entre ciclos.
+  Pasar el cursor, hacer clic, abrir el chat o empezar una tarea lo despierta; `wake-up` termina de pie.
+  Con «reducir movimiento», mantiene `sleep-still` y omite las transiciones y efectos animados.
 - **«Reducir movimiento»:** solo parpadea.
 - **«Pasear por la pantalla»** se desactiva desde el clic derecho.
 - **Al soltarla** después de arrastrarla, `clamp_to_area` la devuelve entera dentro del área útil (bordes y esquinas, bajo la barra de menús y sobre el Dock o la barra de tareas).
@@ -117,7 +122,7 @@ laptop plateada y teclea; al terminar la cierra, se quita los lentes y se levant
   - Cualquier uso (pasar el ratón, clic, abrir o cerrar el chat, un estado de trabajo, el globo) lo levanta en
     2 fotogramas. Sentado nunca bloquea clics ni arrastre.
   - Con «reducir movimiento»: solo el fotograma fijo sentado, sin transiciones ni gestos.
-  - El plan del núcleo trae `intro` (transición previa) y `rest` (`idle` o `sit`, el fotograma en el que queda).
+  - El plan del núcleo trae `intro` (transición previa) y `rest` (`idle`, `sit` o `sleep-still`, el fotograma en el que queda).
 - **Entre planes no corre nada.**
 
 Actualización 2026-10-02: `idle` dura 2 s a 4 fps y alterna ojos y manos sin desplazar la ventana. Mac y Windows

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use super::process;
 use super::{Cancel, Failure, FailureKind, Provider, ProviderId, TokenCount, TurnEvent, TurnRequest};
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_MODEL: &str = "gpt-6.1-sol";
 
 /// How a Codex answer is laid out so the chat renders it like a Claude one.
@@ -32,31 +32,51 @@ pub struct Codex {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// Puts each command Codex wants to run in front of the user (only turns with the gate ask at all).
     approver: std::sync::OnceLock<super::Approver>,
+    accounts: Mutex<Option<(std::time::Instant, Vec<crate::accounts::AppAccount>)>>,
 }
 
 impl Codex {
     pub fn new() -> Self {
-        Self { exe: process::locate("codex"), sessions: Mutex::new(HashMap::new()), approver: std::sync::OnceLock::new() }
+        Self { exe: process::locate("codex"), sessions: Mutex::new(HashMap::new()), approver: std::sync::OnceLock::new(), accounts: Mutex::new(None) }
     }
 
     fn session(&self, exe: &std::path::Path, request: &TurnRequest) -> Result<Arc<Session>, String> {
-        let connectors = crate::connectors::fingerprint(request.remote());
+        let connectors = format!("{}:accounts={}", crate::connectors::fingerprint(request.remote()), request.accounts);
         if let Some(id) = &request.resume {
             // A live app-server holds the connectors (and keys) it started with: a change resumes in a new one.
             if let Some(s) = self.sessions.lock().unwrap().get(id).filter(|s| s.alive() && s.connectors == connectors) {
                 return Ok(s.clone());
             }
         }
-        let mut session = Session::spawn(exe, &request.workspace, self.approver.get().cloned(), &request.remote_env())?;
+        let mut session = Session::spawn(exe, &request.workspace, self.approver.get().cloned(), &request.remote_env(), request.accounts)?;
         session.connectors = connectors;
         session
-            .request("initialize", json!({ "clientInfo": { "name": "buddy", "title": "Buddy", "version": env!("CARGO_PKG_VERSION") } }))?;
+            .request("initialize", json!({ "clientInfo": { "name": "buddy", "title": "Buddy", "version": env!("CARGO_PKG_VERSION") }, "capabilities": { "experimentalApi": request.accounts } }))?;
         session.notify("initialized");
+        if request.accounts {
+            let cached = self.accounts.lock().unwrap().as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(3600)).map(|(_, apps)| apps.clone());
+            session.accounts = match cached {
+                Some(apps) => apps,
+                None => {
+                    let apps = discover_accounts(&session)?;
+                    *self.accounts.lock().unwrap() = Some((std::time::Instant::now(), apps.clone()));
+                    apps
+                }
+            };
+            if session.accounts.iter().all(|a| a.tools.is_empty()) {
+                return Err("Las cuentas de ChatGPT no tienen herramientas disponibles para este turno.".into());
+            }
+        }
+        let params_for = || {
+            let mut params = thread_params(request);
+            params["config"]["apps"] = crate::accounts::app_policy(&session.accounts);
+            params
+        };
         let resumed = request
             .resume
             .as_ref()
             .and_then(|id| {
-                let mut params = thread_params(request);
+                let mut params = params_for();
                 params["threadId"] = json!(id);
                 session.request("thread/resume", params).ok()
             })
@@ -64,16 +84,53 @@ impl Codex {
         session.thread_id = match resumed {
             Some(id) => id,
             None => session
-                .request("thread/start", thread_params(request))?
+                .request("thread/start", params_for())?
                 .get("thread")
                 .and_then(|t| t["id"].as_str())
                 .map(str::to_string)
                 .ok_or("Codex no abrió la conversación.")?,
         };
+        if request.accounts {
+            let installed = session.request("app/installed", json!({"threadId": session.thread_id}))?;
+            session.accounts.retain(|app| installed["apps"].as_array().into_iter().flatten().any(|a| a["id"] == app.id && a["enabled"] == true && a["callable"] == true));
+            if session.accounts.is_empty() {
+                return Err("Las cuentas de ChatGPT están conectadas, pero sus herramientas no están disponibles en este turno de GPT.".into());
+            }
+        }
         let session = Arc::new(session);
         self.sessions.lock().unwrap().insert(session.thread_id.clone(), session.clone());
         Ok(session)
     }
+
+}
+
+fn discover_accounts(session: &Session) -> Result<Vec<crate::accounts::AppAccount>, String> {
+    let mut cursor = None::<String>;
+    let mut ids = Vec::new();
+    loop {
+        let listed = session.request("app/list", json!({ "limit": 100, "cursor": cursor }))?;
+        for a in listed["data"].as_array().into_iter().flatten() {
+            if a["isAccessible"] == true && a["isEnabled"] != false && matches!(a["name"].as_str(), Some("Gmail" | "Notion" | "Google Drive")) {
+                if let Some(id) = a["id"].as_str() { ids.push(id.to_string()); }
+            }
+        }
+        cursor = listed["nextCursor"].as_str().map(str::to_string);
+        if cursor.is_none() || ids.len() >= 3 { break; }
+    }
+    if ids.is_empty() { return Ok(Vec::new()); }
+    let metadata = session.request("app/read", json!({ "appIds": ids, "includeTools": true }))?;
+    Ok(crate::accounts::app_accounts(&metadata))
+}
+
+pub fn accounts_status() -> Option<Vec<crate::accounts::AccountStatus>> {
+    let exe = process::locate("codex")?;
+    let session = Session::spawn(&exe, &std::env::temp_dir(), None, &[], true).ok()?;
+    session.request("initialize", json!({"clientInfo":{"name":"buddy","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).ok()?;
+    session.notify("initialized");
+    let apps = discover_accounts(&session).ok()?;
+    Some([("gmail", "Gmail"), ("notion", "Notion"), ("drive", "Google Drive")].iter().map(|(id, name)| {
+        crate::accounts::AccountStatus { id: format!("codex:{id}"), name: format!("{name} · GPT"), state: if apps.iter().any(|a| a.name == *name && !a.tools.is_empty()) { "connected" } else { "missing" }.into() }
+    }).collect())
 }
 
 impl Default for Codex {
@@ -85,7 +142,11 @@ impl Default for Codex {
 /// Read-only sandbox and no approvals: Codex can think and search, but runs nothing and edits nothing (phase 4
 /// opens that behind Buddy's approval gate).
 pub fn thread_params(request: &TurnRequest) -> Value {
-    let mut config = json!({ "web_search": if request.no_web { "disabled" } else { "live" } });
+    let mut config = json!({ "web_search": if request.no_web { "disabled" } else { "live" }, "features": {"apps": request.accounts}, "apps": crate::accounts::app_policy(&[]) });
+    // Buddy supplies the agent contract; unrelated coding notes must not leak into a sports chat.
+    config["project_doc_max_bytes"] = json!(0);
+    config["project_doc_fallback_filenames"] = json!([]);
+    config["developer_instructions"] = json!(format!("{}\n\n{FORMAT}", request.system));
     if let Some(office) = &request.office {
         let mut server = office.server();
         // Codex hands MCP servers a bare environment: the music tools' variables go in the config (over stdin).
@@ -179,6 +240,7 @@ fn codex_install_dirs() -> Vec<PathBuf> {
 }
 
 impl Provider for Codex {
+    fn release_session(&self, id: &str) { self.sessions.lock().unwrap().remove(id); }
     fn id(&self) -> ProviderId {
         ProviderId::Codex
     }
@@ -202,20 +264,29 @@ impl Provider for Codex {
         };
         let session = match self.session(exe, request) {
             Ok(s) => s,
-            Err(e) => return emit(TurnEvent::Failed(Failure::new(e))),
+            Err(e) => return emit(TurnEvent::Failed(if request.accounts && e.starts_with("Las cuentas de ChatGPT ") {
+                Failure { kind: FailureKind::Auth, message: e }
+            } else { Failure::new(e) })),
         };
         emit(TurnEvent::Session(session.thread_id.clone()));
         session.drain();
+        let mut input = turn_input(request);
+        for app in &session.accounts {
+            let slug = app.name.to_lowercase().replace(' ', "-");
+            input[0]["text"] = json!(format!("{}\n${slug}", input[0]["text"].as_str().unwrap_or_default()));
+            input.as_array_mut().unwrap().push(json!({ "type": "mention", "name": slug, "path": format!("app://{}", app.id) }));
+        }
         let turn = session.request(
             "turn/start",
-            json!({ "threadId": session.thread_id, "input": turn_input(request),
+            json!({ "threadId": session.thread_id, "input": input,
                 "model": request.model.as_deref().unwrap_or(DEFAULT_MODEL), "effort": request.effort }),
         );
-        let turn_id = match turn.ok().and_then(|t| t["turn"]["id"].as_str().map(str::to_string)) {
-            Some(id) => id,
-            None => {
-                return emit(TurnEvent::Failed(Failure::new("Codex no empezó la respuesta.")));
-            }
+        let turn_id = match turn {
+            Ok(t) => match t["turn"]["id"].as_str() {
+                Some(id) => id.to_string(),
+                None => return emit(TurnEvent::Failed(Failure::new("Codex no empezó la respuesta."))),
+            },
+            Err(message) => return emit(TurnEvent::Failed(Failure::new(message))),
         };
         let mut interrupted = false;
         loop {
@@ -311,10 +382,11 @@ struct Session {
     thread_id: String,
     /// The connectors it started with (`connectors::fingerprint`).
     connectors: String,
+    accounts: Vec<crate::accounts::AppAccount>,
 }
 
 impl Session {
-    fn spawn(exe: &std::path::Path, cwd: &std::path::Path, approver: Option<super::Approver>, env: &[(String, String)]) -> Result<Self, String> {
+    fn spawn(exe: &std::path::Path, cwd: &std::path::Path, approver: Option<super::Approver>, env: &[(String, String)], accounts: bool) -> Result<Self, String> {
         let _ = std::fs::create_dir_all(cwd);
         let mut cmd = process::command(exe);
         cmd.env(super::OWN_RUN_ENV, "1");
@@ -323,6 +395,7 @@ impl Session {
             cmd.env(key, value);
         }
         cmd.arg("app-server").current_dir(cwd);
+        if accounts { cmd.args(["--enable", "apps", "--disable", "plugins"]); }
         let mut child = cmd.spawn().map_err(|e| format!("No se pudo iniciar Codex: {e}"))?;
         let stdin = child.stdin.take().ok_or("sin stdin")?;
         let stdout = child.stdout.take().ok_or("sin stdout")?;
@@ -341,6 +414,7 @@ impl Session {
             notes: Mutex::new(notes_rx),
             thread_id: String::new(),
             connectors: String::new(),
+            accounts: Vec::new(),
         };
         // The reader answers the server's own requests itself, through the shared stdin.
         std::thread::spawn(move || {
@@ -402,7 +476,7 @@ impl Session {
             Err(RecvTimeoutError::Disconnected) => Err("Codex se cerró.".into()),
             Err(RecvTimeoutError::Timeout) => {
                 self.waiters.lock().unwrap().remove(&id);
-                Err("Codex tardó demasiado en responder.".into())
+                Err(format!("Codex tardó demasiado en responder ({method})."))
             }
         }
     }
@@ -573,6 +647,8 @@ mod tests {
             assert_eq!(p["sandbox"], "read-only");
         }
         assert_eq!(p["approvalPolicy"], "never");
+        assert_eq!(p["config"]["project_doc_max_bytes"], 0);
+        assert_eq!(p["config"]["developer_instructions"], p["developerInstructions"]);
         assert!(p["developerInstructions"].as_str().unwrap().starts_with("Eres Buddy"));
         assert_eq!(p["config"]["model_reasoning_effort"], "low");
         assert_eq!(p["model"], "gpt-6.1-sol", "Buddy explicitly chooses the requested fallback model");

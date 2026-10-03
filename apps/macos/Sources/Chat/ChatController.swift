@@ -175,6 +175,7 @@ final class ChatController {
             LiveMessage(role: m.role, content: m.text,
                         sources: m.sources.compactMap { ChatSource.make(title: $0.title, url: $0.url) },
                         author: m.role == "assistant" ? (agents[m.agent] ?? m.agent) : nil,
+                        agentID: m.agent,
                         provider: m.provider,
                         files: m.attachments,
                         failed: m.failed,
@@ -196,6 +197,7 @@ final class ChatController {
         case let .chatStarted(chatId, agent, agentName, provider) where chatId == chatID:
             update { m in
                 m.author = agentName
+                m.agentID = agent
                 m.provider = provider
                 if m.content.isEmpty {
                     m.activity = agent == "buddy" ? .thinking : .handoff(to: agentName)

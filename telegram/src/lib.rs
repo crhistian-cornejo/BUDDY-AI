@@ -192,7 +192,7 @@ pub struct Post {
     pub text: String,
     /// Who wrote it when that is not the chat itself: a member of a group, or the signature of a channel post. Empty
     /// otherwise.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sender: String,
     /// Every link in the post: the plain ones and the ones behind a word ("LINK").
     pub links: Vec<String>,
@@ -200,7 +200,7 @@ pub struct Post {
     pub photos: Vec<String>,
     /// What else the message carries when it is not a photo: "video", "audio", "documento", "sticker", "encuesta"…
     /// Never downloaded: only named, so a post that is only a video still shows up.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub media: String,
     /// Posts of the same album share it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -210,7 +210,8 @@ pub struct Post {
 /// A word for what a message carries besides text and photos. Looks at the kind only; nothing is downloaded.
 fn media_kind(media: &Media) -> &'static str {
     match media {
-        Media::Photo(_) | Media::WebPage(_) => "",
+        Media::Photo(_) => "foto",
+        Media::WebPage(_) => "",
         Media::Sticker(_) => "sticker",
         Media::Poll(_) => "encuesta",
         Media::Contact(_) => "contacto",
@@ -365,21 +366,32 @@ impl Telegram {
     /// one that was not a post worth keeping), which is the next `after`. Photos and image files are saved in
     /// `media_dir` as `<chat>_<post>.jpg`.
     pub async fn fetch(&self, chat: &ChatRef, after: i32, limit: usize, media_dir: &Path) -> Result<(Vec<Post>, i32), String> {
+        self.fetch_since(chat, after, limit, media_dir, None).await.map(|(posts, last, _)| (posts, last))
+    }
+
+    /// Walk newest to oldest until the day boundary, with an explicit cap. Never silently call a capped read complete.
+    pub async fn fetch_since(&self, chat: &ChatRef, after: i32, limit: usize, media_dir: &Path, since: Option<i64>) -> Result<(Vec<Post>, i32, bool), String> {
         let id = PeerId::from_bot_api_dialog_id(chat.id).ok_or("Chat no válido.")?;
         let peer = PeerRef { id, auth: PeerAuth::from_hash(chat.hash) };
         let mut messages = self.client.iter_messages(peer).limit(limit);
         let mut posts = Vec::new();
         let mut last = after;
+        let mut scanned = 0;
+        let mut complete = true;
+        let mut protected_skipped = false;
         while let Some(message) = messages.next().await.map_err(|e| error_text(&e))? {
             if message.id() <= after { break; }
+            if since.is_some_and(|start| message.date().timestamp() < start) { break; }
+            scanned += 1;
+            complete = scanned < limit;
             last = last.max(message.id());
-            if matches!(&message.raw, tl::enums::Message::Message(m) if m.noforwards) { continue; }
+            if matches!(&message.raw, tl::enums::Message::Message(m) if m.noforwards) { protected_skipped = true; continue; }
             if message.action().is_some() { continue; } // "X joined", pinned notices…
             let post = self.post(chat, &message, media_dir).await;
             if !post.text.is_empty() || !post.photos.is_empty() || !post.links.is_empty() || !post.media.is_empty() { posts.push(post); }
         }
         posts.reverse();
-        Ok((posts, last))
+        Ok((posts, last, complete && !protected_skipped))
     }
 
     async fn post(&self, chat: &ChatRef, message: &Message, media_dir: &Path) -> Post {
@@ -392,6 +404,7 @@ impl Telegram {
             kind = media_kind(&media).to_string();
             if let Some(name) = self.save_image(&media, &format!("{}_{}", chat.id.unsigned_abs(), message.id()), media_dir).await {
                 photos.push(name);
+                kind.clear();
             }
         }
         let sender: String = message.sender().and_then(|peer| peer.name()).or_else(|| message.post_author())
@@ -408,6 +421,8 @@ impl Telegram {
     async fn save_image(&self, media: &Media, stem: &str, dir: &Path) -> Option<String> {
         let Media::Photo(photo) = media else { return None };
         if photo.size().is_none_or(|s| s > MAX_IMAGE_BYTES) { return None; }
+        // An edited Telegram post can keep its message id and replace its image.
+        let stem = format!("{stem}_{}", photo.id().unsigned_abs());
         let name = format!("{stem}.jpg");
         let path: PathBuf = dir.join(&name);
         if path.is_file() { return Some(name); }
@@ -596,6 +611,15 @@ mod tests {
         ]);
         assert!(plain_links("sin enlaces, solo 1.70 @ 5%").is_empty());
         assert!(plain_links("javascript:alert(1) ftp://x").is_empty());
+    }
+
+    #[test]
+    fn text_only_posts_survive_a_cache_round_trip() {
+        let post = Post { chat_id:-1001, chat:"Grupo".into(), id:1, date:100, text:"pick".into(),
+            sender:String::new(), links:vec![], photos:vec![], media:String::new(), album:None };
+        let raw = serde_json::to_string(&post).unwrap();
+        assert!(!raw.contains("sender")); assert!(!raw.contains("media"));
+        assert_eq!(serde_json::from_str::<Post>(&raw).unwrap(),post);
     }
 
     #[test]

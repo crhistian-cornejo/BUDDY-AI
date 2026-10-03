@@ -5,5 +5,7 @@
 	<!-- Hardened runtime: Apple Events to Spotify and Music only (the notch's music strip). -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<key>com.apple.developer.usernotifications.communication</key>
+	<true/>
 </dict>
 </plist>
