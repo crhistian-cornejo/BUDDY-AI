@@ -88,6 +88,7 @@ impl ChatEngine {
             relay,
             dir: self.data_dir.join("documentos"),
             skills: crate::skills::dir(&self.data_dir),
+            read: vec![self.data_dir.join("adjuntos"), self.data_dir.join("capturas")],
             link: hub
                 .is_started()
                 .then(|| crate::providers::Link { token: hub.gate_token().to_string(), data_dir: self.data_dir.clone() }),
@@ -97,7 +98,7 @@ impl ChatEngine {
     /// What one agent is told: its folders (if it may read them) and its tools.
     fn notes_for(&self, agent: &Agent, folders: &[crate::folders::AuthorizedFolder]) -> String {
         let folders = if agent.can("leer") || agent.can("editar") { crate::folders::prompt_note(folders) } else { String::new() };
-        let tools = if agent.can("documentos") || agent.can("musica") { self.tools_note() } else { String::new() };
+        let tools = if agent.can("documentos") || agent.can("musica") || agent.can("pantalla") { self.tools_note() } else { String::new() };
         folders + &tools
     }
 
@@ -549,10 +550,12 @@ impl ChatEngine {
             } else {
                 Vec::new()
             };
-            let office = self.office().filter(|_| agent.can("documentos") || agent.can("musica")).map(|mut o| {
-                if !agent.can("musica") {
+            let office = self.office().filter(|_| agent.can("documentos") || agent.can("musica") || agent.can("pantalla")).map(|mut o| {
+                // The app tools (music, screen) need the link; reading follows the agent's folders.
+                if !agent.can("musica") && !agent.can("pantalla") {
                     o.link = None;
                 }
+                o.read.extend(folders.iter().map(|f| PathBuf::from(&f.path)));
                 o
             });
             let request = TurnRequest {

@@ -32,13 +32,14 @@ pub struct Agent {
 }
 
 /// Every permission an agent can hold, with the words Settings shows.
-pub const PERMISSIONS: [(&str, &str, &str); 6] = [
+pub const PERMISSIONS: [(&str, &str, &str); 7] = [
     ("web", "Web", "Buscar y leer páginas"),
     ("leer", "Leer carpetas", "Leer en tus carpetas autorizadas"),
     ("editar", "Editar carpetas", "Cambiar archivos en las carpetas que marcaste como editables"),
     ("comandos", "Comandos", "Ejecutar comandos, siempre con tu clic"),
     ("documentos", "Documentos", "Crear y leer Word, Excel y PowerPoint"),
     ("musica", "Música", "Controlar Spotify o Música"),
+    ("pantalla", "Pantalla", "Ver tu pantalla, siempre con tu clic"),
 ];
 
 /// Buddy holds them all; a specialist without `permisos:` gets the web and documents.

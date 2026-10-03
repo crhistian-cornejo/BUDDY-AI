@@ -1,6 +1,7 @@
 //! Buddy for Windows: the floating pixel mascot on top of buddy-core (the same core the Mac app links through UniFFI).
 //! The frontend only paints what these commands return; positions and data live in the core.
 
+mod capture;
 mod media;
 
 use std::sync::Arc;
@@ -721,6 +722,15 @@ fn forward_events(app: &AppHandle, core: &BuddyCore) {
                 if let buddy_core::Event::BriefingReady { count, headline } = &event {
                     let more = if *count > 1 { format!(" (+{})", count - 1) } else { String::new() };
                     say(&app, format!("{}{more}", short(headline, 72)));
+                }
+                // The user allowed a screenshot on the card: take it off this thread, then tell the core.
+                if let buddy_core::Event::ScreenshotRequest { path } = &event {
+                    let (core, path) = (app.state::<AppCore>().core.clone(), path.clone());
+                    std::thread::spawn(move || {
+                        let ok = capture::grab()
+                            .is_some_and(|(w, h, bgra)| buddy_core::images::write_bgra_png(w, h, &bgra, std::path::Path::new(&path)).is_ok());
+                        core.screenshot_taken(path, ok);
+                    });
                 }
                 if let buddy_core::Event::MediaCommand { action, uri } = &event {
                     run_media_command(&app, action.clone(), uri.clone());

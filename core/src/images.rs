@@ -43,6 +43,16 @@ pub fn prepare(bytes: &[u8]) -> Result<(Vec<u8>, &'static str), String> {
     }
 }
 
+/// Saves a screen grab given as BGRA rows (Windows' GDI order) as an opaque PNG.
+pub fn write_bgra_png(width: u32, height: u32, bgra: &[u8], path: &Path) -> Result<(), String> {
+    let mut rgba = bgra.to_vec();
+    for px in rgba.chunks_exact_mut(4) {
+        px.swap(0, 2);
+        px[3] = 255;
+    }
+    image::RgbaImage::from_raw(width, height, rgba).ok_or("la captura no tiene el tamaño esperado")?.save(path).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +87,16 @@ mod tests {
         assert!(prepare(b"no soy una imagen").is_err());
         assert!(is_image(Path::new("/x/Foto.JPG")) && !is_image(Path::new("/x/notas.txt")));
         assert_eq!(mime(Path::new("a.webp")), "image/webp");
+    }
+
+    #[test]
+    fn a_bgra_grab_becomes_an_opaque_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.png");
+        write_bgra_png(2, 1, &[255, 0, 0, 0, 0, 0, 255, 7], &path).unwrap();
+        let img = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(img.get_pixel(0, 0).0, [0, 0, 255, 255], "blue stays blue");
+        assert_eq!(img.get_pixel(1, 0).0, [255, 0, 0, 255]);
+        assert!(write_bgra_png(3, 3, &[0; 4], &path).is_err());
     }
 }

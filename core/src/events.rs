@@ -42,6 +42,8 @@ pub enum Event {
     /// a clean `spotify:<kind>:<id>` in `uri` to play that item, or `search` with `spotify:search:<encoded>` to show
     /// Spotify's results. The app does it.
     MediaCommand { action: String, uri: String },
+    /// The user allowed a screenshot: the app captures the screen to `path` (PNG) and calls `screenshot_taken`.
+    ScreenshotRequest { path: String },
     /// A plan window crossed 95 % used: `left_pct` is what remains.
     UsageLow { provider: String, label: String, left_pct: u32 },
     /// A Claude Code / Codex session changed state (from its hooks): `working`, `waiting` (it needs the user),

@@ -333,6 +333,11 @@ impl BuddyCore {
         self.briefing.tick(hour, &today);
     }
 
+    /// The app finished the screenshot the core asked for (`Event::ScreenshotRequest`); `ok` false on failure.
+    pub fn screenshot_taken(&self, path: String, ok: bool) {
+        self.sessions.screenshot_taken(&path, ok);
+    }
+
     /// The app tells what its player plays (on every change), for the agents' `now_playing` tool.
     pub fn set_now_playing(&self, now: Option<NowPlayingInfo>) {
         self.sessions.set_now_playing(now);

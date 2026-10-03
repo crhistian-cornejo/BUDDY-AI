@@ -151,8 +151,20 @@ pub struct SessionHub {
     gate_token: String,
     /// What the player plays, as the app last told us (for the agents' `now_playing`).
     now_playing: Mutex<Option<crate::media::NowPlayingInfo>>,
+    /// Screenshots the app is taking, by file: the request waits for the app's word.
+    shots: Mutex<HashMap<String, Sender<bool>>>,
     /// Requests of Buddy's tools that live elsewhere in the core (Spotify's search): `None` means "not mine".
     tools: std::sync::OnceLock<ToolHandler>,
+}
+
+/// Keeps only the newest `keep` captures.
+fn prune_captures(dir: &Path, keep: usize) {
+    let mut files: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "png")).collect();
+    files.sort();
+    let extra = files.len().saturating_sub(keep);
+    for old in files.into_iter().take(extra) {
+        let _ = std::fs::remove_file(old);
+    }
 }
 
 /// Answers one tool request by name (`request`), or `None` when it does not know it.
@@ -175,7 +187,50 @@ impl SessionHub {
             gate_token: random_token(),
             now_playing: Mutex::new(None),
             tools: std::sync::OnceLock::new(),
+            shots: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The app finished (or failed) the screenshot it was asked for.
+    pub fn screenshot_taken(&self, path: &str, ok: bool) {
+        if let Some(waiter) = self.shots.lock().unwrap_or_else(|p| p.into_inner()).remove(path) {
+            let _ = waiter.send(ok);
+        }
+    }
+
+    /// One screenshot for an agent, only after the user's «Permitir»: the app captures, the core shrinks it like
+    /// any attached image and keeps the last few in `<data>/capturas`. Returns the file.
+    fn screenshot(&self, reason: &str) -> Result<PathBuf, String> {
+        let card = serde_json::json!({ "tool_name": "Pantalla", "tool_input": { "description": if reason.trim().is_empty() { "Una captura para responderte" } else { reason } } });
+        if self.ask(&card, "buddy", "buddy".into(), "Buddy".into(), &|| false) != Some("allow") {
+            return Err("El usuario no quiso compartir la pantalla.".into());
+        }
+        let dir = self.data_dir.join("capturas");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        prune_captures(&dir, 9);
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let path = dir.join(format!("captura-{stamp}.png"));
+        let key = path.to_string_lossy().to_string();
+        let (tx, rx) = channel();
+        self.shots.lock().unwrap_or_else(|p| p.into_inner()).insert(key.clone(), tx);
+        self.bus.publish(Event::ScreenshotRequest { path: key.clone() });
+        let taken = rx.recv_timeout(Duration::from_secs(20)).unwrap_or(false);
+        self.shots.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
+        if !taken {
+            return Err("No se pudo capturar la pantalla (¿falta el permiso de Grabación de pantalla?).".into());
+        }
+        // A screen is opaque: without its alpha channel it goes out as a small JPEG.
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let screen = image::load_from_memory(&bytes).map_err(|e| e.to_string())?.to_rgb8();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(screen).write_to(&mut png, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+        let (small, ext) = crate::images::prepare(png.get_ref())?;
+        let out = path.with_extension(ext);
+        std::fs::write(&out, small).map_err(|e| e.to_string())?;
+        if out != path {
+            let _ = std::fs::remove_file(&path);
+        }
+        Ok(out)
     }
 
     /// Installs the handler for the tool requests the hub does not answer itself (set once, at start).
@@ -424,6 +479,10 @@ impl server::Sink for SessionHub {
             return reply(false, "Petición rechazada.");
         }
         match text(&payload, "request") {
+            "screenshot" => match self.screenshot(text(&payload, "reason")) {
+                Ok(path) => serde_json::json!({ "ok": true, "text": "Captura de la pantalla del usuario.", "image": path }).to_string(),
+                Err(e) => reply(false, &e),
+            },
             "now_playing" => {
                 let now = self.now_playing.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 reply(true, &crate::media::describe(now.as_ref()))
@@ -570,6 +629,39 @@ mod tests {
     use crate::sessions::server::Sink;
     use serde_json::json;
     use std::sync::mpsc::Receiver;
+
+    #[test]
+    fn a_screenshot_needs_the_click_and_the_app() {
+        let (hub, rx, _dir) = hub(Duration::from_secs(5));
+        let token = hub.gate_token().to_string();
+        let asker = hub.clone();
+        let t = token.clone();
+        let denied = std::thread::spawn(move || Sink::app(&*asker, json!({ "_app": t, "request": "screenshot" })));
+        let Ok(Event::ApprovalRequest { request_id, title, .. }) = rx.recv_timeout(Duration::from_secs(2)) else { panic!("no card") };
+        assert_eq!(title, "Ver tu pantalla");
+        hub.answer_approval(&request_id, false);
+        assert!(denied.join().unwrap().contains("no quiso"));
+        while rx.try_recv().is_ok() {}
+
+        let asker = hub.clone();
+        let taken = std::thread::spawn(move || Sink::app(&*asker, json!({ "_app": token, "request": "screenshot", "reason": "ver el error" })));
+        let Ok(Event::ApprovalRequest { request_id, summary, .. }) = rx.recv_timeout(Duration::from_secs(2)) else { panic!("no card") };
+        assert_eq!(summary, "ver el error");
+        hub.answer_approval(&request_id, true);
+        let path = loop {
+            if let Ok(Event::ScreenshotRequest { path }) = rx.recv_timeout(Duration::from_secs(2)) {
+                break path;
+            }
+        };
+        image::RgbaImage::from_pixel(3000, 2000, image::Rgba([1, 2, 3, 255])).save(&path).unwrap();
+        hub.screenshot_taken(&path, true);
+        let reply: Value = serde_json::from_str(&taken.join().unwrap()).unwrap();
+        let image = reply["image"].as_str().unwrap().to_string();
+        assert_eq!((reply["ok"].clone(), image.as_str()), (json!(true), path.replace(".png", ".jpg").as_str()));
+        assert!(!std::path::Path::new(&path).exists(), "only the small copy stays");
+        let small = image::open(&image).unwrap();
+        assert!(small.width().max(small.height()) < 3000, "shrunk like any attached image");
+    }
 
     #[test]
     fn a_codex_command_waits_for_the_users_click() {

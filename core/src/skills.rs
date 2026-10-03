@@ -8,7 +8,15 @@
 
 use std::path::{Path, PathBuf};
 
-const BUILT_INS: &[(&str, &str)] = &[("spotify", include_str!("../skills/spotify/SKILL.md"))];
+const BUILT_INS: &[(&str, &str)] = &[
+    ("archivos", include_str!("../skills/archivos/SKILL.md")),
+    ("documentos", include_str!("../skills/documentos/SKILL.md")),
+    ("hojas", include_str!("../skills/hojas/SKILL.md")),
+    ("investigar", include_str!("../skills/investigar/SKILL.md")),
+    ("pantalla", include_str!("../skills/pantalla/SKILL.md")),
+    ("presentaciones", include_str!("../skills/presentaciones/SKILL.md")),
+    ("spotify", include_str!("../skills/spotify/SKILL.md")),
+];
 /// Skills listed in an agent's instructions, at most (the rest are ignored, never a prompt flood).
 const MAX_LISTED: usize = 30;
 const MAX_DESCRIPTION: usize = 300;
@@ -120,9 +128,19 @@ mod tests {
         std::fs::create_dir_all(&wrong).unwrap();
         std::fs::write(wrong.join("SKILL.md"), "---\nname: spotify\n---\nimpostora").unwrap();
         let names: Vec<String> = list(tmp.path()).into_iter().map(|s| s.name).collect();
-        assert_eq!(names, ["notas", "spotify"]);
+        assert!(names.contains(&"notas".to_string()) && names.contains(&"spotify".to_string()) && names.contains(&"documentos".to_string()));
+        assert!(!names.contains(&"otra".to_string()), "a folder whose skill names another is ignored");
         let note = prompt_note(&list(tmp.path()));
         assert!(note.contains("- notas: Tomar notas") && note.contains("use_skill"));
+    }
+
+    #[test]
+    fn every_built_in_parses_with_its_folder_name() {
+        for (name, text) in BUILT_INS {
+            let (parsed, description) = parse(text).unwrap_or_else(|| panic!("{name} does not parse"));
+            assert_eq!(parsed, *name);
+            assert!(!description.is_empty() && description.len() <= MAX_DESCRIPTION, "{name}");
+        }
     }
 
     #[test]

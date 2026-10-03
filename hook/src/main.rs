@@ -19,8 +19,9 @@
 //! Wire protocol: one JSON line from us; for `PermissionRequest` the server answers one line (`allow` or `deny`)
 //! on the same connection.
 //!
-//! The same binary is also a stdio MCP server: `buddy-hook --mcp [--out <dir>]` gives the agents Buddy runs the
-//! Office tools (Word, Excel, PowerPoint), writing only inside `<dir>` (see `mcp`).
+//! The same binary is also a stdio MCP server: `buddy-hook --mcp [--out <dir>] [--skills <dir>] [--read <dir>]…`
+//! gives the agents Buddy runs the Office tools (create Word, Excel, PowerPoint; read documents), writing only inside
+//! `<dir>` and reading only inside `<dir>`, the skills folder and each `--read` folder (see `mcp`).
 
 use std::io::{Read, Write};
 use std::sync::mpsc;

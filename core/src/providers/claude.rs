@@ -646,6 +646,7 @@ mod tests {
                 dir: "/d/documentos".into(),
                 skills: "/d/skills".into(),
                 link: Some(super::super::Link { token: "secreto".into(), data_dir: "/d".into() }),
+                read: vec!["/d/adjuntos".into(), "relativa".into()],
             }),
             ..Default::default()
         });
@@ -655,6 +656,8 @@ mod tests {
         assert!(joined.contains("mcp__buddy__media_play") && joined.contains("mcp__buddy__use_skill"));
         let mcp = &args[args.iter().position(|a| a == "--mcp-config").unwrap() + 1];
         assert!(mcp.contains("\"buddy\"") && mcp.contains("--mcp") && mcp.contains("/d/documentos") && mcp.contains("/d/skills"), "{mcp}");
+        assert!(mcp.contains("\"--read\",\"/d/adjuntos\"") && !mcp.contains("relativa"), "only absolute read folders: {mcp}");
+        assert!(joined.contains("mcp__buddy__read_document") && joined.contains("mcp__buddy__look_at_screen"));
         assert!(joined.contains("mcp__buddy__create_document,mcp__buddy__create_spreadsheet,mcp__buddy__create_presentation"));
         let plain = Claude::arguments(&TurnRequest::default());
         assert_eq!(plain[plain.iter().position(|a| a == "--mcp-config").unwrap() + 1], r#"{"mcpServers":{}}"#);

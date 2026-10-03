@@ -124,6 +124,7 @@ fn title_for(tool: &str, mcp: Option<(&str, &str)>) -> String {
     }
     let title = match tool {
         "Bash" | "shell" | "exec_command" | "local_shell" | "unified_exec" => "Ejecutar un comando",
+        "Pantalla" => "Ver tu pantalla",
         "Write" => "Escribir un archivo",
         "Edit" | "MultiEdit" => "Editar un archivo",
         "apply_patch" => "Aplicar cambios a archivos",

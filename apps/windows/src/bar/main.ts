@@ -349,7 +349,7 @@ function onCore(e: CoreEvent) {
       const a = e as Extract<CoreEvent, { type: "approvalRequest" }>;
       pendingApproval.set(a.requestId, a.sessionId);
       show({ kind: "approval", agent: a.agent, requestId: a.requestId, canAllow: a.canAllow,
-        title: a.agent === "buddy" ? "Buddy quiere ejecutar un comando" : `${agentName(a.agent)} pide permiso en ${a.project}`,
+        title: a.agent === "buddy" ? `Buddy quiere ${a.title.charAt(0).toLowerCase()}${a.title.slice(1)}` : `${agentName(a.agent)} pide permiso en ${a.project}`,
         detail: `${a.title}: ${a.summary}`, command: a.detail });
       break;
     }

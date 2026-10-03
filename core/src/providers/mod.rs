@@ -79,6 +79,8 @@ pub struct Office {
     pub skills: PathBuf,
     /// How the music tools reach the app (none: they are not offered).
     pub link: Option<Link>,
+    /// Folders the server's tools may read (attachments, captures, the agent's authorized folders).
+    pub read: Vec<PathBuf>,
 }
 
 /// This run's secret and Buddy's data folder (where the relay finds the socket), handed to the MCP server through
@@ -91,10 +93,12 @@ pub struct Link {
 
 impl Office {
     /// The tool names as Claude Code exposes them (Office, music, skills).
-    pub const TOOLS: [&'static str; 9] = [
+    pub const TOOLS: [&'static str; 11] = [
         "mcp__buddy__create_document",
         "mcp__buddy__create_spreadsheet",
         "mcp__buddy__create_presentation",
+        "mcp__buddy__read_document",
+        "mcp__buddy__look_at_screen",
         "mcp__buddy__media_control",
         "mcp__buddy__media_play",
         "mcp__buddy__media_search",
@@ -104,7 +108,13 @@ impl Office {
     ];
 
     pub fn server(&self) -> serde_json::Value {
-        serde_json::json!({ "command": self.relay, "args": ["--mcp", "--out", self.dir, "--skills", self.skills] })
+        let mut args: Vec<String> = ["--mcp", "--out"].map(String::from).to_vec();
+        args.push(self.dir.to_string_lossy().into());
+        args.extend(["--skills".to_string(), self.skills.to_string_lossy().into()]);
+        for dir in self.read.iter().filter(|d| d.is_absolute()) {
+            args.extend(["--read".to_string(), dir.to_string_lossy().into()]);
+        }
+        serde_json::json!({ "command": self.relay, "args": args })
     }
 
     /// The variables the MCP server needs for the music tools.

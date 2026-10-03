@@ -12,22 +12,25 @@ pub const MEDIA_CONTROL: &str = "media_control";
 pub const MEDIA_PLAY: &str = "media_play";
 pub const MEDIA_SEARCH: &str = "media_search";
 pub const SPOTIFY_SEARCH: &str = "spotify_search";
+pub const LOOK_AT_SCREEN: &str = "look_at_screen";
 pub const NOW_PLAYING: &str = "now_playing";
 pub const USE_SKILL: &str = "use_skill";
 const MAX_SKILL: u64 = 64 * 1024;
 
-/// What the extra tools need: the skills folder and, for the music, the secret.
+/// What the extra tools need: the skills folder, for the music the secret, and the folders `read_document` (and
+/// the pictures of the Office tools) may read besides the documents and skills folders (`--read`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extra {
     pub skills: Option<PathBuf>,
     pub token: Option<String>,
+    pub read: Vec<PathBuf>,
 }
 
 impl Extra {
     pub fn names(&self) -> Vec<&'static str> {
         let mut names = Vec::new();
         if self.token.is_some() {
-            names.extend([SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING]);
+            names.extend([SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, LOOK_AT_SCREEN]);
         }
         if self.skills.is_some() {
             names.push(USE_SKILL);
@@ -59,6 +62,16 @@ impl Extra {
                         "link": { "type": "string", "description": "Enlace de open.spotify.com o URI spotify:" }
                     }, "required": ["link"], "additionalProperties": false },
                     "annotations": safe,
+                }),
+                LOOK_AT_SCREEN => json!({
+                    "name": name,
+                    "title": "Ver la pantalla",
+                    "description": "Pide ver la pantalla del usuario (sale una tarjeta y solo se captura si la permite). \
+Devuelve la imagen de la pantalla donde está su puntero, sin las ventanas de Buddy.",
+                    "inputSchema": { "type": "object", "properties": {
+                        "reason": { "type": "string", "description": "Para qué, en pocas palabras (sale en la tarjeta)" }
+                    }, "additionalProperties": false },
+                    "annotations": read,
                 }),
                 SPOTIFY_SEARCH => json!({
                     "name": name,
@@ -127,12 +140,53 @@ reproducir. Úsala solo si no encontraste un enlace de open.spotify.com.",
 }
 
 /// One request to Buddy; its JSON reply (`ok`, `text`) becomes the tool's result.
-fn ask_buddy(mut request: Value, token: &str) -> Result<String, String> {
+fn ask_buddy(request: Value, token: &str) -> Result<String, String> {
+    ask_raw(request, token).map(|reply| reply["text"].as_str().unwrap_or("").to_string())
+}
+
+/// One request to Buddy, its whole reply (`ok`, `text`, maybe more) or the reason it failed.
+fn ask_raw(mut request: Value, token: &str) -> Result<Value, String> {
     request["_app"] = Value::String(token.into());
     let reply = crate::talk(&format!("{request}\n"), true).ok_or("Buddy no responde (¿está abierto?).")?;
     let reply: Value = serde_json::from_str(&reply).map_err(|_| "Respuesta extraña de Buddy.".to_string())?;
-    let text = reply["text"].as_str().unwrap_or("").to_string();
-    if reply["ok"] == true { Ok(text) } else { Err(text) }
+    if reply["ok"] == true { Ok(reply) } else { Err(reply["text"].as_str().unwrap_or("Buddy no pudo.").to_string()) }
+}
+
+impl Extra {
+    /// `look_at_screen`: Buddy asks the user (card), the app captures, and the image comes back as MCP image
+    /// content. The file must lie in a readable folder (Buddy passes its captures folder with `--read`).
+    pub fn look(&self, args: &Value, access: &crate::office::Access) -> Result<Value, String> {
+        let token = self.token.as_deref().ok_or("La pantalla no está disponible.")?;
+        let reason = args["reason"].as_str().unwrap_or("").chars().take(200).collect::<String>();
+        let reply = ask_raw(json!({ "request": "screenshot", "reason": reason }), token)?;
+        let path = reply["image"].as_str().ok_or("Buddy no devolvió la captura.")?;
+        let (file, bytes) = access.read(path, 20 * 1024 * 1024).map_err(|e| e.0)?;
+        let mime = if file.extension().is_some_and(|e| e == "png") { "image/png" } else { "image/jpeg" };
+        Ok(json!({
+            "content": [
+                { "type": "image", "data": base64(&bytes), "mimeType": mime },
+                { "type": "text", "text": reply["text"].as_str().unwrap_or("Captura de la pantalla del usuario.") },
+            ],
+            "isError": false,
+        }))
+    }
+}
+
+/// Standard base64 (no dependency for one use).
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// `<skills>/<name>/SKILL.md`, only for a plain name and only inside the folder (no links out).
@@ -158,11 +212,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
     fn music_tools_only_with_the_secret_and_skills_only_with_a_folder() {
         assert!(Extra::default().names().is_empty());
-        let both = Extra { skills: Some("/s".into()), token: Some("t".into()) };
-        assert_eq!(both.names(), [SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, USE_SKILL]);
-        assert_eq!(both.specs().len(), 6);
+        let both = Extra { skills: Some("/s".into()), token: Some("t".into()), ..Extra::default() };
+        assert_eq!(both.names(), [SPOTIFY_SEARCH, MEDIA_PLAY, MEDIA_CONTROL, MEDIA_SEARCH, NOW_PLAYING, LOOK_AT_SCREEN, USE_SKILL]);
+        assert_eq!(both.specs().len(), 7);
     }
 
     #[test]
@@ -172,7 +235,7 @@ mod tests {
         std::fs::create_dir_all(skills.join("spotify")).unwrap();
         std::fs::write(skills.join("spotify/SKILL.md"), "---\nname: spotify\n---\npasos").unwrap();
         std::fs::write(tmp.0.join("secreto.md"), "no").unwrap();
-        let extra = Extra { skills: Some(skills.clone()), token: None };
+        let extra = Extra { skills: Some(skills.clone()), ..Extra::default() };
         assert!(extra.run(USE_SKILL, &json!({ "name": "spotify" })).unwrap().contains("pasos"));
         assert!(extra.run(USE_SKILL, &json!({ "name": "../secreto" })).is_err());
         assert!(extra.run(USE_SKILL, &json!({ "name": "nadie" })).is_err());

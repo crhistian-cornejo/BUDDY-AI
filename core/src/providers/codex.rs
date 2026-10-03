@@ -95,22 +95,72 @@ pub fn thread_params(request: &TurnRequest) -> Value {
     if let Some(effort) = &request.effort {
         config["model_reasoning_effort"] = json!(effort);
     }
-    // Editable authorized folders become the only writable roots; otherwise nothing is writable.
-    let writable: Vec<&str> = request.folders.iter().filter(|f| f.can_edit).map(|f| f.path.as_str()).collect();
-    if !writable.is_empty() {
-        config["sandbox_workspace_write"] = json!({ "writable_roots": writable, "network_access": false });
+    let mut params = json!({ "cwd": request.workspace });
+    if cfg!(target_os = "macos") {
+        // A permission profile: Codex's commands read only what this agent may (attachments, its folders) plus the
+        // system's minimum and Codex itself, write only in its workspace and editable folders, and have no network.
+        // (The legacy read-only sandbox let them read the whole disk.)
+        config["default_permissions"] = json!("buddy");
+        config["permissions"] = json!({ "buddy": { "filesystem": filesystem_rules(request), "network": { "enabled": false } } });
+    } else {
+        // Windows: the legacy sandbox until permission profiles are checked there.
+        let writable: Vec<&str> = request.folders.iter().filter(|f| f.can_edit).map(|f| f.path.as_str()).collect();
+        if !writable.is_empty() {
+            config["sandbox_workspace_write"] = json!({ "writable_roots": writable, "network_access": false });
+        }
+        params["sandbox"] = json!(if writable.is_empty() { "read-only" } else { "workspace-write" });
     }
-    let mut params = json!({
-        "cwd": request.workspace,
-        "sandbox": if writable.is_empty() { "read-only" } else { "workspace-write" },
+    let extra = json!({
         // With the gate (the agent may run commands) Codex asks before anything not plainly read-only, and each
         // request becomes a card with Allow / Deny; without it, it never asks and runs nothing.
         "approvalPolicy": if request.gate.is_some() { "untrusted" } else { "never" },
         "developerInstructions": format!("{}\n\n{FORMAT}", request.system),
         "config": config,
     });
+    for (key, value) in extra.as_object().into_iter().flatten() {
+        params[key] = value.clone();
+    }
     params["model"] = json!(request.model.as_deref().unwrap_or(DEFAULT_MODEL));
     params
+}
+
+/// The profile's filesystem table: path → "read" | "write".
+pub fn filesystem_rules(request: &TurnRequest) -> Value {
+    let mut rules = serde_json::Map::new();
+    rules.insert(":minimal".into(), json!("read"));
+    for dir in codex_install_dirs() {
+        rules.insert(dir.to_string_lossy().into(), json!("read"));
+    }
+    for file in &request.attachments {
+        if let Some(dir) = file.parent() {
+            rules.insert(dir.to_string_lossy().into(), json!("read"));
+        }
+    }
+    for folder in &request.folders {
+        rules.insert(folder.path.clone(), json!(if folder.can_edit { "write" } else { "read" }));
+    }
+    rules.insert(request.workspace.to_string_lossy().into(), json!("write"));
+    Value::Object(rules)
+}
+
+/// Where Codex itself lives (its sandbox helper re-runs the executable): the folder of the command on PATH and of
+/// the real file behind it, and `~/.codex/packages` for the standalone installer's versions.
+fn codex_install_dirs() -> Vec<PathBuf> {
+    static DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    DIRS.get_or_init(|| {
+        let Some(exe) = process::locate("codex") else { return Vec::new() };
+        let mut dirs: Vec<PathBuf> = exe.parent().map(|d| vec![d.to_path_buf()]).unwrap_or_default();
+        if let Ok(real) = std::fs::canonicalize(&exe) {
+            let text = real.to_string_lossy().to_string();
+            match text.find("/.codex/packages/") {
+                Some(i) => dirs.push(PathBuf::from(&text[..i + "/.codex/packages".len()])),
+                None => dirs.extend(real.parent().and_then(|bin| bin.parent()).map(|d| d.to_path_buf())),
+            }
+        }
+        dirs.dedup();
+        dirs
+    })
+    .clone()
 }
 
 impl Provider for Codex {
@@ -388,6 +438,7 @@ mod tests {
                 dir: "/d/documentos".into(),
                 skills: "/d/skills".into(),
                 link: Some(crate::providers::Link { token: "secreto".into(), data_dir: "/d".into() }),
+                read: vec![],
             }),
             ..Default::default()
         };
@@ -425,6 +476,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn commands_read_only_what_the_agent_may() {
+        let request = TurnRequest {
+            workspace: "/d/agents/buddy/workspace".into(),
+            attachments: vec!["/d/adjuntos/c1/foto.png".into()],
+            folders: vec![
+                crate::folders::AuthorizedFolder { path: "/u/docs".into(), can_edit: false },
+                crate::folders::AuthorizedFolder { path: "/u/proyecto".into(), can_edit: true },
+            ],
+            ..Default::default()
+        };
+        let p = thread_params(&request);
+        assert!(p.get("sandbox").is_none(), "a profile never mixes with the legacy sandbox");
+        assert_eq!(p["config"]["default_permissions"], "buddy");
+        let fs = &p["config"]["permissions"]["buddy"]["filesystem"];
+        assert_eq!(fs[":minimal"], "read");
+        assert_eq!(fs["/d/adjuntos/c1"], "read");
+        assert_eq!(fs["/u/docs"], "read");
+        assert_eq!(fs["/u/proyecto"], "write");
+        assert_eq!(fs["/d/agents/buddy/workspace"], "write");
+        assert!(fs.get("/u").is_none() && fs.get("/").is_none());
+        assert_eq!(p["config"]["permissions"]["buddy"]["network"]["enabled"], false);
+    }
+
+    #[test]
     fn approvals_name_the_command_and_follow_the_gate() {
         assert_eq!(approval_subject(&json!({ "command": "ls -la", "cwd": "/u" })), ("ls -la".into(), "/u".into()));
         assert_eq!(approval_subject(&json!({ "command": ["git", "status"] })).0, "git status");
@@ -446,7 +522,11 @@ mod tests {
     #[test]
     fn threads_are_read_only_with_buddys_instructions() {
         let p = thread_params(&TurnRequest { system: "Eres Buddy".into(), effort: Some("low".into()), ..Default::default() });
-        assert_eq!(p["sandbox"], "read-only");
+        if cfg!(target_os = "macos") {
+            assert_eq!(p["config"]["default_permissions"], "buddy", "a profile instead of the legacy sandbox");
+        } else {
+            assert_eq!(p["sandbox"], "read-only");
+        }
         assert_eq!(p["approvalPolicy"], "never");
         assert!(p["developerInstructions"].as_str().unwrap().starts_with("Eres Buddy"));
         assert_eq!(p["config"]["model_reasoning_effort"], "low");

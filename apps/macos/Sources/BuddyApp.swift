@@ -51,6 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 chat?.handle(event)
                 notch?.handle(event)
                 if case let .mascotState(state) = event { pet?.showMascotState(state) }
+                // The user allowed a screenshot on the card: take it, then tell the core.
+                if case let .screenshotRequest(path) = event {
+                    Task {
+                        let ok = await ScreenCapture.capture(to: path)
+                        core.screenshotTaken(path: path, ok: ok)
+                    }
+                }
                 switch event {
                 case .usageChanged, .chatDone, .chatFailed:
                     NotificationCenter.default.post(name: .buddyUsageChanged, object: nil)
