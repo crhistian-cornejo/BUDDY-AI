@@ -120,6 +120,7 @@ struct NotchView: View {
     let actions: NotchActions
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var weather = NotchWeather()
     @State private var reveal: CGFloat = 0
     @State private var presentationSize: CGSize = .zero
     @State private var transitionID: UInt64 = 0
@@ -224,8 +225,11 @@ struct NotchView: View {
                     NotchUtilitiesView(model: model, actions: actions)
                 }
                 if model.tab != .files && model.usage.contains(where: { NotchUsage.window(for: $0) != nil }) {
-                    UsageStrip(usage: model.usage)
-                        .padding(.top, -4)
+                    HStack(spacing: 12) {
+                        if model.tab == .home { WeatherStrip(weather: weather) }
+                        UsageStrip(usage: model.usage)
+                    }
+                    .padding(.top, -4)
                 }
                 if !model.toolMessage.isEmpty {
                     Text(model.toolMessage).font(.system(size: 10)).foregroundStyle(.secondary)
@@ -249,9 +253,11 @@ struct NotchView: View {
                         .font(.system(size: 13, weight: .medium)).frame(width: 30, height: 26)
                         .foregroundStyle(model.tab == tab ? Color.white : .secondary)
                         .background(.white.opacity(model.tab == tab ? 0.13 : 0), in: Capsule())
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel(tab.rawValue)
                     .accessibilityAddTraits(model.tab == tab ? .isSelected : [])
                     .tip(tab == .files && !model.dropped.isEmpty ? "Archivos · \(model.dropped.count) guardados" : tab.rawValue)
+                    .accessibilityHint(tab.rawValue)
             }
         }.fixedSize()
     }
@@ -277,7 +283,6 @@ struct NotchView: View {
     private var overviewHeader: some View {
         HStack(spacing: 0) {
             tabs.frame(maxWidth: .infinity, alignment: .leading)
-                .tip(model.activityLabel)
             Color.clear.frame(width: notch.width)
             HStack(spacing: 10) {
                 if model.tab == .utilities { widgetMenu }
@@ -345,6 +350,8 @@ struct NotchView: View {
             Text(notice.kind == .finished ? "Listo" : notice.kind == .failed ? "Error" : "Espera")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(notice.kind == .failed ? Color.red : notice.kind == .waiting ? Color.orange : Color.accentColor)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background((notice.kind == .failed ? Color.red : notice.kind == .waiting ? Color.orange : Color.accentColor).opacity(0.16), in: Capsule())
                 .padding(.leading, 6)
                 .frame(width: NotchLayout.statusWing - NotchLayout.compactInset, alignment: .leading)
         }.padding(.horizontal, NotchLayout.compactInset).tip("\(notice.title)\n\(notice.detail)")
