@@ -49,6 +49,8 @@ struct Answer {
     sources: Vec<SourceLink>,
     provider: ProviderId,
     failure: Option<String>,
+    /// The answering model in words («Opus 5.5 · esfuerzo alto»).
+    model: String,
 }
 
 impl ChatEngine {
@@ -99,7 +101,15 @@ impl ChatEngine {
     fn notes_for(&self, agent: &Agent, folders: &[crate::folders::AuthorizedFolder]) -> String {
         let folders = if agent.can("leer") || agent.can("editar") { crate::folders::prompt_note(folders) } else { String::new() };
         let tools = if agent.can("documentos") || agent.can("musica") || agent.can("pantalla") { self.tools_note() } else { String::new() };
-        folders + &tools
+        folders + &tools + &crate::connectors::prompt_note(&self.connectors(agent))
+    }
+
+    /// The enabled connectors (Settings › Conectores) for an agent with the web; none otherwise (network tools).
+    fn connectors(&self, agent: &Agent) -> Vec<crate::connectors::Connector> {
+        if !agent.can("web") {
+            return Vec::new();
+        }
+        crate::connectors::active(&self.lock(), &crate::connectors::SystemKeys)
     }
 
     /// What the agents are told about those tools: where documents go, and the skills index.
@@ -330,14 +340,17 @@ impl ChatEngine {
             let folders = crate::folders::list(&engine.lock()).unwrap_or_default();
             // The model most turns use (the router's Normal tier, or the fixed one).
             let route = crate::router::route(&engine.lock(), "", &[]);
+            let connectors = engine.connectors(buddy);
             let request = TurnRequest {
                 system: format!(
-                    "{}{}{}{}",
+                    "{}{}{}{}{}",
                     buddy.prompt,
                     orchestrator::roster_prompt(&agents),
                     crate::folders::prompt_note(&folders),
-                    engine.tools_note()
+                    engine.tools_note(),
+                    crate::connectors::prompt_note(&connectors)
                 ),
+                connectors,
                 workspace: orchestrator::workspace(&engine.data_dir, &buddy.id),
                 folders,
                 gate: engine.gate(),
@@ -469,6 +482,11 @@ impl ChatEngine {
             failed,
             attachments: &made,
         });
+        if let Ok(id) = &saved {
+            if !answer.model.is_empty() {
+                let _ = self.lock().set_message_model(*id, &answer.model);
+            }
+        }
         let success = saved.is_ok() && !failed && !cancel.is_cancelled();
         match (saved, &answer.failure) {
             (Ok(_), Some(message)) => {
@@ -505,6 +523,11 @@ impl ChatEngine {
         // A turn with images goes first to a provider that can look at them (Claude, Codex, later Gemini).
         if files.iter().any(|f| crate::images::is_image(f)) {
             order.sort_by_key(|p| !p.sees_images());
+        }
+        // agy does not reliably honour the workspace's permission rules (a web-search deny was ignored): an agent
+        // without the web never goes to Gemini.
+        if !agent.can("web") {
+            order.retain(|p| p.id() != ProviderId::Antigravity);
         }
         let mut last_failure = None;
         let mut provider_used = agent.provider;
@@ -578,7 +601,9 @@ impl ChatEngine {
                 gate: self.gate().filter(|_| agent.can("comandos")),
                 office,
                 no_web: !agent.can("web"),
+                connectors: self.connectors(agent),
             };
+            let model_label = crate::router::model_label(provider.id(), request.model.as_deref(), request.effort.as_deref());
             let mut text = String::new();
             let mut shown = 0usize;
             let mut sources = Vec::new();
@@ -642,10 +667,10 @@ impl ChatEngine {
                     continue;
                 }
                 Some(f) => {
-                    return Answer { text, shown, sources, provider: provider.id(), failure: Some(f.summary(provider.id())) };
+                    return Answer { text, shown, sources, provider: provider.id(), failure: Some(f.summary(provider.id())), model: model_label };
                 }
                 None => {
-                    return Answer { text, shown, sources, provider: provider.id(), failure: None };
+                    return Answer { text, shown, sources, provider: provider.id(), failure: None, model: model_label };
                 }
             }
         }
@@ -653,6 +678,7 @@ impl ChatEngine {
             text: String::new(),
             shown: 0,
             sources: Vec::new(),
+            model: String::new(),
             provider: provider_used,
             failure: Some(
                 last_failure.unwrap_or_else(|| "No encuentro Claude, Codex ni Gemini en este equipo. Instala uno e inicia sesión.".into()),
@@ -665,11 +691,19 @@ impl ChatEngine {
     /// so they show in the history. `restricted`: no commands, no folder edits and no screen, whatever the agent may
     /// do in the app. Returns the answer's text.
     pub fn run_direct(self: &Arc<Self>, chat_id: &str, title: &str, agent_id: &str, text: &str, restricted: bool) -> Result<String, CoreError> {
+        self.run_direct_with_attachments(chat_id, title, agent_id, text, restricted, &[])
+    }
+
+    /// Same restricted turn, with bounded local photos selected by the account reader.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_direct_with_attachments(self: &Arc<Self>, chat_id: &str, title: &str, agent_id: &str, text: &str, restricted: bool, paths: &[String]) -> Result<String, CoreError> {
         let text = text.trim();
         if text.is_empty() { return Err(CoreError::Store("Escribe un mensaje.".into())); }
         let mut agent = self.agents().into_iter().find(|a| a.id == agent_id)
             .ok_or_else(|| CoreError::Store(format!("No encuentro al agente «{agent_id}».")))?;
         if restricted { agent.permissions.retain(|p| !matches!(p.as_str(), "comandos" | "editar" | "pantalla")); }
+        let copies = self.copy_attachments(chat_id, paths)?;
+        let files: Vec<PathBuf> = copies.iter().map(PathBuf::from).collect();
         let cancel = Cancel::default();
         {
             let _dispatch = self.dispatch.lock().unwrap();
@@ -677,12 +711,12 @@ impl ChatEngine {
                 return Err(CoreError::Store("Todavía estoy respondiendo el mensaje anterior; escríbeme en un momento.".into()));
             }
             self.lock().ensure_chat(chat_id, title)?;
-            self.lock().add_message(NewMessage { chat_id, role: "user", agent: ORCHESTRATOR, provider: None, text, sources: &[], failed: false, attachments: &[] })?;
+            self.lock().add_message(NewMessage { chat_id, role: "user", agent: ORCHESTRATOR, provider: None, text, sources: &[], failed: false, attachments: &copies })?;
             self.running.lock().unwrap().insert(chat_id.to_string(), cancel.clone());
         }
-        self.emit(Event::ChatDequeued { chat_id: chat_id.into(), text: text.into(), attachments: Vec::new() });
+        self.emit(Event::ChatDequeued { chat_id: chat_id.into(), text: text.into(), attachments: copies.clone() });
         self.mascot("think");
-        if let Some(route) = crate::router::route_agent(&self.lock(), agent.model.as_deref(), text, &[]) {
+        if let Some(route) = crate::router::route_agent(&self.lock(), agent.model.as_deref(), text, &files) {
             agent.provider = route.provider;
             agent.model = Some(route.model);
             agent.effort = Some(route.effort);
@@ -692,7 +726,7 @@ impl ChatEngine {
         if restricted {
             system.push_str("\n\n[Este mensaje llega por Telegram, fuera de la app: aquí no puedes ejecutar comandos, cambiar archivos ni ver la pantalla. Responde breve y en texto simple, sin tablas: Telegram no las muestra.]");
         }
-        let answer = self.run_agent(chat_id, &agent, text, &system, &[], &cancel, false);
+        let answer = self.run_agent(chat_id, &agent, text, &system, &files, &cancel, false);
         let failed = answer.failure.is_some();
         let saved_text = match (&answer.failure, answer.text.trim().is_empty()) { (Some(f), true) => f.clone(), _ => answer.text.clone() };
         let saved = self.lock().add_message(NewMessage { chat_id, role: "assistant", agent: &agent.id, provider: Some(answer.provider.as_str()),
@@ -1234,6 +1268,22 @@ mod tests {
         let saved = engine.lock().messages(&chat).unwrap()[0].attachments.clone();
         let img = image::open(&saved[0]).unwrap();
         assert_eq!(img.width().max(img.height()), crate::images::MAX_SIDE);
+    }
+
+    #[test]
+    fn telegram_photos_are_saved_and_routed_to_vision() {
+        let blind = Fake::new(ProviderId::Claude, vec![]);
+        let sighted = Fake::seeing(ProviderId::Codex, vec![vec![TurnEvent::Delta("Pick de la foto".into()), TurnEvent::Done]]);
+        let (engine, _rx, dir) = engine(vec![blind.clone(), sighted.clone()]);
+        let photo = dir.path().join("123_45.jpg");
+        image::RgbImage::new(40, 40).save(&photo).unwrap();
+        let answer = engine.run_direct_with_attachments("telegram-groups", "Telegram · Grupos", "parley", "Analiza el pick", true, &[photo.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(answer, "Pick de la foto");
+        assert!(blind.prompts.lock().unwrap().is_empty());
+        let messages = engine.lock().messages("telegram-groups").unwrap();
+        assert_eq!(messages[0].attachments.len(), 1);
+        assert!(PathBuf::from(&messages[0].attachments[0]).exists());
+        assert!(sighted.prompts.lock().unwrap()[0].1.contains("no puedes ejecutar comandos"));
     }
 
     #[test]

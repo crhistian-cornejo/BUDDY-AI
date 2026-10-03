@@ -27,6 +27,11 @@
       // ?telegram=pairing | paired shows those states (default: not connected).
       const tgMode = new URLSearchParams(location.search).get("telegram") ?? "";
       let telegram = { connected: tgMode !== "", paired: tgMode === "paired", botName: tgMode ? "@mi_buddy_bot" : "", pairingCode: tgMode === "pairing" ? "482913" : "", error: "" };
+      const connectors = [
+        { id: "context7", name: "Context7", description: "Documentación al día de librerías y APIs de programación.", site: "https://context7.com", enabled: true, hasKey: false, keyOptional: true },
+        { id: "mslearn", name: "Microsoft Learn", description: "Documentación oficial de Microsoft: Windows, Office, Azure, .NET, PowerShell.", site: "https://learn.microsoft.com/training/support/mcp", enabled: false, hasKey: false, keyOptional: false },
+        { id: "deepwiki", name: "DeepWiki", description: "Explica cualquier repositorio público de GitHub y responde preguntas sobre él.", site: "https://deepwiki.com", enabled: false, hasKey: false, keyOptional: false },
+      ];
       const fake = {
         setting_flag: ({ key }) => flags[key],
         set_setting_flag: ({ key, on }) => { flags[key] = on; },
@@ -43,6 +48,9 @@
         telegram_disconnect: () => { telegram = { connected: false, paired: false, botName: "", pairingCode: "", error: "" }; },
         telegram_new_pairing_code: () => { telegram = { ...telegram, paired: false, pairingCode: "730154" }; return "730154"; },
         telegram_send: () => {},
+        connectors: () => connectors.map((c) => ({ ...c })),
+        set_connector_enabled: ({ id, on }) => { connectors.find((c) => c.id === id).enabled = on; },
+        set_connector_key: ({ id, key }) => { connectors.find((c) => c.id === id).hasKey = key.trim() !== ""; },
         hooks_preview: ({ agent, install }) => ({
           path: agent === "codex" ? "C:\\Users\\corx\\.codex\\hooks.json" : "C:\\Users\\corx\\.claude\\settings.json",
           fingerprint: "abc",

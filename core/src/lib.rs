@@ -6,6 +6,7 @@
 pub mod activity;
 pub mod briefing;
 pub mod chat;
+pub mod connectors;
 pub mod events;
 pub mod folders;
 pub mod images;
@@ -461,6 +462,26 @@ impl BuddyCore {
     /// Sends `text` (Markdown becomes plain text; long text is split) to the paired chat. Blocks on the network.
     pub fn telegram_send(&self, text: String) -> Result<(), CoreError> {
         self.telegram.send(&text).map_err(CoreError::Hooks)
+    }
+
+    /// Settings › Conectores (MCP): the built-in remote servers, each with its switch and whether a key is saved
+    /// (never the key).
+    pub fn connectors(&self) -> Vec<connectors::ConnectorInfo> {
+        connectors::infos(&self.store.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Turns a connector on or off for the agents with the web (from their next turn).
+    pub fn set_connector_enabled(&self, id: String, on: bool) -> Result<(), CoreError> {
+        self.with_store(|s| connectors::set_enabled(s, &id, on))?;
+        self.bus.publish(Event::SettingChanged { key: connectors::enabled_key(&id) });
+        Ok(())
+    }
+
+    /// Keeps a connector's optional key only in the Keychain / Credential Manager; empty removes it.
+    pub fn set_connector_key(&self, id: String, key: String) -> Result<(), CoreError> {
+        self.with_store(|s| connectors::set_key(s, &connectors::SystemKeys, &id, &key))?;
+        self.bus.publish(Event::SettingChanged { key: connectors::enabled_key(&id) });
+        Ok(())
     }
 
     /// The router's Settings: mode ("auto" or a model id), each tier's model and effort, the models to pick from.

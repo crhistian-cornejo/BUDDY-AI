@@ -40,12 +40,15 @@ impl Codex {
     }
 
     fn session(&self, exe: &std::path::Path, request: &TurnRequest) -> Result<Arc<Session>, String> {
+        let connectors = crate::connectors::fingerprint(request.remote());
         if let Some(id) = &request.resume {
-            if let Some(s) = self.sessions.lock().unwrap().get(id).filter(|s| s.alive()) {
+            // A live app-server holds the connectors (and keys) it started with: a change resumes in a new one.
+            if let Some(s) = self.sessions.lock().unwrap().get(id).filter(|s| s.alive() && s.connectors == connectors) {
                 return Ok(s.clone());
             }
         }
-        let mut session = Session::spawn(exe, &request.workspace, self.approver.get().cloned())?;
+        let mut session = Session::spawn(exe, &request.workspace, self.approver.get().cloned(), &request.remote_env())?;
+        session.connectors = connectors;
         session
             .request("initialize", json!({ "clientInfo": { "name": "buddy", "title": "Buddy", "version": env!("CARGO_PKG_VERSION") } }))?;
         session.notify("initialized");
@@ -91,6 +94,18 @@ pub fn thread_params(request: &TurnRequest) -> Value {
             server["env"] = Value::Object(env);
         }
         config["mcp_servers"] = json!({ "buddy": server });
+    }
+    // The connectors: remote (streamable HTTP) servers. A key goes as `bearer_token_env_var`, read by Codex from its
+    // own environment (`Session::spawn` sets it), never written in the config.
+    for connector in request.remote() {
+        let mut server = json!({ "url": connector.url });
+        if connector.has_key() {
+            server["bearer_token_env_var"] = json!(connector.env_var());
+        }
+        if !config["mcp_servers"].is_object() {
+            config["mcp_servers"] = json!({});
+        }
+        config["mcp_servers"][connector.id.as_str()] = server;
     }
     if let Some(effort) = &request.effort {
         config["model_reasoning_effort"] = json!(effort);
@@ -294,13 +309,19 @@ struct Session {
     next_id: AtomicU64,
     notes: Mutex<Receiver<(String, Value)>>,
     thread_id: String,
+    /// The connectors it started with (`connectors::fingerprint`).
+    connectors: String,
 }
 
 impl Session {
-    fn spawn(exe: &std::path::Path, cwd: &std::path::Path, approver: Option<super::Approver>) -> Result<Self, String> {
+    fn spawn(exe: &std::path::Path, cwd: &std::path::Path, approver: Option<super::Approver>, env: &[(String, String)]) -> Result<Self, String> {
         let _ = std::fs::create_dir_all(cwd);
         let mut cmd = process::command(exe);
         cmd.env(super::OWN_RUN_ENV, "1");
+        // The connectors' keys (`bearer_token_env_var`).
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
         cmd.arg("app-server").current_dir(cwd);
         let mut child = cmd.spawn().map_err(|e| format!("No se pudo iniciar Codex: {e}"))?;
         let stdin = child.stdin.take().ok_or("sin stdin")?;
@@ -319,6 +340,7 @@ impl Session {
             next_id: AtomicU64::new(1),
             notes: Mutex::new(notes_rx),
             thread_id: String::new(),
+            connectors: String::new(),
         };
         // The reader answers the server's own requests itself, through the shared stdin.
         std::thread::spawn(move || {
@@ -451,6 +473,24 @@ mod tests {
         assert_eq!(server["env"]["BUDDY_GATE_TOKEN"], "secreto");
         assert_eq!(server["env"]["BUDDY_DATA_DIR"], "/d");
         assert!(server["args"].to_string().contains("/d/skills"));
+    }
+
+    #[test]
+    fn connectors_are_remote_servers_with_the_key_in_the_environment() {
+        let request = TurnRequest {
+            connectors: vec![
+                crate::connectors::Connector::new("context7", "https://mcp.context7.com/mcp", Some("ctx7sk-secreto".into())),
+                crate::connectors::Connector::new("deepwiki", "https://mcp.deepwiki.com/mcp", None),
+            ],
+            ..Default::default()
+        };
+        let params = thread_params(&request);
+        let servers = &params["config"]["mcp_servers"];
+        assert_eq!(servers["context7"], json!({ "url": "https://mcp.context7.com/mcp", "bearer_token_env_var": "BUDDY_CONNECTOR_CONTEXT7_KEY" }));
+        assert_eq!(servers["deepwiki"], json!({ "url": "https://mcp.deepwiki.com/mcp" }));
+        assert!(!params.to_string().contains("secreto"), "the key is read from Codex's environment");
+        let offline = thread_params(&TurnRequest { no_web: true, ..request });
+        assert!(offline["config"].get("mcp_servers").is_none(), "no web, no connectors");
     }
 
     #[test]

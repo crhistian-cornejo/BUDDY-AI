@@ -13,6 +13,10 @@ fn main() {
         core.start_sessions(relay).expect("sessions");
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
+    // BUDDY_MODEL=claude:haiku (a router model id): that model for every turn, instead of the router's tiers.
+    if let Ok(model) = std::env::var("BUDDY_MODEL") {
+        core.set_router_mode(model).expect("model");
+    }
     let rx = core.events();
     // BUDDY_PREWARM=<seconds> (default 4): warm the provider first, like the app while the user types.
     if let Ok(wait) = std::env::var("BUDDY_PREWARM") {

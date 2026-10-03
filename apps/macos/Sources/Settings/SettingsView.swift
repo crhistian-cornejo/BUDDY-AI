@@ -322,6 +322,7 @@ private struct ConnectionSettings: View {
             }
             SpotifySection(core: core)
             TelegramSection(core: core)
+            ConnectorsSection(core: core)
         }
         .formStyle(.grouped)
         .onAppear { status = core.hooksStatus() }

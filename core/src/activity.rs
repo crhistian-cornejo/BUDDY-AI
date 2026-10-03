@@ -4,6 +4,10 @@
 
 /// The kind of work and the label shown with it.
 pub fn of_tool(name: &str) -> (&'static str, &'static str) {
+    // A connector (Context7, Microsoft Learn, DeepWiki…): documentation over the network.
+    if crate::connectors::owns_tool(name) {
+        return ("web", "Consultando documentación");
+    }
     let tool = name.rsplit("__").next().unwrap_or(name);
     match tool {
         "create_document" => ("word", "Escribiendo un Word"),
@@ -35,5 +39,6 @@ mod tests {
         assert_eq!(of_tool("mcp__buddy__look_at_screen").0, "screen");
         assert_eq!(of_tool("mcp__buddy__spotify_search").0, "music");
         assert_eq!(of_tool("algo_raro").0, "tool");
+        assert_eq!(of_tool("mcp__context7__query-docs"), ("web", "Consultando documentación"));
     }
 }

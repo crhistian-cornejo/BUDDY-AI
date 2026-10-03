@@ -258,6 +258,9 @@ pub fn run() {
             router_preview,
             spotify_disconnect,
             spotify_client_id,
+            connectors,
+            set_connector_enabled,
+            set_connector_key,
             telegram_status,
             telegram_connect,
             telegram_disconnect,
@@ -1183,6 +1186,23 @@ fn set_router_tier(state: State<'_, AppCore>, tier: String, model: String, effor
 #[tauri::command]
 fn router_preview(state: State<'_, AppCore>, text: String) -> String {
     state.core.router_preview(text.chars().take(2000).collect())
+}
+
+/// Settings › Conectores (MCP): the built-in remote servers with their switch and whether a key is saved.
+#[tauri::command]
+fn connectors(state: State<'_, AppCore>) -> Vec<buddy_core::connectors::ConnectorInfo> {
+    state.core.connectors()
+}
+
+#[tauri::command]
+fn set_connector_enabled(state: State<'_, AppCore>, id: String, on: bool) -> Result<(), String> {
+    state.core.set_connector_enabled(id, on).map_err(|e| e.to_string())
+}
+
+/// Keeps the optional key only in Credential Manager (empty removes it).
+#[tauri::command]
+fn set_connector_key(state: State<'_, AppCore>, id: String, key: String) -> Result<(), String> {
+    state.core.set_connector_key(id, key).map_err(|e| e.to_string())
 }
 
 /// Checks the pair with Spotify, keeps the Client ID in settings and the Client Secret in Credential Manager.

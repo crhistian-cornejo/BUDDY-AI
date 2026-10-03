@@ -167,11 +167,13 @@ function setAuthor(el: HTMLElement, name: string) {
 }
 
 /** The mark of the service that wrote the answer, after the copy and redo buttons. */
-function setMark(actions: HTMLElement, provider?: string | null) {
+/** The provider's mark; its tooltip says who wrote it and, on a second line, the model and its effort. */
+function setMark(actions: HTMLElement, provider?: string | null, model?: string | null) {
   actions.querySelector(".provider")?.remove();
   const mark = provider ? PROVIDER_MARKS[provider] : undefined;
   if (!mark) return;
-  actions.append(h("span", { class: "provider", title: mark.label, "aria-label": mark.label, style: mark.color ? `color:${mark.color}` : "" },
+  const tip = model ? `${mark.label}\n${model}` : mark.label;
+  actions.append(h("span", { class: "provider", title: tip, "aria-label": tip, style: mark.color ? `color:${mark.color}` : "" },
     svg(mark.path, 12, { fill: "currentColor" })));
 }
 

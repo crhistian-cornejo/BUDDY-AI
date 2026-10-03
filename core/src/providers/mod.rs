@@ -69,6 +69,8 @@ pub struct TurnRequest {
     pub office: Option<Office>,
     /// The agent may not search or read the web (its permissions).
     pub no_web: bool,
+    /// Remote MCP servers (Settings › Conectores) for this turn; ignored without the web (see `remote`).
+    pub connectors: Vec<crate::connectors::Connector>,
 }
 
 /// Buddy's Office tools: the relay that serves them and the folder the files go to (never anywhere else).
@@ -136,6 +138,16 @@ impl TurnRequest {
     /// in its own way: Claude as `image` blocks, Codex as `localImage`, Gemini by path.
     pub fn images(&self) -> Vec<&PathBuf> {
         self.attachments.iter().filter(|p| crate::images::is_image(p)).collect()
+    }
+
+    /// The connectors this turn may use: none when the agent has no web (they are network tools).
+    pub fn remote(&self) -> &[crate::connectors::Connector] {
+        if self.no_web { &[] } else { &self.connectors }
+    }
+
+    /// The connectors' keys for the CLI's environment (never its arguments).
+    pub fn remote_env(&self) -> Vec<(String, String)> {
+        self.remote().iter().filter_map(crate::connectors::Connector::env).collect()
     }
 }
 

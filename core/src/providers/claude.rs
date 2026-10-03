@@ -104,7 +104,7 @@ impl Claude {
             // `--safe-mode` turns every hook off, the gate's too; `--restricted` ignores the user's settings files
             // but keeps the `--settings` hook.
             // (and MCP servers, so Buddy's Office tools need it too).
-            if request.gate.is_some() || request.office.is_some() { "--restricted" } else { "--safe-mode" },
+            if request.gate.is_some() || request.office.is_some() || !request.remote().is_empty() { "--restricted" } else { "--safe-mode" },
             "--strict-mcp-config",
             "--permission-mode",
             "dontAsk",
@@ -112,15 +112,12 @@ impl Claude {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        // Only Buddy's own MCP server, never the user's: the Office tools, pre-allowed (they write only in their folder).
-        let mcp = match &request.office {
-            Some(office) => serde_json::json!({ "mcpServers": { "buddy": office.server() } }).to_string(),
-            None => r#"{"mcpServers":{}}"#.to_string(),
-        };
-        let allowed = match &request.office {
-            Some(_) => [allowed.as_str(), &super::Office::TOOLS.join(",")].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(","),
-            None => allowed,
-        };
+        // Only Buddy's own MCP server and its connectors, never the user's: the Office tools, pre-allowed (they write
+        // only in their folder), and each connector's tools (read-only network lookups).
+        let mcp = serde_json::json!({ "mcpServers": mcp_servers(request) }).to_string();
+        let office_tools = request.office.as_ref().map(|_| super::Office::TOOLS.join(",")).unwrap_or_default();
+        let connector_tools: Vec<String> = request.remote().iter().map(|c| format!("mcp__{}", c.id)).collect();
+        let allowed = [allowed, office_tools, connector_tools.join(",")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(",");
         args.extend(["--mcp-config".into(), mcp]);
         args.extend(["--tools".into(), tools, "--allowedTools".into(), allowed]);
         for dir in &dirs {
@@ -147,6 +144,23 @@ impl Claude {
         }
         args
     }
+}
+
+/// `mcpServers` for `--mcp-config`: Buddy's server and the turn's connectors. A connector's key is written as
+/// `${VAR}`, which Claude Code expands from its own environment (`spawn_live` sets it): never in the arguments.
+fn mcp_servers(request: &TurnRequest) -> serde_json::Value {
+    let mut servers = serde_json::Map::new();
+    if let Some(office) = &request.office {
+        servers.insert("buddy".into(), office.server());
+    }
+    for connector in request.remote() {
+        let mut server = serde_json::json!({ "type": "http", "url": connector.url });
+        if connector.has_key() {
+            server["headers"] = serde_json::json!({ "Authorization": format!("Bearer ${{{}}}", connector.env_var()) });
+        }
+        servers.insert(connector.id.clone(), server);
+    }
+    serde_json::Value::Object(servers)
 }
 
 impl Default for Claude {
@@ -317,7 +331,13 @@ fn user_content(request: &TurnRequest) -> serde_json::Value {
 
 fn signature(request: &TurnRequest) -> String {
     let fresh = TurnRequest { resume: None, prompt: String::new(), ..request.clone() };
-    format!("{}\u{1f}{}", Claude::arguments(&fresh).join("\u{1f}"), request.workspace.display())
+    // The connectors' fingerprint: a new key means a new process (the arguments only name its variable).
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        Claude::arguments(&fresh).join("\u{1f}"),
+        request.workspace.display(),
+        crate::connectors::fingerprint(request.remote())
+    )
 }
 
 /// Starts `claude` reading messages as stream-json, with readers for its output.
@@ -331,6 +351,10 @@ fn spawn_live(exe: &std::path::Path, request: &TurnRequest) -> Result<Live, Stri
     }
     // Buddy's MCP server inherits these (the music tools); the same secret as the gate's.
     for (key, value) in request.office.iter().flat_map(|o| o.env()) {
+        cmd.env(key, value);
+    }
+    // The connectors' keys, expanded by Claude Code into their `Authorization` headers.
+    for (key, value) in request.remote_env() {
         cmd.env(key, value);
     }
     let mut child = cmd.spawn().map_err(|e| format!("No se pudo iniciar Claude: {e}"))?;
@@ -661,6 +685,42 @@ mod tests {
         assert!(joined.contains("mcp__buddy__create_document,mcp__buddy__create_spreadsheet,mcp__buddy__create_presentation"));
         let plain = Claude::arguments(&TurnRequest::default());
         assert_eq!(plain[plain.iter().position(|a| a == "--mcp-config").unwrap() + 1], r#"{"mcpServers":{}}"#);
+    }
+
+    #[test]
+    fn connectors_are_remote_servers_whose_key_never_reaches_the_arguments() {
+        let request = TurnRequest {
+            connectors: vec![
+                crate::connectors::Connector::new("context7", "https://mcp.context7.com/mcp", Some("ctx7sk-secreto".into())),
+                crate::connectors::Connector::new("deepwiki", "https://mcp.deepwiki.com/mcp", None),
+            ],
+            ..Default::default()
+        };
+        let args = Claude::arguments(&request);
+        let joined = args.join(" ");
+        assert!(!joined.contains("secreto"), "the key travels in the environment: {joined}");
+        assert!(joined.contains("--restricted") && !joined.contains("--safe-mode"), "MCP servers need --restricted");
+        let mcp: serde_json::Value = serde_json::from_str(&args[args.iter().position(|a| a == "--mcp-config").unwrap() + 1]).unwrap();
+        assert_eq!(
+            mcp["mcpServers"]["context7"],
+            serde_json::json!({ "type": "http", "url": "https://mcp.context7.com/mcp",
+                "headers": { "Authorization": "Bearer ${BUDDY_CONNECTOR_CONTEXT7_KEY}" } })
+        );
+        assert_eq!(mcp["mcpServers"]["deepwiki"], serde_json::json!({ "type": "http", "url": "https://mcp.deepwiki.com/mcp" }));
+        let allowed = &args[args.iter().position(|a| a == "--allowedTools").unwrap() + 1];
+        assert!(allowed.ends_with(",mcp__context7,mcp__deepwiki"), "{allowed}");
+        assert_eq!(request.remote_env(), [("BUDDY_CONNECTOR_CONTEXT7_KEY".to_string(), "ctx7sk-secreto".to_string())]);
+        // The warm process changes with the key, yet its signature never holds it.
+        let sig = signature(&request);
+        assert!(!sig.contains("secreto"));
+        let mut other = request.clone();
+        other.connectors[0] = crate::connectors::Connector::new("context7", "https://mcp.context7.com/mcp", Some("otra".into()));
+        assert_ne!(sig, signature(&other));
+
+        // Without the web permission there are no connectors at all.
+        let offline = Claude::arguments(&TurnRequest { no_web: true, ..request });
+        let joined = offline.join(" ");
+        assert!(!joined.contains("context7") && !joined.contains("deepwiki") && joined.contains("--safe-mode"), "{joined}");
     }
 
     #[test]

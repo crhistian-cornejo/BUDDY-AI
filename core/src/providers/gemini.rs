@@ -186,18 +186,31 @@ pub fn settings(request: &TurnRequest) -> Value {
     if request.office.is_some() {
         allow.push("mcp(buddy/*)".into());
     }
+    // Each connector's tools by name too: in live checks `mcp(context7/*)` did not cover `resolve-library-id`.
+    for connector in request.remote() {
+        allow.push(format!("mcp({}/*)", connector.id));
+        allow.extend(connector.tools().iter().map(|tool| format!("mcp({}/{tool})", connector.id)));
+    }
     json!({ "permissions": { "allow": allow, "deny": deny } })
 }
 
 /// `.agents/mcp_config.json`: only Buddy's own server. Its secret (the music tools' token) travels in the CLI's
 /// environment, never in this file; the data folder is not secret.
+/// The connectors go by URL only: this CLI reads no header from its environment, and a key never goes in a file,
+/// so here they run keyless (their free limits).
 pub fn mcp_config(request: &TurnRequest) -> Option<Value> {
-    let office = request.office.as_ref()?;
-    let mut server = office.server();
-    if let Some(link) = &office.link {
-        server["env"] = json!({ "BUDDY_DATA_DIR": link.data_dir });
+    let mut servers = serde_json::Map::new();
+    if let Some(office) = &request.office {
+        let mut server = office.server();
+        if let Some(link) = &office.link {
+            server["env"] = json!({ "BUDDY_DATA_DIR": link.data_dir });
+        }
+        servers.insert("buddy".into(), server);
     }
-    Some(json!({ "mcpServers": { "buddy": server } }))
+    for connector in request.remote() {
+        servers.insert(connector.id.clone(), json!({ "url": connector.url }));
+    }
+    (!servers.is_empty()).then(|| json!({ "mcpServers": servers }))
 }
 
 /// Writes this turn's `.agents/` files into the workspace (and removes a stale MCP config).
@@ -205,6 +218,9 @@ fn prepare(request: &TurnRequest) -> std::io::Result<()> {
     let dir = request.workspace.join(CONFIG_DIR);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("settings.json"), serde_json::to_vec_pretty(&settings(request))?)?;
+    // Live checks (agy, Oct 2026): an MCP allow rule never took effect from `settings.json` alone and sometimes did
+    // from `.agents/config.json` (the name of the shared `~/.gemini/config/config.json`), so the same rules go in both.
+    std::fs::write(dir.join("config.json"), serde_json::to_vec_pretty(&settings(request))?)?;
     let mcp = dir.join("mcp_config.json");
     match mcp_config(request) {
         Some(config) => std::fs::write(mcp, serde_json::to_vec_pretty(&config)?)?,
@@ -397,7 +413,15 @@ impl Gemini {
 fn signature(request: &TurnRequest) -> String {
     let fresh = TurnRequest { resume: None, prompt: String::new(), ..request.clone() };
     let env: Vec<String> = request.office.iter().flat_map(|o| o.env()).map(|(k, v)| format!("{k}={v}")).collect();
-    format!("{}\u{1f}{}\u{1f}{}", Gemini::arguments(&fresh).join("\u{1f}"), request.workspace.display(), env.join("\u{1f}"))
+    // The connectors live in the workspace files, not the arguments: a change needs a new process.
+    let connectors: Vec<&str> = request.remote().iter().map(|c| c.url.as_str()).collect();
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        Gemini::arguments(&fresh).join("\u{1f}"),
+        request.workspace.display(),
+        env.join("\u{1f}"),
+        connectors.join(",")
+    )
 }
 
 /// Starts `agy` reading messages as stream-json (its project settings written first), with readers for its output.
@@ -780,6 +804,34 @@ mod tests {
     }
 
     #[test]
+    fn connectors_go_by_url_without_their_key() {
+        let request = TurnRequest {
+            connectors: vec![
+                crate::connectors::Connector::new("context7", "https://mcp.context7.com/mcp", Some("ctx7sk-secreto".into())),
+                crate::connectors::Connector::new("deepwiki", "https://mcp.deepwiki.com/mcp", None),
+            ],
+            ..Default::default()
+        };
+        let config = mcp_config(&request).unwrap();
+        assert_eq!(
+            config,
+            json!({ "mcpServers": { "context7": { "url": "https://mcp.context7.com/mcp" }, "deepwiki": { "url": "https://mcp.deepwiki.com/mcp" } } })
+        );
+        let allow = settings(&request)["permissions"]["allow"].to_string();
+        assert!(allow.contains("mcp(context7/*)") && allow.contains("mcp(deepwiki/*)") && !allow.contains("mcp(buddy/*)"), "{allow}");
+        assert!(allow.contains("mcp(context7/resolve-library-id)") && allow.contains("mcp(context7/query-docs)"), "{allow}");
+        assert!(!signature(&request).contains("secreto"));
+        let offline = TurnRequest { no_web: true, ..request };
+        assert!(mcp_config(&offline).is_none() && !settings(&offline).to_string().contains("context7"), "no web, no connectors");
+
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = TurnRequest { workspace: dir.path().join("buddy"), no_web: false, ..offline };
+        prepare(&on_disk).unwrap();
+        let written = std::fs::read_to_string(on_disk.workspace.join(".agents/mcp_config.json")).unwrap();
+        assert!(written.contains("https://mcp.context7.com/mcp") && !written.contains("secreto"), "{written}");
+    }
+
+    #[test]
     fn prepare_writes_and_clears_the_workspace_config() {
         let dir = tempfile::tempdir().unwrap();
         let office = super::super::Office {
@@ -793,6 +845,7 @@ mod tests {
         prepare(&request).unwrap();
         let agents = request.workspace.join(".agents");
         assert!(agents.join("settings.json").is_file() && agents.join("mcp_config.json").is_file());
+        assert_eq!(std::fs::read(agents.join("config.json")).unwrap(), std::fs::read(agents.join("settings.json")).unwrap());
         request.office = None;
         prepare(&request).unwrap();
         assert!(!agents.join("mcp_config.json").exists(), "no stale tools");
