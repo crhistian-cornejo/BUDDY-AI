@@ -276,6 +276,9 @@ impl Cancel {
     }
 }
 
+/// Asks the user (a card in the notch / top bar) whether one command may run: `(command, folder)` → allowed.
+pub type Approver = std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 pub trait Provider: Send + Sync {
     fn id(&self) -> ProviderId;
     /// Whether its CLI is installed (no network, no model).
@@ -289,6 +292,8 @@ pub trait Provider: Send + Sync {
     }
     /// Runs one turn to the end, calling `emit` as events arrive. Always ends with `Done` or `Failed`.
     fn run(&self, request: &TurnRequest, cancel: &Cancel, emit: &mut dyn FnMut(TurnEvent));
+    /// For providers that ask for commands through their own protocol (Codex) instead of Buddy's hook gate.
+    fn set_approver(&self, _approver: Approver) {}
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

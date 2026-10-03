@@ -58,6 +58,11 @@ impl ChatEngine {
 
     /// Commands go through this hub's gate (a click each time) while it runs and the user allows commands.
     pub fn with_gate(mut self, hub: Arc<crate::sessions::SessionHub>) -> Self {
+        // Codex asks for commands in its own protocol: the same card as Claude's gate answers it.
+        for provider in &self.providers {
+            let hub = hub.clone();
+            provider.set_approver(Arc::new(move |command: &str, folder: &str| hub.approve_command(command, folder)));
+        }
         self.gate = Some(hub);
         self
     }

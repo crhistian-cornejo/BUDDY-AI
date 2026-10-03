@@ -183,6 +183,18 @@ impl SessionHub {
         let _ = self.tools.set(handler);
     }
 
+    /// A command one of Buddy's agents wants to run through its provider's own protocol (Codex): the same card
+    /// as the gate. True only on the user's «Permitir».
+    pub fn approve_command(&self, command: &str, folder: &str) -> bool {
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": command },
+            "cwd": folder,
+        });
+        self.ask(&payload, "buddy", "buddy".into(), "Buddy".into(), &|| false) == Some("allow")
+    }
+
     /// The app reports what plays (on each change of its player).
     pub fn set_now_playing(&self, now: Option<crate::media::NowPlayingInfo>) {
         *self.now_playing.lock().unwrap_or_else(|p| p.into_inner()) = now;
@@ -558,6 +570,22 @@ mod tests {
     use crate::sessions::server::Sink;
     use serde_json::json;
     use std::sync::mpsc::Receiver;
+
+    #[test]
+    fn a_codex_command_waits_for_the_users_click() {
+        let (hub, rx, _dir) = hub(Duration::from_secs(5));
+        for allow in [true, false] {
+            let asker = hub.clone();
+            let waiting = std::thread::spawn(move || asker.approve_command("git status", "/u/proyecto"));
+            let Ok(Event::ApprovalRequest { request_id, agent, summary, .. }) = rx.recv_timeout(Duration::from_secs(2)) else {
+                panic!("no card")
+            };
+            assert_eq!((agent.as_str(), summary.as_str()), ("buddy", "git status"));
+            hub.answer_approval(&request_id, allow);
+            assert_eq!(waiting.join().unwrap(), allow);
+            while rx.try_recv().is_ok() {}
+        }
+    }
 
     #[test]
     fn hooks_from_buddys_own_turns_never_reach_the_notch() {

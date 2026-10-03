@@ -22,7 +22,7 @@ fn main() {
     let mut first = None;
     let chat = core.send_message(None, question, std::env::var("BUDDY_ATTACH").map(|a| vec![a]).unwrap_or_default()).expect("send");
     while let Ok(event) = rx.recv() {
-        let end = matches!(&event, Event::MascotState { state } if ["done", "error", "idle"].contains(&state.as_str()));
+        let end = matches!(&event, Event::ChatDone { .. } | Event::ChatFailed { .. });
         if let Event::ApprovalRequest { request_id, summary, .. } = &event {
             println!("\n¿Permitir «{summary}»? (prueba: sí)");
             core.answer_approval(request_id.clone(), true);

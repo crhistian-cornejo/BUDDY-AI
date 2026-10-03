@@ -30,11 +30,13 @@ pub struct Codex {
     exe: Option<PathBuf>,
     /// Live conversations by thread id.
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Puts each command Codex wants to run in front of the user (only turns with the gate ask at all).
+    approver: std::sync::OnceLock<super::Approver>,
 }
 
 impl Codex {
     pub fn new() -> Self {
-        Self { exe: process::locate("codex"), sessions: Mutex::new(HashMap::new()) }
+        Self { exe: process::locate("codex"), sessions: Mutex::new(HashMap::new()), approver: std::sync::OnceLock::new() }
     }
 
     fn session(&self, exe: &std::path::Path, request: &TurnRequest) -> Result<Arc<Session>, String> {
@@ -43,7 +45,7 @@ impl Codex {
                 return Ok(s.clone());
             }
         }
-        let mut session = Session::spawn(exe, &request.workspace)?;
+        let mut session = Session::spawn(exe, &request.workspace, self.approver.get().cloned())?;
         session
             .request("initialize", json!({ "clientInfo": { "name": "buddy", "title": "Buddy", "version": env!("CARGO_PKG_VERSION") } }))?;
         session.notify("initialized");
@@ -101,7 +103,9 @@ pub fn thread_params(request: &TurnRequest) -> Value {
     let mut params = json!({
         "cwd": request.workspace,
         "sandbox": if writable.is_empty() { "read-only" } else { "workspace-write" },
-        "approvalPolicy": "never",
+        // With the gate (the agent may run commands) Codex asks before anything not plainly read-only, and each
+        // request becomes a card with Allow / Deny; without it, it never asks and runs nothing.
+        "approvalPolicy": if request.gate.is_some() { "untrusted" } else { "never" },
         "developerInstructions": format!("{}\n\n{FORMAT}", request.system),
         "config": config,
     });
@@ -112,6 +116,10 @@ pub fn thread_params(request: &TurnRequest) -> Value {
 impl Provider for Codex {
     fn id(&self) -> ProviderId {
         ProviderId::Codex
+    }
+
+    fn set_approver(&self, approver: super::Approver) {
+        let _ = self.approver.set(approver);
     }
 
     fn sees_images(&self) -> bool {
@@ -234,7 +242,7 @@ struct Session {
 }
 
 impl Session {
-    fn spawn(exe: &std::path::Path, cwd: &std::path::Path) -> Result<Self, String> {
+    fn spawn(exe: &std::path::Path, cwd: &std::path::Path, approver: Option<super::Approver>) -> Result<Self, String> {
         let _ = std::fs::create_dir_all(cwd);
         let mut cmd = process::command(exe);
         cmd.env(super::OWN_RUN_ENV, "1");
@@ -265,6 +273,17 @@ impl Session {
                     continue;
                 };
                 match (msg.get("id"), msg["method"].as_str()) {
+                    // A command to approve: the user decides on their own thread (the card waits for a click),
+                    // so this reader keeps delivering everything else meanwhile.
+                    (Some(id), Some("item/commandExecution/requestApproval")) if approver.is_some() => {
+                        let (approver, stdin, id) = (approver.clone().unwrap(), stdin.clone(), id.clone());
+                        let (command, folder) = approval_subject(&msg["params"]);
+                        std::thread::spawn(move || {
+                            let decision = if approver(&command, &folder) { "accept" } else { "decline" };
+                            let mut out = stdin.lock().unwrap();
+                            let _ = writeln!(out, "{}", json!({ "id": id, "result": { "decision": decision } })).and_then(|_| out.flush());
+                        });
+                    }
                     (Some(id), Some(method)) => {
                         let mut out = stdin.lock().unwrap();
                         let _ = writeln!(out, "{}", server_request_reply(id.clone(), method)).and_then(|_| out.flush());
@@ -323,6 +342,16 @@ impl Session {
     fn alive(&self) -> bool {
         matches!(self.child.lock().unwrap().try_wait(), Ok(None))
     }
+}
+
+/// The command line and folder of an approval request (`command` as text or as argv).
+pub fn approval_subject(params: &Value) -> (String, String) {
+    let command = match &params["command"] {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+        _ => params["reason"].as_str().unwrap_or("un comando").to_string(),
+    };
+    (command, params["cwd"].as_str().unwrap_or("").to_string())
 }
 
 /// Deny by default: approvals are declined (the sandbox is read-only, so none should come) and anything else the
@@ -393,6 +422,18 @@ mod tests {
         });
         assert_eq!(input.as_array().unwrap().len(), 2);
         assert_eq!(input[1]["type"], "localImage");
+    }
+
+    #[test]
+    fn approvals_name_the_command_and_follow_the_gate() {
+        assert_eq!(approval_subject(&json!({ "command": "ls -la", "cwd": "/u" })), ("ls -la".into(), "/u".into()));
+        assert_eq!(approval_subject(&json!({ "command": ["git", "status"] })).0, "git status");
+        let gated = TurnRequest {
+            gate: Some(crate::providers::Gate { relay: "/r".into(), token: "t".into(), data_dir: "/d".into() }),
+            ..Default::default()
+        };
+        assert_eq!(thread_params(&gated)["approvalPolicy"], "untrusted");
+        assert_eq!(thread_params(&TurnRequest::default())["approvalPolicy"], "never");
     }
 
     #[test]
