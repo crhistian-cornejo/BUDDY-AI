@@ -127,6 +127,8 @@ private struct ModelSettings: View {
         .normal: "La mayoría de preguntas.",
         .deep: "Análisis, comparaciones, planes, mensajes largos.",
         .code: "Código, errores y archivos de programación.",
+        .work: "Word, Excel, presentaciones, informes y archivos.",
+        .math: "Cálculos, ecuaciones, estadística y demostraciones.",
     ]
 
     var body: some View {

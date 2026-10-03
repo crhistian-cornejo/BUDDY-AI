@@ -41,10 +41,14 @@ pub enum Tier {
     Normal,
     Deep,
     Code,
+    /// Documents, spreadsheets, presentations, files: the «work» agents.
+    Work,
+    /// Calculations, equations, proofs.
+    Math,
 }
 
 impl Tier {
-    pub const ALL: [Tier; 4] = [Tier::Light, Tier::Normal, Tier::Deep, Tier::Code];
+    pub const ALL: [Tier; 6] = [Tier::Light, Tier::Normal, Tier::Deep, Tier::Work, Tier::Code, Tier::Math];
 
     pub fn parse(key: &str) -> Option<Tier> {
         Tier::ALL.into_iter().find(|t| t.key() == key)
@@ -56,6 +60,8 @@ impl Tier {
             Tier::Normal => "normal",
             Tier::Deep => "deep",
             Tier::Code => "code",
+            Tier::Work => "work",
+            Tier::Math => "math",
         }
     }
 
@@ -65,15 +71,20 @@ impl Tier {
             Tier::Normal => "Normal",
             Tier::Deep => "A fondo",
             Tier::Code => "Código",
+            Tier::Work => "Trabajo",
+            Tier::Math => "Matemáticas",
         }
     }
 
     fn default_choice(self) -> (&'static str, &'static str) {
         match self {
-            Tier::Light => ("claude:haiku", "low"),
-            Tier::Normal => ("claude:sonnet", "medium"),
+            // Chat, writing and web search on Gemini Flash; real work on Claude and GPT; maths on Gemini Pro.
+            Tier::Light => ("antigravity:gemini-3.8-flash", "high"),
+            Tier::Normal => ("antigravity:gemini-3.8-flash", "high"),
             Tier::Deep => ("claude:opus", "high"),
-            Tier::Code => ("codex:gpt-6.1-sol", "medium"),
+            Tier::Work => ("claude:opus", "high"),
+            Tier::Code => ("codex:gpt-6.1-sol", "high"),
+            Tier::Math => ("antigravity:gemini-3.1-pro", "high"),
         }
     }
 }
@@ -214,6 +225,12 @@ pub fn classify(text: &str, files: &[PathBuf]) -> (Tier, &'static str) {
     if let Some(reason) = code_reason(text, &t, files) {
         return (Tier::Code, reason);
     }
+    if let Some(reason) = math_reason(text, &t) {
+        return (Tier::Math, reason);
+    }
+    if let Some(reason) = work_reason(&t) {
+        return (Tier::Work, reason);
+    }
     if let Some(reason) = deep_reason(&t, files) {
         return (Tier::Deep, reason);
     }
@@ -281,11 +298,35 @@ fn code_reason(raw: &str, t: &str, files: &[PathBuf]) -> Option<&'static str> {
     WORDS.iter().any(|w| t.contains(w)).then_some("es de programación")
 }
 
+fn math_reason(raw: &str, t: &str) -> Option<&'static str> {
+    const WORDS: [&str; 22] = [
+        "matematic", "ecuacion", "integral", "derivada", "limite de", "calcula", "resuelve", "despeja", "algebra",
+        "geometria", "trigonometr", "probabilidad", "estadistic", "matriz", "vector", "logaritmo", "teorema",
+        "demostracion", "factoriza", "raiz cuadrada", "porcentaje de", "interes compuesto",
+    ];
+    if WORDS.iter().any(|w| t.contains(w)) {
+        return Some("es de matemáticas");
+    }
+    // A formula: digits with operators and an equals sign, or LaTeX.
+    let ops = raw.chars().filter(|c| "+-*/^=".contains(*c)).count();
+    let digits = raw.chars().filter(char::is_ascii_digit).count();
+    ((raw.contains('=') && ops >= 2 && digits >= 2) || raw.contains("\\frac") || raw.contains("\\int")).then_some("es de matemáticas")
+}
+
+fn work_reason(t: &str) -> Option<&'static str> {
+    const WORDS: [&str; 18] = [
+        "documento", "word", "docx", "excel", "hoja de calculo", "xlsx", "presentacion", "powerpoint", "ppt",
+        "diapositiva", "informe", "reporte", "carta formal", "curriculum", "organiza mis archivos", "renombra",
+        "plantilla", "acta",
+    ];
+    WORDS.iter().any(|w| t.contains(w)).then_some("es un trabajo de documentos")
+}
+
 fn deep_reason(t: &str, files: &[PathBuf]) -> Option<&'static str> {
     const CUES: [&str; 24] = [
         "a fondo", "en detalle", "detallad", "analiza", "analisis", "investiga", "compara", "comparacion", "estrategia",
         "arquitectura", "disena", "plan de", "planifica", "paso a paso", "razona", "piensa bien", "demuestra", "evalua",
-        "pros y contras", "ventajas y desventajas", "informe", "ensayo", "profund", "think hard",
+        "pros y contras", "ventajas y desventajas", "investigacion", "ensayo", "profund", "think hard",
     ];
     if CUES.iter().any(|c| t.contains(c)) {
         return Some("pide análisis");
@@ -364,6 +405,10 @@ mod tests {
             ("¿por qué falla esta función en Rust?", Tier::Code),
             ("```swift\nlet x = 1\n```", Tier::Code),
             ("thread 'main' panicked at src/main.rs:3", Tier::Code),
+            ("Resuelve la ecuación 3x + 2 = 11", Tier::Math),
+            ("¿cuánto es 15^2 + 3*4 = ?", Tier::Math),
+            ("Hazme un informe en Word sobre la IA", Tier::Work),
+            ("Prepara una presentación de 8 diapositivas", Tier::Work),
         ];
         for (text, tier) in cases {
             assert_eq!(classify(text, none).0, tier, "{text:?}");
@@ -378,11 +423,15 @@ mod tests {
         let (s, _d) = store();
         let none: &[PathBuf] = &[];
         let r = route(&s, "hola", none);
-        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Claude, "haiku", "low"));
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Antigravity, "gemini-3.8-flash", "high"));
         let r = route(&s, "analiza a fondo esta estrategia", none);
         assert_eq!((r.model.as_str(), r.effort.as_str(), r.model_name.as_str()), ("opus", "high", "Opus 5.5"));
         let r = route(&s, "arregla este bug de typescript", none);
-        assert_eq!((r.provider, r.model.as_str()), (ProviderId::Codex, "gpt-6.1-sol"));
+        assert_eq!((r.provider, r.model.as_str(), r.effort.as_str()), (ProviderId::Codex, "gpt-6.1-sol", "high"));
+        let r = route(&s, "hazme una presentación sobre ventas", none);
+        assert_eq!((r.tier, r.model.as_str()), (Tier::Work, "opus"));
+        let r = route(&s, "resuelve la integral de x^2", none);
+        assert_eq!((r.tier, r.model.as_str(), r.effort.as_str()), (Tier::Math, "gemini-3.1-pro", "high"));
         let r = route(&s, "explícame la fotosíntesis con opus", none);
         assert_eq!((r.model.as_str(), r.reason.as_str()), ("opus", "lo pediste"));
         set_mode(&s, "codex:gpt-6.1-sol").unwrap();
@@ -403,7 +452,7 @@ mod tests {
         let r = route(&s, "¿qué tiempo hace en Lima?", none);
         assert_eq!((r.provider, r.effort.as_str()), (ProviderId::Antigravity, "low"));
         assert!(options().iter().any(|m| m.provider == "antigravity"));
-        assert_eq!(route(&s, "hola", none).provider, ProviderId::Claude, "defaults stay as they were");
+        assert_eq!(route(&s, "hola", none).provider, ProviderId::Antigravity, "small talk on Gemini Flash");
     }
 
     #[test]
@@ -411,7 +460,7 @@ mod tests {
         let (s, _d) = store();
         let none: &[PathBuf] = &[];
         let r = route_agent(&s, Some("auto"), "gracias", none).unwrap();
-        assert_eq!((r.tier, r.model.as_str()), (Tier::Normal, "sonnet"), "a hand-off is never small talk");
+        assert_eq!((r.tier, r.model.as_str()), (Tier::Normal, "gemini-3.8-flash"), "a hand-off is never small talk");
         let r = route_agent(&s, Some("auto"), "Analiza a fondo el Clásico de mañana", none).unwrap();
         assert_eq!(r.model, "opus");
         let r = route_agent(&s, Some("codex:gpt-6.1-sol"), "lo que sea", none).unwrap();

@@ -627,7 +627,9 @@ impl ChatEngine {
                 TurnEvent::Failed(f) => failure = Some(f),
             });
             match failure {
-                Some(f) if text.is_empty() && !worked && (f.kind == FailureKind::Missing || f.is_no_usage()) && !cancel.is_cancelled() => {
+                // Not installed, or an answer that never came (Missing), or no usage left before any tool ran: the
+                // next provider takes the turn.
+                Some(f) if text.is_empty() && (f.kind == FailureKind::Missing || (!worked && f.is_no_usage())) && !cancel.is_cancelled() => {
                     last_failure = Some(f.summary(provider.id()));
                     continue;
                 }

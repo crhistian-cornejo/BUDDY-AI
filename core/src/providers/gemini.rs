@@ -49,11 +49,9 @@ impl Gemini {
         for dir in workspace_dirs(request) {
             args.extend(["--add-dir".into(), dir]);
         }
+        // agy names each thinking level as its own model: gemini-3.8-flash-high, gemini-3.1-pro-low…
         if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
-            args.extend(["--model".into(), model.clone()]);
-        }
-        if let Some(effort) = effort(request) {
-            args.extend(["--effort".into(), effort.into()]);
+            args.extend(["--model".into(), model_id(model, effort(request))]);
         }
         if let Some(id) = request.resume.as_ref().filter(|r| !r.is_empty()) {
             args.extend(["--conversation".into(), id.clone()]);
@@ -104,6 +102,16 @@ fn workspace_dirs(request: &TurnRequest) -> Vec<String> {
         dirs.insert(0, own);
     }
     dirs
+}
+
+/// The model id agy knows: the family plus its thinking level (`-low`, `-medium`, `-high`), unless the name
+/// already carries one. Without an effort, the highest the family has.
+pub fn model_id(model: &str, effort: Option<&str>) -> String {
+    let model = model.trim();
+    if ["-low", "-medium", "-high"].iter().any(|s| model.ends_with(s)) || !model.starts_with("gemini-") {
+        return model.to_string();
+    }
+    format!("{model}-{}", effort.unwrap_or("high"))
 }
 
 /// The router's effort, as the CLI takes it. Gemini Pro thinks only low or high.
@@ -181,7 +189,12 @@ pub fn prompt(request: &TurnRequest) -> String {
     if request.system.trim().is_empty() || request.resume.as_ref().is_some_and(|r| !r.is_empty()) {
         return request.prompt.clone();
     }
-    format!("[Instrucciones de Buddy para esta conversación]\n{}\n\n[Mensaje del usuario]\n{}", request.system.trim(), request.prompt)
+    format!(
+        "[Instrucciones de Buddy para esta conversación]\n{}\n\nUsa solo tus herramientas de búsqueda web y las del servidor \
+MCP «buddy»; no uses otros servidores MCP (no están permitidos aquí). Responde siempre con texto.\n\n[Mensaje del usuario]\n{}",
+        request.system.trim(),
+        request.prompt
+    )
 }
 
 /// The stdin line for one turn (text blocks only: the CLI's stream-json input takes no images).
@@ -393,6 +406,11 @@ impl StreamParser {
         }
         let response = result["response"].as_str().unwrap_or("");
         match result["status"].as_str() {
+            // A finished turn with no text at all (e.g. it tried one of the user's own MCP servers, which headless
+            // mode denies): the next provider answers instead of an empty bubble.
+            Some("SUCCESS") if !self.wrote_text && response.trim().is_empty() => {
+                events.push(TurnEvent::Failed(Failure { kind: FailureKind::Missing, message: "Gemini terminó sin responder.".into() }));
+            }
             Some("SUCCESS" | "CANCELED" | "INTERRUPTED" | "WAITING") => {
                 if !self.wrote_text && !response.trim().is_empty() {
                     self.wrote_text = true;
@@ -566,11 +584,16 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.starts_with("--input-format stream-json --output-format stream-json"), "{joined}");
         assert!(joined.contains("--add-dir /d/agentes/buddy") && joined.contains("--conversation c-1"));
-        assert!(joined.contains("--model gemini-3.1-pro --effort high"), "Pro has no medium: {joined}");
+        assert!(joined.contains("--model gemini-3.1-pro-high"), "Pro has no medium: {joined}");
+        assert!(!joined.contains("--effort"));
         assert!(!joined.contains("hola") && !joined.contains("Eres Buddy"), "prompt and instructions go on stdin");
         assert!(!joined.contains("--dangerously-skip-permissions") && !joined.contains(" -p"), "{joined}");
         let plain = Gemini::arguments(&TurnRequest::default()).join(" ");
         assert!(!plain.contains("--model") && !plain.contains("--conversation") && !plain.contains("--effort"));
+        assert_eq!(model_id("gemini-3.8-flash", Some("medium")), "gemini-3.8-flash-medium");
+        assert_eq!(model_id("gemini-3.8-flash", None), "gemini-3.8-flash-high");
+        assert_eq!(model_id("gemini-3.1-pro-low", Some("high")), "gemini-3.1-pro-low", "an explicit level wins");
+        assert_eq!(model_id("claude-sonnet-4-6", Some("high")), "claude-sonnet-4-6");
     }
 
     #[test]
