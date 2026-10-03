@@ -66,6 +66,8 @@ const MIGRATIONS: &[&str] = &[
         text  TEXT NOT NULL,
         url   TEXT
     );",
+    // v6: which model wrote each answer («Opus 5.5 · esfuerzo alto»), for its tooltip.
+    "ALTER TABLE messages ADD COLUMN model TEXT;",
 ];
 
 /// Tokens spent by one feature (and provider) over a period.
@@ -129,6 +131,8 @@ pub struct ChatMessage {
     pub created_at: i64,
     /// Buddy's copies of the files attached to this message.
     pub attachments: Vec<String>,
+    /// The model that wrote an answer, in words («Opus 5.5 · esfuerzo alto»); None for older ones.
+    pub model: Option<String>,
 }
 
 /// What a new message carries.
@@ -262,6 +266,12 @@ impl Store {
         Ok(id)
     }
 
+    /// Notes which model wrote a saved answer.
+    pub fn set_message_model(&self, message_id: i64, model: &str) -> Result<(), CoreError> {
+        self.conn.execute("UPDATE messages SET model = ?2 WHERE id = ?1", params![message_id, model])?;
+        Ok(())
+    }
+
     pub fn chats(&self, limit: u32) -> Result<Vec<ChatSummary>, CoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT c.id, c.title, c.updated_at,
@@ -276,7 +286,7 @@ impl Store {
 
     pub fn messages(&self, chat_id: &str) -> Result<Vec<ChatMessage>, CoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, role, agent, provider, text, sources, failed, created_at, attachments FROM messages WHERE chat_id = ?1 ORDER BY id",
+            "SELECT id, role, agent, provider, text, sources, failed, created_at, attachments, model FROM messages WHERE chat_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![chat_id], |r| {
             let sources: String = r.get(5)?;
@@ -290,6 +300,7 @@ impl Store {
                 failed: r.get(6)?,
                 created_at: r.get(7)?,
                 attachments: serde_json::from_str(&r.get::<_, String>(8)?).unwrap_or_default(),
+                model: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

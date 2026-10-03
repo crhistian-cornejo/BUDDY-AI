@@ -13,7 +13,7 @@ import { makeSource, type ChatSource } from "./markdown";
 
 applyTokens();
 
-interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean; attachments?: string[] }
+interface SavedMessage { id: number; role: string; agent: string; provider?: string | null; text: string; sources: { title: string; url: string }[]; failed: boolean; attachments?: string[]; model?: string | null }
 interface QueuedMessage { id: string; text: string; attachments: string[] }
 interface Agent { id: string; name: string }
 type CoreEvent =
@@ -241,7 +241,7 @@ function documentCard(path: string): HTMLElement {
   return card;
 }
 
-function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false, documents: string[] = []) {
+function addAnswer(name: string, provider: string | null, text = "", sources: ChatSource[] = [], failed = false, documents: string[] = [], model: string | null = null) {
   const authorEl = h("div", { class: "msg-author" });
   setAuthor(authorEl, name);
   const activityEl = h("div", { class: "activity", role: "status" });
@@ -250,7 +250,7 @@ function addAnswer(name: string, provider: string | null, text = "", sources: Ch
   const view = new AnswerView();
   const state = { text };
   const actions = actionsFor(() => state.text);
-  setMark(actions, provider);
+  setMark(actions, provider, model);
   if (failed) wrap.append(failure(text));
   else {
     view.update(text, { sources });
@@ -337,6 +337,7 @@ function finish(failureText: string | null) {
     void invoke<SavedMessage[]>("messages", { chatId }).then((saved) => {
       const last = [...saved].reverse().find((m) => m.role === "assistant");
       for (const d of last?.attachments ?? []) actionsEl.before(documentCard(d));
+      if (last?.model) setMark(actionsEl, last.provider, last.model);
     }).catch(() => {});
   }
   if (live) {
@@ -419,7 +420,7 @@ async function openChat(id: string) {
     if (m.role === "user") addUser(m.text, m.attachments ?? []);
     else {
       const sources = m.sources.map((s) => makeSource(s.title, s.url)).filter((s): s is ChatSource => !!s);
-      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed, m.attachments ?? []);
+      addAnswer(names.get(m.agent) ?? m.agent, m.provider ?? null, m.text, sources, m.failed, m.attachments ?? [], m.model ?? null);
     }
   }
   render();

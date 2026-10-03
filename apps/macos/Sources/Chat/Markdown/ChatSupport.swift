@@ -43,6 +43,8 @@ struct LiveMessage: Identifiable, Equatable, Sendable {
     /// What the agent is doing right now, with its symbol. Never saved.
     var activity: ChatActivity?
     var failed = false
+    /// The model that wrote an answer, in words («Opus 5.5 · esfuerzo alto»); shown in the mark's tooltip.
+    var model: String?
 }
 
 /// A live line under the author: thinking, searching, reading, handing off.

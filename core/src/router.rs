@@ -136,6 +136,23 @@ fn model(id: &str) -> Option<(&'static str, &'static str, ProviderId, &'static s
     MODELS.iter().copied().find(|m| m.0 == id)
 }
 
+/// An answer's model in words: «Opus 5.5 · esfuerzo alto» (the CLI name when it is not in the list).
+pub fn model_label(provider: ProviderId, model: Option<&str>, effort: Option<&str>) -> String {
+    let cli = model.unwrap_or(match provider {
+        ProviderId::Codex => crate::providers::codex::DEFAULT_MODEL,
+        _ => "",
+    });
+    let name = MODELS
+        .iter()
+        .find(|m| m.2 == provider && (m.3 == cli || cli.starts_with(&format!("{}-", m.3))))
+        .map(|m| m.1.to_string())
+        .unwrap_or_else(|| if cli.is_empty() { provider.display_name().to_string() } else { cli.to_string() });
+    match effort {
+        Some(e) => format!("{name} · esfuerzo {}", crate::effort_label(e)),
+        None => name,
+    }
+}
+
 pub fn options() -> Vec<ModelOption> {
     MODELS.iter().map(|m| ModelOption { id: m.0.into(), name: m.1.into(), provider: m.2.as_str().into() }).collect()
 }
@@ -468,6 +485,14 @@ mod tests {
         assert_eq!((r.provider, r.model.as_str()), (ProviderId::Codex, "gpt-6.1-sol"));
         assert!(route_agent(&s, Some("sonnet"), "x", none).is_none(), "a plain agent.md model stays as it is");
         assert!(route_agent(&s, None, "x", none).is_none());
+    }
+
+    #[test]
+    fn answers_name_their_model() {
+        assert_eq!(model_label(ProviderId::Claude, Some("opus"), Some("high")), "Opus 5.5 · esfuerzo alto");
+        assert_eq!(model_label(ProviderId::Codex, None, Some("medium")), "GPT-6.1 Sol · esfuerzo medio");
+        assert_eq!(model_label(ProviderId::Antigravity, Some("gemini-3.8-flash"), Some("low")), "Gemini 3.8 Flash · esfuerzo bajo");
+        assert_eq!(model_label(ProviderId::Claude, None, None), "Claude");
     }
 
     #[test]

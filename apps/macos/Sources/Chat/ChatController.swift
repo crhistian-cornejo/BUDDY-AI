@@ -177,7 +177,8 @@ final class ChatController {
                         author: m.role == "assistant" ? (agents[m.agent] ?? m.agent) : nil,
                         provider: m.provider,
                         files: m.attachments,
-                        failed: m.failed)
+                        failed: m.failed,
+                        model: m.model)
         }
     }
 
@@ -219,12 +220,14 @@ final class ChatController {
 
     private func finish(failure: String?) {
         // Documents the agent made in this turn come saved with the answer: show them as cards.
-        let made = failure == nil ? chatID.flatMap { id in (try? core.messages(chatId: id))?.last { $0.role == "assistant" }?.attachments } ?? [] : []
+        let saved = failure == nil ? chatID.flatMap { id in (try? core.messages(chatId: id))?.last { $0.role == "assistant" } } : nil
+        let made = saved?.attachments ?? []
         update { m in
             m.isStreaming = false
             m.activity = nil
             if let failure, m.content.isEmpty { m.content = failure; m.failed = true }
             if !made.isEmpty { m.files = made }
+            if let model = saved?.model { m.model = model }
         }
         streaming = false
     }

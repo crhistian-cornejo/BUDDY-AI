@@ -296,7 +296,7 @@ private struct MessageRow: View {
                 }
                 ForEach(message.files, id: \.self) { DocumentCard(path: $0) }
                 if !message.isStreaming && !message.content.isEmpty {
-                    MessageActions(text: message.content, provider: message.provider, canRegenerate: isLastAnswer && canRegenerate,
+                    MessageActions(text: message.content, provider: message.provider, model: message.model, canRegenerate: isLastAnswer && canRegenerate,
                                    onRegenerate: onRegenerate)
                         .opacity(isLastAnswer || hovering ? 1 : 0)
                 }
@@ -327,6 +327,7 @@ private struct AuthorLine: View {
 private struct MessageActions: View {
     let text: String
     let provider: String?
+    var model: String? = nil
     let canRegenerate: Bool
     let onRegenerate: () -> Void
     @State private var copied = false
@@ -342,10 +343,24 @@ private struct MessageActions: View {
             if canRegenerate {
                 ActionButton(symbol: "arrow.clockwise", help: "Rehacer la respuesta", action: onRegenerate)
             }
+            // Two short lines: who wrote it, then the model and its effort.
             ProviderMark(provider: provider)
+                .allowsHitTesting(false)
                 .padding(.leading, 6)
+                .contentShape(Rectangle())
+                .tip(Self.writtenBy(provider) + (model.map { "\n\($0)" } ?? ""))
         }
         .padding(.leading, -6)
+    }
+}
+
+extension MessageActions {
+    static func writtenBy(_ provider: String?) -> String {
+        switch provider {
+        case "codex": return "Escrito con Codex (ChatGPT)"
+        case "antigravity", "gemini": return "Escrito con Gemini"
+        default: return "Escrito con Claude"
+        }
     }
 }
 
